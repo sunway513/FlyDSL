@@ -7,7 +7,7 @@
 #ifndef CUTE_OPS
 #define CUTE_OPS
 
-include "CuteDialect.td"
+include "cute/CuteDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 
@@ -28,35 +28,35 @@ def Cute_MakeShapeOp : Cute_Op<"make_shape", [Pure]> {
   
   let arguments = (ins Variadic<Cute_IntType>:$dims);
   let results = (outs Cute_ShapeType:$result);
-  let assemblyFormat = "$dims attr-dict `:` type($result)";
+  let assemblyFormat = "$dims attr-dict `:` type($dims) `->` type($result)";
 }
 
 def Cute_MakeStrideOp : Cute_Op<"make_stride", [Pure]> {
   let summary = "Construct multi-dimensional stride";
   let arguments = (ins Variadic<Cute_IntType>:$strides);
   let results = (outs Cute_StrideType:$result);
-  let assemblyFormat = "$strides attr-dict `:` type($result)";
+  let assemblyFormat = "$strides attr-dict `:` type($strides) `->` type($result)";
 }
 
 def Cute_MakeLayoutOp : Cute_Op<"make_layout", [Pure]> {
   let summary = "Construct Layout from shape and stride";
   let arguments = (ins Cute_ShapeType:$shape, Cute_StrideType:$stride);
   let results = (outs Cute_LayoutType:$result);
-  let assemblyFormat = "$shape `,` $stride attr-dict `:` type($result)";
+  let assemblyFormat = "$shape `,` $stride attr-dict `:` type($shape) `,` type($stride) `->` type($result)";
 }
 
 def Cute_MakeCoordOp : Cute_Op<"make_coord", [Pure]> {
   let summary = "Construct multi-dimensional coordinate";
   let arguments = (ins Variadic<Index>:$indices);
   let results = (outs Cute_CoordType:$result);
-  let assemblyFormat = "$indices attr-dict `:` type($result)";
+  let assemblyFormat = "$indices attr-dict `:` type($indices) `->` type($result)";
 }
 
 def Cute_MakeTileOp : Cute_Op<"make_tile", [Pure]> {
   let summary = "Construct hierarchical tile";
   let arguments = (ins Variadic<AnyTypeOf<[Cute_LayoutType, Cute_TileType]>>:$levels);
   let results = (outs Cute_TileType:$result);
-  let assemblyFormat = "$levels attr-dict `:` type($result)";
+  let assemblyFormat = "$levels attr-dict `:` type($levels) `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//

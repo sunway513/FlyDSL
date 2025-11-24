@@ -8,7 +8,7 @@
 #ifndef CUTE_NVGPU_OPS
 #define CUTE_NVGPU_OPS
 
-include "CuteNvgpuDialect.td"
+include "cute/CuteNvgpuDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//

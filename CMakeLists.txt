@@ -34,49 +34,7 @@ if(MLIR_FOUND)
     add_definitions(${LLVM_DEFINITIONS})
     
     # TableGen targets
-    set(LLVM_TARGET_DEFINITIONS include/cute/CuteDialect.td)
-    mlir_tablegen(CuteDialect.h.inc -gen-dialect-decls)
-    mlir_tablegen(CuteDialect.cpp.inc -gen-dialect-defs)
-    add_public_tablegen_target(CuteDialectIncGen)
-    
-    set(LLVM_TARGET_DEFINITIONS include/cute/CuteOps.td)
-    mlir_tablegen(CuteOps.h.inc -gen-op-decls)
-    mlir_tablegen(CuteOps.cpp.inc -gen-op-defs)
-    add_public_tablegen_target(CuteOpsIncGen)
-    
-    set(LLVM_TARGET_DEFINITIONS include/cute/CuteNvgpuDialect.td)
-    mlir_tablegen(CuteNvgpuDialect.h.inc -gen-dialect-decls)
-    mlir_tablegen(CuteNvgpuDialect.cpp.inc -gen-dialect-defs)
-    add_public_tablegen_target(CuteNvgpuDialectIncGen)
-    
-    set(LLVM_TARGET_DEFINITIONS include/cute/CuteNvgpuOps.td)
-    mlir_tablegen(CuteNvgpuOps.h.inc -gen-op-decls)
-    mlir_tablegen(CuteNvgpuOps.cpp.inc -gen-op-defs)
-    add_public_tablegen_target(CuteNvgpuOpsIncGen)
-    
-    # TableGen targets - AMD ROCm support for GFX942
-    if(ENABLE_ROCM)
-        message(STATUS "Enabling AMD ROCm TableGen targets for GFX942")
-        
-        set(LLVM_TARGET_DEFINITIONS include/cute/CuteRocmDialect.td)
-        mlir_tablegen(CuteRocmDialect.h.inc -gen-dialect-decls)
-        mlir_tablegen(CuteRocmDialect.cpp.inc -gen-dialect-defs)
-        add_public_tablegen_target(CuteRocmDialectIncGen)
-        
-        set(LLVM_TARGET_DEFINITIONS include/cute/CuteRocmOps.td)
-        mlir_tablegen(CuteRocmOps.h.inc -gen-op-decls)
-        mlir_tablegen(CuteRocmOps.cpp.inc -gen-op-defs)
-        add_public_tablegen_target(CuteRocmOpsIncGen)
-        
-        add_definitions(-DENABLE_ROCM_SUPPORT)
-    else()
-        message(STATUS "Building in CUDA-only mode (ROCm TableGen disabled)")
-    endif()
-    
-    # TableGen targets - Passes
-    set(LLVM_TARGET_DEFINITIONS include/cute/CutePasses.td)
-    mlir_tablegen(CutePasses.h.inc -gen-pass-decls -name Cute)
-    add_public_tablegen_target(CutePassesIncGen)
+    add_subdirectory(include/cute)
     
     message(STATUS "TableGen targets configured")
 else()
@@ -103,6 +61,9 @@ endif()
 if(BUILD_RUNTIME)
     add_subdirectory(runtime)
 endif()
+
+add_subdirectory(lib)
+add_subdirectory(tools)
 
 # Installation
 install(DIRECTORY include/cute

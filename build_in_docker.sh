@@ -10,7 +10,7 @@ LLVM_DIR="/mnt/raid0/felix/llvm-project/buildmlir/lib/cmake/llvm"
 
 echo "========================================="
 echo "Building CuTe IR in Docker: ${CONTAINER_NAME}"
-echo "CUDA-only mode (ROCm disabled)"
+echo "ROCm enabled"
 echo "========================================="
 
 # Check if container is running
@@ -34,7 +34,7 @@ docker exec -it ${CONTAINER_NAME} bash -c "
         -DLLVM_DIR=${LLVM_DIR} \
         -DBUILD_RUNTIME=OFF \
         -DBUILD_PYTHON_BINDINGS=OFF \
-        -DENABLE_ROCM=OFF \
+        -DENABLE_ROCM=ON \
         -DCMAKE_BUILD_TYPE=Release && \
     echo '' && \
     echo '--- Building TableGen targets ---' && \

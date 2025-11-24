@@ -7,7 +7,7 @@
 #ifndef CUTE_ROCM_OPS
 #define CUTE_ROCM_OPS
 
-include "CuteRocmDialect.td"
+include "cute/CuteRocmDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 

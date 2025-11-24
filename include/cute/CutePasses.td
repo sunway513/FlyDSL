@@ -444,52 +444,6 @@ def CuteAtomValidationPass : Pass<"cute-atom-validation", "::mlir::ModuleOp"> {
 // Pass Pipelines
 //===----------------------------------------------------------------------===//
 
-def CuteFullLoweringPipeline : PassPipeline<"cute-full-lowering"> {
-  let summary = "Complete lowering pipeline: cute_ir → LLVM IR";
-  let description = [{
-    Orchestrates full compilation:
-    
-    1. Optimization (cute_ir level)
-       - cute-layout-canonicalize
-       - cute-layout-fusion
-       - cute-layout-analysis
-    
-    2. GPU preparation
-       - cute-tensor-partition
-       - cute-memory-coalescing
-       - cute-smem-swizzling
-    
-    3. Async pipeline insertion
-       - cute-async-pipeline
-       - cute-warp-specialization (SM90+)
-    
-    4. Lowering (cute_nvgpu_ir → nvgpu)
-       - cute-nvgpu-to-nvgpu
-       - cute-nvgpu-mma-lowering
-       - cute-nvgpu-copy-lowering
-       - cute-nvgpu-tma-materialize (SM90+)
-    
-    5. Further lowering (nvgpu → nvvm → LLVM)
-       - nvgpu-to-nvvm
-       - nvvm-to-llvm
-       - gpu-to-llvm
-    
-    6. Final optimizations
-       - canonicalize
-       - cse
-       - loop-invariant-code-motion
-  }];
-  
-  let options = [
-    Option<"targetArch", "target-arch", "std::string",
-           /*default=*/"\"sm_90\"",
-           "Target GPU architecture">,
-    Option<"optimizationLevel", "O", "unsigned",
-           /*default=*/"2",
-           "Optimization level (0-3)">
-  ];
-}
-
 def CuteToRocmPass : Pass<"cute-to-rocm", "::mlir::ModuleOp"> {
   let summary = "Lower CuTe IR to ROCm-specific dialects";
   let description = [{
