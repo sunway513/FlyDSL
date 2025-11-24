@@ -20,6 +20,11 @@
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
   
+  // Register implemented cute passes
+  ::mlir::registerPass([]() -> std::unique_ptr<::mlir::Pass> {
+    return mlir::cute::createCuteToStandardPass();
+  });
+  
   mlir::DialectRegistry registry;
   registry.insert<mlir::cute::CuteDialect>();
   registry.insert<mlir::func::FuncDialect>();

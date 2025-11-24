@@ -357,21 +357,7 @@ tma.initialize_2d(
 | `flatten` | O(1) | Compile-time |
 | `composition` | O(1) | Compile-time |
 
-### Memory Patterns
 
-| Pattern | Bandwidth | Optimization |
-|---------|-----------|--------------|
-| Coalesced | ~95% peak | Native |
-| Strided (stride=2) | ~50% peak | Vectorize |
-| Random | <10% peak | TMA/L2 cache |
-
-### MMA Throughput
-
-| Architecture | Peak TFLOPS (FP16) | Utilization |
-|--------------|-------------------|-------------|
-| SM80 (A100) | 312 | 85-95% |
-| SM90 (H100) | 990 | 90-98% |
-| SM100 | >1000 | TBD |
 
 ---
 

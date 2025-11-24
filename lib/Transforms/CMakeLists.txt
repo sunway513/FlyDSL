@@ -14,6 +14,7 @@ add_mlir_library(CuteTransforms
   MLIRArithDialect
   MLIRFuncDialect
   MLIRMemRefDialect
+  MLIRSCFDialect
   MLIRGPUDialect
   MLIRVectorDialect
 )

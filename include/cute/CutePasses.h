@@ -2,11 +2,13 @@
 #define CUTE_PASSES_H
 
 #include "mlir/Pass/Pass.h"
-#include "cute/CutePasses.h.inc"
 
 namespace mlir {
 namespace cute {
+
+std::unique_ptr<Pass> createCuteToStandardPass();
 std::unique_ptr<Pass> createCuteToRocmPass();
+
 }
 }
 
