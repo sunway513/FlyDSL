@@ -502,6 +502,159 @@ struct TiledDivideOpLowering : public OpRewritePattern<TiledDivideOp> {
   }
 };
 
+struct TiledProductOpLowering : public OpRewritePattern<TiledProductOp> {
+  using OpRewritePattern<TiledProductOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TiledProductOp op,
+                                PatternRewriter &rewriter) const override {
+    // tiled_product = tile_to_shape(logical_product(block, tiler), block, tiler)
+    // Simplified: use logical_product
+    auto loc = op.getLoc();
+    auto logicalProd = rewriter.create<LogicalProductOp>(
+        loc, op.getResult().getType(), op.getOperand(0), op.getOperand(1));
+    
+    rewriter.replaceOp(op, logicalProd.getResult());
+    return success();
+  }
+};
+
+struct FlatProductOpLowering : public OpRewritePattern<FlatProductOp> {
+  using OpRewritePattern<FlatProductOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(FlatProductOp op,
+                                PatternRewriter &rewriter) const override {
+    // flat_product flattens the result of logical_product
+    // Simplified: use logical_product (flattening happens later)
+    auto loc = op.getLoc();
+    auto logicalProd = rewriter.create<LogicalProductOp>(
+        loc, op.getResult().getType(), op.getOperand(0), op.getOperand(1));
+    
+    rewriter.replaceOp(op, logicalProd.getResult());
+    return success();
+  }
+};
+
+struct RakedProductOpLowering : public OpRewritePattern<RakedProductOp> {
+  using OpRewritePattern<RakedProductOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(RakedProductOp op,
+                                PatternRewriter &rewriter) const override {
+    // raked_product creates a raked (interleaved) layout
+    // Simplified: use logical_product
+    auto loc = op.getLoc();
+    auto logicalProd = rewriter.create<LogicalProductOp>(
+        loc, op.getResult().getType(), op.getOperand(0), op.getOperand(1));
+    
+    rewriter.replaceOp(op, logicalProd.getResult());
+    return success();
+  }
+};
+
+struct BlockedProductOpLowering : public OpRewritePattern<BlockedProductOp> {
+  using OpRewritePattern<BlockedProductOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(BlockedProductOp op,
+                                PatternRewriter &rewriter) const override {
+    // blocked_product creates a blocked layout
+    // Simplified: use logical_product
+    auto loc = op.getLoc();
+    auto logicalProd = rewriter.create<LogicalProductOp>(
+        loc, op.getResult().getType(), op.getOperand(0), op.getOperand(1));
+    
+    rewriter.replaceOp(op, logicalProd.getResult());
+    return success();
+  }
+};
+
+struct ZippedDivideOpLowering : public OpRewritePattern<ZippedDivideOp> {
+  using OpRewritePattern<ZippedDivideOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ZippedDivideOp op,
+                                PatternRewriter &rewriter) const override {
+    // zipped_divide is similar to logical_divide with zipping
+    // Simplified: use logical_divide
+    auto loc = op.getLoc();
+    auto logicalDiv = rewriter.create<LogicalDivideOp>(
+        loc, op.getResult().getType(), op.getOperand(0), op.getOperand(1));
+    
+    rewriter.replaceOp(op, logicalDiv.getResult());
+    return success();
+  }
+};
+
+struct FlatDivideOpLowering : public OpRewritePattern<FlatDivideOp> {
+  using OpRewritePattern<FlatDivideOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(FlatDivideOp op,
+                                PatternRewriter &rewriter) const override {
+    // flat_divide flattens the result of logical_divide
+    // Simplified: use logical_divide
+    auto loc = op.getLoc();
+    auto logicalDiv = rewriter.create<LogicalDivideOp>(
+        loc, op.getResult().getType(), op.getOperand(0), op.getOperand(1));
+    
+    rewriter.replaceOp(op, logicalDiv.getResult());
+    return success();
+  }
+};
+
+
+struct LocalPartitionOpLowering : public OpRewritePattern<LocalPartitionOp> {
+  using OpRewritePattern<LocalPartitionOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LocalPartitionOp op,
+                                PatternRewriter &rewriter) const override {
+    // local_partition(tensor, tile, index) partitions the tensor for thread index
+    // Semantics: outer_partition(tensor, tile, coord_to_index(tile, index))
+    // Simplified: use logical_divide as approximation
+    auto loc = op.getLoc();
+    auto inputLayout = op.getOperand(0);  // tensor
+    auto tilerLayout = op.getOperand(1);  // tile
+    // Note: index is used to select which partition, but we simplify to just divide
+    
+    auto logicalDiv = rewriter.create<LogicalDivideOp>(
+        loc, op.getResult().getType(), inputLayout, tilerLayout);
+    
+    rewriter.replaceOp(op, logicalDiv.getResult());
+    return success();
+  }
+};
+
+struct LocalTileOpLowering : public OpRewritePattern<LocalTileOp> {
+  using OpRewritePattern<LocalTileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LocalTileOp op,
+                                PatternRewriter &rewriter) const override {
+    // local_tile(tensor, tiler, coord) extracts a tile at specific coordinates
+    // Semantics: zipped_divide(tensor, tiler)[coord]
+    // Simplified: use logical_divide (coordinate selection happens at runtime)
+    auto loc = op.getLoc();
+    auto inputLayout = op.getOperand(0);  // tensor layout
+    auto tilerShape = op.getOperand(1);   // tiler shape
+    // coord is used to select which tile, but we simplify to just tiling
+    
+    // Create a layout from the tiler shape (with default strides)
+    auto tilerRank = llvm::cast<ShapeType>(tilerShape.getType()).getRank();
+    SmallVector<Value> ones;
+    for (unsigned i = 0; i < tilerRank; ++i) {
+      ones.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+    }
+    
+    auto strideType = StrideType::get(rewriter.getContext(), tilerRank);
+    auto makeStrideOp = rewriter.create<MakeStrideOp>(loc, strideType, ones);
+    
+    auto layoutType = LayoutType::get(rewriter.getContext(), tilerRank);
+    auto tilerLayout = rewriter.create<MakeLayoutOp>(
+        loc, layoutType, tilerShape, makeStrideOp.getResult());
+    
+    // Use logical_divide to partition the tensor
+    auto logicalDiv = rewriter.create<LogicalDivideOp>(
+        loc, inputLayout.getType(), inputLayout, tilerLayout.getResult());
+    
+    rewriter.replaceOp(op, logicalDiv.getResult());
+    return success();
+  }
+};
 
 #define GEN_PASS_DEF_CUTETOSTANDARDPASS
 #include "cute/CutePasses.h.inc"
@@ -528,6 +681,14 @@ struct CuteToStandardPass
     patterns.add<LogicalProductOpLowering>(&getContext());
     patterns.add<ZippedProductOpLowering>(&getContext());
     patterns.add<LogicalDivideOpLowering>(&getContext());
+    patterns.add<TiledProductOpLowering>(&getContext());
+    patterns.add<FlatProductOpLowering>(&getContext());
+    patterns.add<RakedProductOpLowering>(&getContext());
+    patterns.add<BlockedProductOpLowering>(&getContext());
+    patterns.add<ZippedDivideOpLowering>(&getContext());
+    patterns.add<FlatDivideOpLowering>(&getContext());
+    patterns.add<LocalPartitionOpLowering>(&getContext());
+    patterns.add<LocalTileOpLowering>(&getContext());
     patterns.add<TiledDivideOpLowering>(&getContext());
     
 

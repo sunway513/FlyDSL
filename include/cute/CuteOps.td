@@ -315,3 +315,38 @@ def Cute_FlatDivideOp : Cute_Op<"flat_divide", []> {
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
 }
 
+
+//===----------------------------------------------------------------------===//
+// Local Partition and Tile Operations
+//===----------------------------------------------------------------------===//
+
+def Cute_LocalPartitionOp : Cute_Op<"local_partition", []> {
+  let summary = "Partition a layout for a specific thread/block index";
+  let description = [{
+    Partitions a layout by a tiler for a specific thread or block index.
+    This is used to assign thread-local portions of a tensor.
+    
+    Similar to: outer_partition(tensor, tile, coord_to_index(tile, index))
+    
+    Example: %result = cute.local_partition %tensor, %tile, %index : (!cute.layout<2>, !cute.layout<2>, index) -> !cute.layout<2>
+  }];
+  let arguments = (ins Cute_LayoutType:$input, Cute_LayoutType:$tiler, Index:$index);
+  let results = (outs Cute_LayoutType:$result);
+  let assemblyFormat = "$input `,` $tiler `,` $index attr-dict `:` functional-type(operands, $result)";
+}
+
+def Cute_LocalTileOp : Cute_Op<"local_tile", []> {
+  let summary = "Extract a tile from a layout at specific coordinates";
+  let description = [{
+    Extracts a tile of a specific shape from a layout at given coordinates.
+    This is used for block-level tiling (e.g., CTA tiles in GEMM).
+    
+    The operation tiles the input tensor and selects the tile at the given coordinate.
+    
+    Example: %result = cute.local_tile %tensor, %tiler, %coord : (!cute.layout<2>, !cute.shape<2>, !cute.shape<2>) -> !cute.layout<2>
+  }];
+  let arguments = (ins Cute_LayoutType:$input, Cute_ShapeType:$tiler, Cute_ShapeType:$coord);
+  let results = (outs Cute_LayoutType:$result);
+  let assemblyFormat = "$input `,` $tiler `,` $coord attr-dict `:` functional-type(operands, $result)";
+}
+
