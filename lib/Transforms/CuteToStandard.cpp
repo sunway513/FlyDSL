@@ -1,55 +1,81 @@
-//===- CuteToStandard.cpp - Lower CuTe IR to Standard Dialects -----------===//
-//
-// This pass converts cute_ir operations to standard MLIR dialects
-//
-//===----------------------------------------------------------------------===//
-
+#include "cute/CuteDialect.h"
+#include "cute/CuteOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
-namespace mlir {
-namespace cute {
+using namespace mlir;
+using namespace mlir::cute;
 
-//===----------------------------------------------------------------------===//
-// Conversion Patterns
-//===----------------------------------------------------------------------===//
+namespace {
 
-/// Convert cute.crd2idx to arithmetic operations
-/// Formula: idx = coord[0]*stride[0] + coord[1]*stride[1] + ...
-struct Crd2IdxOpLowering : public OpConversionPattern</* CuteCrd2IdxOp */> {
+// Lower make_coord to vector.from_elements
+struct MakeCoordOpLowering : public OpConversionPattern<MakeCoordOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult matchAndRewrite(
-      /* CuteCrd2IdxOp */ op, OpAdaptor adaptor,
+      MakeCoordOp op, OpAdaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
     
     auto loc = op.getLoc();
-    auto coordType = op.getCoord().getType(); // CoordType
-    auto layoutType = op.getLayout().getType(); // LayoutType
+    auto indices = adaptor.getIndices(); // ValueRange
     
-    // Extract shape and stride from layout
-    auto shape = layoutType.getShape(); // ArrayRef<int64_t>
-    auto stride = layoutType.getStride(); // ArrayRef<int64_t>
+    int64_t rank = indices.size();
+    auto vectorType = VectorType::get({rank}, rewriter.getIndexType());
+    
+    Value vector = rewriter.create<vector::FromElementsOp>(loc, vectorType, indices);
+    
+    rewriter.replaceOp(op, vector);
+    return success();
+  }
+};
+
+// Lower make_tensor to just return the pointer (memref)
+struct MakeTensorOpLowering : public OpConversionPattern<MakeTensorOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      MakeTensorOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getPtr());
+    return success();
+  }
+};
+
+struct Crd2IdxOpLowering : public OpConversionPattern<Crd2IdxOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      Crd2IdxOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    
+    auto loc = op.getLoc();
+    Value coordVec = adaptor.getCoord();
+    
+    auto layoutType = op.getLayout().getType().cast<LayoutType>();
+    auto shapeType = layoutType.getShape();
+    auto strideType = layoutType.getStride();
+    
+    ArrayRef<int64_t> shape = shapeType.getExtents();
+    ArrayRef<int64_t> stride = strideType.getStrides();
+    
     int64_t rank = shape.size();
     
-    // Build: result = coord[0] * stride[0] + coord[1] * stride[1] + ...
     Value result = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     
     for (int64_t i = 0; i < rank; ++i) {
-      // Extract coord[i]
-      Value coordI = rewriter.create</* ExtractCoordOp */>(loc, adaptor.getCoord(), i);
+      Value idxVal = rewriter.create<arith::ConstantIndexOp>(loc, i);
+      Value coordI = rewriter.create<vector::ExtractElementOp>(loc, coordVec, idxVal);
       
-      // Multiply by stride[i]
       Value strideI = rewriter.create<arith::ConstantIndexOp>(loc, stride[i]);
       Value term = rewriter.create<arith::MulIOp>(loc, coordI, strideI);
       
-      // Accumulate
       result = rewriter.create<arith::AddIOp>(loc, result, term);
     }
     
@@ -58,36 +84,30 @@ struct Crd2IdxOpLowering : public OpConversionPattern</* CuteCrd2IdxOp */> {
   }
 };
 
-/// Convert cute.copy to memref load/store loop
-/// Generates vectorized loads when layout permits
-struct CopyOpLowering : public OpConversionPattern</* CuteCopyOp */> {
+struct CopyOpLowering : public OpConversionPattern<CopyOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult matchAndRewrite(
-      /* CuteCopyOp */ op, OpAdaptor adaptor,
+      CopyOp op, OpAdaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
     
     auto loc = op.getLoc();
-    auto src = adaptor.getSrc(); // TensorType
-    auto dst = adaptor.getDst(); // TensorType
+    Value src = adaptor.getSrc(); // MemRef
+    Value dst = adaptor.getDst(); // MemRef
     
-    auto srcLayout = src.getType().getLayout();
-    auto dstLayout = dst.getType().getLayout();
+    auto srcLayout = op.getSrc().getType().cast<TensorType>().getLayout();
+    auto dstLayout = op.getDst().getType().cast<TensorType>().getLayout();
     
-    // Get iteration bounds from layout
-    auto shape = srcLayout.getShape();
+    auto shape = srcLayout.getShape().getExtents();
     int64_t size = 1;
     for (auto dim : shape)
       size *= dim;
     
-    // Detect vectorization opportunities
     int64_t vectorWidth = analyzeVectorWidth(srcLayout, dstLayout);
     
     if (vectorWidth > 1) {
-      // Vectorized copy
       generateVectorizedCopy(rewriter, loc, src, dst, size, vectorWidth);
     } else {
-      // Scalar copy loop
       auto lb = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto ub = rewriter.create<arith::ConstantIndexOp>(loc, size);
       auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
@@ -95,9 +115,8 @@ struct CopyOpLowering : public OpConversionPattern</* CuteCopyOp */> {
       auto loop = rewriter.create<scf::ForOp>(loc, lb, ub, step);
       rewriter.setInsertionPointToStart(loop.getBody());
       
-      // Inside loop: load from src, store to dst
       Value idx = loop.getInductionVar();
-      Value data = rewriter.create<memref::LoadOp>(loc, src, idx);
+      Value data = rewriter.create<memref::LoadOp>(loc, src, idx); 
       rewriter.create<memref::StoreOp>(loc, data, dst, idx);
       
       rewriter.setInsertionPointAfter(loop);
@@ -108,34 +127,26 @@ struct CopyOpLowering : public OpConversionPattern</* CuteCopyOp */> {
   }
 
 private:
-  // Analyze layout to determine vectorization width
   int64_t analyzeVectorWidth(LayoutType srcLayout, LayoutType dstLayout) const {
-    // Check if innermost dimension is contiguous (stride == 1)
-    auto srcStride = srcLayout.getStride();
-    auto dstStride = dstLayout.getStride();
+    auto srcStride = srcLayout.getStride().getStrides();
+    auto dstStride = dstLayout.getStride().getStrides();
     
+    if (srcStride.empty() || dstStride.empty()) return 1;
+
     if (srcStride.back() == 1 && dstStride.back() == 1) {
-      // Contiguous access - can vectorize
-      int64_t innerDim = srcLayout.getShape().back();
-      
-      // Common vector widths: 1, 2, 4, 8, 16
+      int64_t innerDim = srcLayout.getShape().getExtents().back();
       for (int64_t width : {16, 8, 4, 2}) {
         if (innerDim % width == 0)
           return width;
       }
     }
-    
-    return 1; // No vectorization
+    return 1;
   }
   
   void generateVectorizedCopy(ConversionPatternRewriter &rewriter,
                                Location loc, Value src, Value dst,
                                int64_t size, int64_t vectorWidth) const {
-    // Generate: for (i = 0; i < size; i += vectorWidth)
-    //             vec = vector.load src[i]
-    //             vector.store vec, dst[i]
-    
-    auto elemType = src.getType().getElementType();
+    auto elemType = src.getType().cast<MemRefType>().getElementType();
     auto vecType = VectorType::get({vectorWidth}, elemType);
     
     auto lb = rewriter.create<arith::ConstantIndexOp>(loc, 0);
@@ -151,47 +162,51 @@ private:
   }
 };
 
-/// Convert cute.local_partition to thread-indexed access
-struct LocalPartitionOpLowering : public OpConversionPattern</* CuteLocalPartitionOp */> {
+struct LocalPartitionOpLowering : public OpConversionPattern<LocalPartitionOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult matchAndRewrite(
-      /* CuteLocalPartitionOp */ op, OpAdaptor adaptor,
+      LocalPartitionOp op, OpAdaptor adaptor,
       ConversionPatternRewriter &rewriter) const override {
     
     auto loc = op.getLoc();
-    auto tensor = adaptor.getTensor();
-    auto tiler = adaptor.getTiler(); // TileType
-    auto threadIdx = adaptor.getThreadIdx();
+    Value tensor = adaptor.getTensor(); // MemRef
     
-    // Compute thread-local base offset
-    // offset = threadIdx * tile_size
-    auto tileLayout = tiler.getType().getLayouts()[0];
-    int64_t tileSize = computeTileSize(tileLayout);
+    auto tilerType = op.getTiler().getType().cast<LayoutType>();
+    int64_t threadIdx = op.getThreadIdx();
     
-    Value tileSizeVal = rewriter.create<arith::ConstantIndexOp>(loc, tileSize);
-    Value baseOffset = rewriter.create<arith::MulIOp>(loc, threadIdx, tileSizeVal);
+    int64_t tileSize = computeTileSize(tilerType);
+    int64_t offset = threadIdx * tileSize;
     
-    // Create new tensor view with offset
-    auto newTensor = rewriter.create</* MakeTensorOp */>(
-        loc, tensor, baseOffset, tiler);
+    auto memRefType = tensor.getType().cast<MemRefType>();
     
-    rewriter.replaceOp(op, newTensor);
+    if (memRefType.getRank() == 1) {
+        auto resultLayout = op.getResult().getType().cast<TensorType>().getLayout();
+        int64_t resultSize = 1;
+        for(auto d : resultLayout.getShape().getExtents()) resultSize *= d;
+        
+        Value subview = rewriter.create<memref::SubViewOp>(
+            loc, tensor, 
+            ArrayRef<int64_t>{offset}, 
+            ArrayRef<int64_t>{resultSize}, 
+            ArrayRef<int64_t>{1}
+        );
+        rewriter.replaceOp(op, subview);
+    } else {
+        rewriter.replaceOp(op, tensor);
+    }
+
     return success();
   }
 
 private:
   int64_t computeTileSize(LayoutType layout) const {
     int64_t size = 1;
-    for (auto dim : layout.getShape())
+    for (auto dim : layout.getShape().getExtents())
       size *= dim;
     return size;
   }
 };
-
-//===----------------------------------------------------------------------===//
-// Pass Implementation
-//===----------------------------------------------------------------------===//
 
 struct CuteToStandardPass : public PassWrapper<CuteToStandardPass, 
                                                 OperationPass<ModuleOp>> {
@@ -201,7 +216,8 @@ struct CuteToStandardPass : public PassWrapper<CuteToStandardPass,
     registry.insert<arith::ArithDialect, 
                     scf::SCFDialect,
                     memref::MemRefDialect,
-                    func::FuncDialect>();
+                    func::FuncDialect,
+                    vector::VectorDialect>();
   }
 
   void runOnOperation() override {
@@ -212,11 +228,14 @@ struct CuteToStandardPass : public PassWrapper<CuteToStandardPass,
     target.addLegalDialect<arith::ArithDialect, 
                           scf::SCFDialect,
                           memref::MemRefDialect,
-                          func::FuncDialect>();
-    target.addIllegalDialect</* CuteDialect */>();
+                          func::FuncDialect,
+                          vector::VectorDialect>();
+    target.addIllegalDialect<CuteDialect>();
     
     RewritePatternSet patterns(context);
-    patterns.add<Crd2IdxOpLowering,
+    patterns.add<MakeCoordOpLowering,
+                 MakeTensorOpLowering,
+                 Crd2IdxOpLowering,
                  CopyOpLowering,
                  LocalPartitionOpLowering>(context);
     
@@ -226,14 +245,8 @@ struct CuteToStandardPass : public PassWrapper<CuteToStandardPass,
   }
 };
 
-} // namespace cute
+} // namespace
 
-//===----------------------------------------------------------------------===//
-// Pass Registration
-//===----------------------------------------------------------------------===//
-
-std::unique_ptr<Pass> createCuteToStandardPass() {
-  return std::make_unique<cute::CuteToStandardPass>();
+std::unique_ptr<Pass> mlir::cute::createCuteToStandardPass() {
+  return std::make_unique<CuteToStandardPass>();
 }
-
-} // namespace mlir

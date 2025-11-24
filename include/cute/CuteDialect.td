@@ -36,6 +36,7 @@ def Cute_Dialect : Dialect {
   
   let useDefaultTypePrinterParser = 1;
   let useDefaultAttributePrinterParser = 1;
+  // let usePropertiesForAttributes = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -176,6 +177,13 @@ def Cute_StaticStrideAttr : Cute_Attr<"StaticStride", "static_stride"> {
 //===----------------------------------------------------------------------===//
 
 class Cute_Op<string mnemonic, list<Trait> traits = []> :
-    Op<Cute_Dialect, mnemonic, traits>;
+    Op<Cute_Dialect, mnemonic, traits> {
+  let extraClassDeclaration = [{
+    template <typename OpT>
+    using InferredProperties = ::mlir::EmptyProperties;
+    ::mlir::EmptyProperties getProperties() { return {}; }
+    static bool classof(::mlir::Operation *op) { return Op::classof(op); }
+  }];
+}
 
 #endif // CUTE_DIALECT
