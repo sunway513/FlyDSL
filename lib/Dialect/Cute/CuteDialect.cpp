@@ -1,5 +1,4 @@
 #include "cute/CuteDialect.h"
-#include "cute/CuteTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/TypeSupport.h"
