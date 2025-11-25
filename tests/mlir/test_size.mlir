@@ -1,11 +1,11 @@
-// Test cute.size operation
+// Test rocir.size operation
 func.func @test_size() -> index {
   %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
   %c32 = arith.constant 32 : index
   
-  %shape = cute.make_shape %c8, %c16, %c32 : (index, index, index) -> !cute.shape<3>
-  %size = cute.size %shape : !cute.shape<3> -> index
+  %shape = rocir.make_shape %c8, %c16, %c32 : (index, index, index) -> !rocir.shape<3>
+  %size = rocir.size %shape : !rocir.shape<3> -> index
   
   return %size : index
 }

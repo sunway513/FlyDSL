@@ -96,7 +96,7 @@ def test_composition(ctx, insert_point):
         layout_b = rocir.make_layout(shape_b, stride_b)
         
         # Compose layouts
-        composed = cute.composition(layout_a, layout_b)
+        composed = rocir.composition(layout_a, layout_b)
         
         size = rocir.size(composed)
         return size

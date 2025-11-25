@@ -1,11 +1,11 @@
 module {
-  func.func @test_cute_ops(%i1: !cute.int, %i2: !cute.int, %i3: !cute.int) {
-    %s = cute.make_shape %i1, %i2, %i3 : (!cute.int, !cute.int, !cute.int) -> !cute.shape<3>
-    %st = cute.make_stride %i1, %i2, %i3 : (!cute.int, !cute.int, !cute.int) -> !cute.stride<3>
-    %l = cute.make_layout %s, %st : (!cute.shape<3>, !cute.stride<3>) -> !cute.layout<3>
-    %c = cute.make_coord %i1, %i2 : (!cute.int, !cute.int) -> !cute.coord<2>
-    %size = cute.size %s : !cute.shape<3> -> !cute.int
-    %idx = cute.crd2idx %c, %l : (!cute.coord<2>, !cute.layout<3>) -> !cute.int
+  func.func @test_cute_ops(%i1: !rocir.int, %i2: !rocir.int, %i3: !rocir.int) {
+    %s = rocir.make_shape %i1, %i2, %i3 : (!rocir.int, !rocir.int, !rocir.int) -> !rocir.shape<3>
+    %st = rocir.make_stride %i1, %i2, %i3 : (!rocir.int, !rocir.int, !rocir.int) -> !rocir.stride<3>
+    %l = rocir.make_layout %s, %st : (!rocir.shape<3>, !rocir.stride<3>) -> !rocir.layout<3>
+    %c = rocir.make_coord %i1, %i2 : (!rocir.int, !rocir.int) -> !rocir.coord<2>
+    %size = rocir.size %s : !rocir.shape<3> -> !rocir.int
+    %idx = rocir.crd2idx %c, %l : (!rocir.coord<2>, !rocir.layout<3>) -> !rocir.int
     return
   }
 }

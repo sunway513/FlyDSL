@@ -1,11 +1,11 @@
-// Test cute.rank operation
+// Test rocir.rank operation
 func.func @test_rank() -> index {
   %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
   %c32 = arith.constant 32 : index
   
-  %shape = cute.make_shape %c8, %c16, %c32 : (index, index, index) -> !cute.shape<3>
-  %rank = cute.rank %shape : !cute.shape<3> -> index
+  %shape = rocir.make_shape %c8, %c16, %c32 : (index, index, index) -> !rocir.shape<3>
+  %rank = rocir.rank %shape : !rocir.shape<3> -> index
   
   return %rank : index
 }

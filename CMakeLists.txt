@@ -76,7 +76,7 @@ install(DIRECTORY include/rocir
 )
 
 install(DIRECTORY docs
-    DESTINATION share/cute_ir
+    DESTINATION share/rocir
 )
 
 # Summary

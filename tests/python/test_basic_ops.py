@@ -158,7 +158,7 @@ def test_cosize_operation(ctx):
             layout = rocir.make_layout(shape, stride)
             
             # Compute cosize
-            cosize_val = cute.cosize(layout)
+            cosize_val = rocir.cosize(layout)
             
             return cosize_val
     
@@ -191,7 +191,7 @@ def test_composition(ctx):
             layout_b = rocir.make_layout(shape_b, stride_b)
             
             # Compose
-            composed = cute.composition(layout_a, layout_b)
+            composed = rocir.composition(layout_a, layout_b)
             
             # Use Pythonic operator for verification
             total_elements = c8 * c16  # Instead of MulIOp(c8, c16)

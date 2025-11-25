@@ -32,7 +32,7 @@ def test_logical_product(ctx):
             tiler = rocir.make_layout(tile_shape, tile_stride)
             
             # Tile the layout
-            tiled = cute.logical_product(base, tiler)
+            tiled = rocir.logical_product(base, tiler)
             
             # Verify tile count using operators: (16/4) * (32/8) = 4 * 4 = 16
             tiles_m = c16 // c4  # Pythonic division!
@@ -72,7 +72,7 @@ def test_zipped_product(ctx):
             tiler = rocir.make_layout(tile_shape, tile_stride)
             
             # Zipped product
-            zipped = cute.zipped_product(base, tiler)
+            zipped = rocir.zipped_product(base, tiler)
             
             # Compute expected size: 8 * 16 = 128
             expected_size = c8 * c16
@@ -108,7 +108,7 @@ def test_flat_product(ctx):
             tile_stride = rocir.make_stride(c1, c3)
             tiler = rocir.make_layout(tile_shape, tile_stride)
             
-            flat = cute.flat_product(base, tiler)
+            flat = rocir.flat_product(base, tiler)
             
             return flat
     
@@ -138,7 +138,7 @@ def test_outer_product(ctx):
             stride_b = rocir.make_stride(c1, c2)
             layout_b = rocir.make_layout(shape_b, stride_b)
             
-            outer = cute.outer_product(layout_a, layout_b)
+            outer = rocir.outer_product(layout_a, layout_b)
             
             return outer
     
@@ -167,7 +167,7 @@ def test_blocked_product(ctx):
             block_stride = rocir.make_stride(c1, c16)
             blocker = rocir.make_layout(block_shape, block_stride)
             
-            blocked = cute.blocked_product(base, blocker)
+            blocked = rocir.blocked_product(base, blocker)
             
             # Compute block stride using operators
             block_size = c16 * c16  # Elements per block
@@ -202,7 +202,7 @@ def test_raked_product(ctx):
             rake_stride = rocir.make_stride(c1, c4)
             raker = rocir.make_layout(rake_shape, rake_stride)
             
-            raked = cute.raked_product(base, raker)
+            raked = rocir.raked_product(base, raker)
             
             return raked
     
@@ -232,7 +232,7 @@ def test_logical_divide(ctx):
             tile_stride = rocir.make_stride(c1, c32)
             tile = rocir.make_layout(tile_shape, tile_stride)
             
-            divided = cute.logical_divide(tensor, tile)
+            divided = rocir.logical_divide(tensor, tile)
             
             # Calculate partition count: (128/32) * (256/64)
             parts_m = c128 // c32
@@ -269,7 +269,7 @@ def test_zipped_divide(ctx):
             part_stride = rocir.make_stride(c1, c16)
             part = rocir.make_layout(part_shape, part_stride)
             
-            zipped = cute.zipped_divide(tensor, part)
+            zipped = rocir.zipped_divide(tensor, part)
             
             return zipped
     
@@ -297,7 +297,7 @@ def test_flat_divide(ctx):
             part_stride = rocir.make_stride(c1, c12)
             part = rocir.make_layout(part_shape, part_stride)
             
-            flat = cute.flat_divide(tensor, part)
+            flat = rocir.flat_divide(tensor, part)
             
             return flat
     
@@ -327,7 +327,7 @@ def test_tiled_divide(ctx):
             tile_stride = rocir.make_stride(c1, c32)
             tile = rocir.make_layout(tile_shape, tile_stride)
             
-            tiled = cute.tiled_divide(tensor, tile)
+            tiled = rocir.tiled_divide(tensor, tile)
             
             # Pythonic stride computation
             col_stride = c256 // c32  # Tiles per row

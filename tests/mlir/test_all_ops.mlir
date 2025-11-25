@@ -12,12 +12,12 @@ module {
     %c8 = arith.constant 8 : index
     %c16 = arith.constant 16 : index
     
-    // CHECK: cute.make_shape
-    %shape = cute.make_shape %c8, %c16 : (index, index) -> !cute.shape<2>
+    // CHECK: rocir.make_shape
+    %shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<2>
     
     // CHECK: arith.muli
     // CHECK: arith.muli
-    %size = cute.size %shape : !cute.shape<2> -> index
+    %size = rocir.size %shape : !rocir.shape<2> -> index
     
     // CHECK: return
     return %size : index
@@ -29,16 +29,16 @@ module {
     %c16 = arith.constant 16 : index
     %c1 = arith.constant 1 : index
     
-    // CHECK: cute.make_shape
-    %shape = cute.make_shape %c8, %c16 : (index, index) -> !cute.shape<2>
-    // CHECK: cute.make_stride
-    %stride = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
+    // CHECK: rocir.make_shape
+    %shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<2>
+    // CHECK: rocir.make_stride
+    %stride = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
     
-    // CHECK: cute.make_layout
-    %layout = cute.make_layout %shape, %stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    // CHECK: rocir.make_layout
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
     // CHECK: arith.muli
-    %size = cute.size %layout : !cute.layout<2> -> index
+    %size = rocir.size %layout : !rocir.layout<2> -> index
     
     return %size : index
   }
@@ -49,17 +49,17 @@ module {
     %c8 = arith.constant 8 : index
     %c1 = arith.constant 1 : index
     
-    %shape = cute.make_shape %c4, %c8 : (index, index) -> !cute.shape<2>
-    %stride = cute.make_stride %c1, %c4 : (index, index) -> !cute.stride<2>
-    %layout = cute.make_layout %shape, %stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %shape = rocir.make_shape %c4, %c8 : (index, index) -> !rocir.shape<2>
+    %stride = rocir.make_stride %c1, %c4 : (index, index) -> !rocir.stride<2>
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.get_shape
-    %extracted_shape = cute.get_shape %layout : !cute.layout<2> -> !cute.shape<2>
-    // CHECK: cute.get_stride
-    %extracted_stride = cute.get_stride %layout : !cute.layout<2> -> !cute.stride<2>
+    // CHECK: rocir.get_shape
+    %extracted_shape = rocir.get_shape %layout : !rocir.layout<2> -> !rocir.shape<2>
+    // CHECK: rocir.get_stride
+    %extracted_stride = rocir.get_stride %layout : !rocir.layout<2> -> !rocir.stride<2>
     
-    %size1 = cute.size %extracted_shape : !cute.shape<2> -> index
-    %size2 = cute.cosize %layout : !cute.layout<2> -> index
+    %size1 = rocir.size %extracted_shape : !rocir.shape<2> -> index
+    %size2 = rocir.cosize %layout : !rocir.layout<2> -> index
     
     %result = arith.addi %size1, %size2 : index
     return %result : index
@@ -78,21 +78,21 @@ module {
     %c1 = arith.constant 1 : index
     
     // Base layout: 16x32 column-major
-    %base_shape = cute.make_shape %c16, %c32 : (index, index) -> !cute.shape<2>
-    %base_stride = cute.make_stride %c1, %c16 : (index, index) -> !cute.stride<2>
-    %base = cute.make_layout %base_shape, %base_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %base_shape = rocir.make_shape %c16, %c32 : (index, index) -> !rocir.shape<2>
+    %base_stride = rocir.make_stride %c1, %c16 : (index, index) -> !rocir.stride<2>
+    %base = rocir.make_layout %base_shape, %base_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
     // Tiler: 4x8
-    %tile_shape = cute.make_shape %c4, %c8 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c4 : (index, index) -> !cute.stride<2>
-    %tiler = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c4, %c8 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c4 : (index, index) -> !rocir.stride<2>
+    %tiler = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.logical_product
-    // CHECK: cute.composition
+    // CHECK: rocir.logical_product
+    // CHECK: rocir.composition
     // CHECK: arith.muli
-    %tiled = cute.logical_product %base, %tiler : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    %tiled = rocir.logical_product %base, %tiler : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %tiled : !cute.layout<4> -> index
+    %size = rocir.size %tiled : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -104,19 +104,19 @@ module {
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
     
-    %base_shape = cute.make_shape %c8, %c16 : (index, index) -> !cute.shape<2>
-    %base_stride = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
-    %base = cute.make_layout %base_shape, %base_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %base_shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<2>
+    %base_stride = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
+    %base = rocir.make_layout %base_shape, %base_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c2, %c4 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c2 : (index, index) -> !cute.stride<2>
-    %tiler = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c2, %c4 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c2 : (index, index) -> !rocir.stride<2>
+    %tiler = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.zipped_product
-    // CHECK: cute.logical_product
-    %zipped = cute.zipped_product %base, %tiler : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    // CHECK: rocir.zipped_product
+    // CHECK: rocir.logical_product
+    %zipped = rocir.zipped_product %base, %tiler : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %zipped : !cute.layout<4> -> index
+    %size = rocir.size %zipped : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -128,19 +128,19 @@ module {
     %c16 = arith.constant 16 : index
     %c1 = arith.constant 1 : index
     
-    %base_shape = cute.make_shape %c32, %c64 : (index, index) -> !cute.shape<2>
-    %base_stride = cute.make_stride %c1, %c32 : (index, index) -> !cute.stride<2>
-    %base = cute.make_layout %base_shape, %base_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %base_shape = rocir.make_shape %c32, %c64 : (index, index) -> !rocir.shape<2>
+    %base_stride = rocir.make_stride %c1, %c32 : (index, index) -> !rocir.stride<2>
+    %base = rocir.make_layout %base_shape, %base_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c8, %c16 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
-    %tiler = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
+    %tiler = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.tiled_product
-    // CHECK: cute.logical_product
-    %tiled = cute.tiled_product %base, %tiler : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    // CHECK: rocir.tiled_product
+    // CHECK: rocir.logical_product
+    %tiled = rocir.tiled_product %base, %tiler : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %tiled : !cute.layout<4> -> index
+    %size = rocir.size %tiled : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -152,19 +152,19 @@ module {
     %c2 = arith.constant 2 : index
     %c1 = arith.constant 1 : index
     
-    %base_shape = cute.make_shape %c16, %c8 : (index, index) -> !cute.shape<2>
-    %base_stride = cute.make_stride %c1, %c16 : (index, index) -> !cute.stride<2>
-    %base = cute.make_layout %base_shape, %base_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %base_shape = rocir.make_shape %c16, %c8 : (index, index) -> !rocir.shape<2>
+    %base_stride = rocir.make_stride %c1, %c16 : (index, index) -> !rocir.stride<2>
+    %base = rocir.make_layout %base_shape, %base_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c4, %c2 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c4 : (index, index) -> !cute.stride<2>
-    %tiler = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c4, %c2 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c4 : (index, index) -> !rocir.stride<2>
+    %tiler = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.flat_product
-    // CHECK: cute.logical_product
-    %flat = cute.flat_product %base, %tiler : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<2>
+    // CHECK: rocir.flat_product
+    // CHECK: rocir.logical_product
+    %flat = rocir.flat_product %base, %tiler : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<2>
     
-    %size = cute.size %flat : !cute.layout<2> -> index
+    %size = rocir.size %flat : !rocir.layout<2> -> index
     return %size : index
   }
   
@@ -175,19 +175,19 @@ module {
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
     
-    %base_shape = cute.make_shape %c32, %c8 : (index, index) -> !cute.shape<2>
-    %base_stride = cute.make_stride %c1, %c32 : (index, index) -> !cute.stride<2>
-    %base = cute.make_layout %base_shape, %base_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %base_shape = rocir.make_shape %c32, %c8 : (index, index) -> !rocir.shape<2>
+    %base_stride = rocir.make_stride %c1, %c32 : (index, index) -> !rocir.stride<2>
+    %base = rocir.make_layout %base_shape, %base_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c8, %c4 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
-    %tiler = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c8, %c4 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
+    %tiler = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.raked_product
-    // CHECK: cute.logical_product
-    %raked = cute.raked_product %base, %tiler : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    // CHECK: rocir.raked_product
+    // CHECK: rocir.logical_product
+    %raked = rocir.raked_product %base, %tiler : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %raked : !cute.layout<4> -> index
+    %size = rocir.size %raked : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -199,19 +199,19 @@ module {
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
     
-    %base_shape = cute.make_shape %c64, %c16 : (index, index) -> !cute.shape<2>
-    %base_stride = cute.make_stride %c1, %c64 : (index, index) -> !cute.stride<2>
-    %base = cute.make_layout %base_shape, %base_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %base_shape = rocir.make_shape %c64, %c16 : (index, index) -> !rocir.shape<2>
+    %base_stride = rocir.make_stride %c1, %c64 : (index, index) -> !rocir.stride<2>
+    %base = rocir.make_layout %base_shape, %base_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c8, %c4 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
-    %tiler = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c8, %c4 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
+    %tiler = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.blocked_product
-    // CHECK: cute.logical_product
-    %blocked = cute.blocked_product %base, %tiler : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    // CHECK: rocir.blocked_product
+    // CHECK: rocir.logical_product
+    %blocked = rocir.blocked_product %base, %tiler : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %blocked : !cute.layout<4> -> index
+    %size = rocir.size %blocked : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -228,20 +228,20 @@ module {
     %c1 = arith.constant 1 : index
     
     // Global layout: 128x256
-    %global_shape = cute.make_shape %c128, %c256 : (index, index) -> !cute.shape<2>
-    %global_stride = cute.make_stride %c1, %c128 : (index, index) -> !cute.stride<2>
-    %global = cute.make_layout %global_shape, %global_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %global_shape = rocir.make_shape %c128, %c256 : (index, index) -> !rocir.shape<2>
+    %global_stride = rocir.make_stride %c1, %c128 : (index, index) -> !rocir.stride<2>
+    %global = rocir.make_layout %global_shape, %global_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
     // Tile: 16x32
-    %tile_shape = cute.make_shape %c16, %c32 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c16 : (index, index) -> !cute.stride<2>
-    %tile = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c16, %c32 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c16 : (index, index) -> !rocir.stride<2>
+    %tile = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.logical_divide
-    // CHECK: cute.composition
-    %partitioned = cute.logical_divide %global, %tile : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    // CHECK: rocir.logical_divide
+    // CHECK: rocir.composition
+    %partitioned = rocir.logical_divide %global, %tile : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %partitioned : !cute.layout<4> -> index
+    %size = rocir.size %partitioned : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -253,19 +253,19 @@ module {
     %c16 = arith.constant 16 : index
     %c1 = arith.constant 1 : index
     
-    %global_shape = cute.make_shape %c64, %c128 : (index, index) -> !cute.shape<2>
-    %global_stride = cute.make_stride %c1, %c64 : (index, index) -> !cute.stride<2>
-    %global = cute.make_layout %global_shape, %global_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %global_shape = rocir.make_shape %c64, %c128 : (index, index) -> !rocir.shape<2>
+    %global_stride = rocir.make_stride %c1, %c64 : (index, index) -> !rocir.stride<2>
+    %global = rocir.make_layout %global_shape, %global_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c8, %c16 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
-    %tile = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
+    %tile = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.zipped_divide
-    // CHECK: cute.logical_divide
-    %zipped = cute.zipped_divide %global, %tile : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    // CHECK: rocir.zipped_divide
+    // CHECK: rocir.logical_divide
+    %zipped = rocir.zipped_divide %global, %tile : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %zipped : !cute.layout<4> -> index
+    %size = rocir.size %zipped : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -277,19 +277,19 @@ module {
     %c8 = arith.constant 8 : index
     %c1 = arith.constant 1 : index
     
-    %global_shape = cute.make_shape %c32, %c64 : (index, index) -> !cute.shape<2>
-    %global_stride = cute.make_stride %c1, %c32 : (index, index) -> !cute.stride<2>
-    %global = cute.make_layout %global_shape, %global_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %global_shape = rocir.make_shape %c32, %c64 : (index, index) -> !rocir.shape<2>
+    %global_stride = rocir.make_stride %c1, %c32 : (index, index) -> !rocir.stride<2>
+    %global = rocir.make_layout %global_shape, %global_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c4, %c8 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c4 : (index, index) -> !cute.stride<2>
-    %tile = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c4, %c8 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c4 : (index, index) -> !rocir.stride<2>
+    %tile = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.tiled_divide
-    // CHECK: cute.logical_divide
-    %tiled = cute.tiled_divide %global, %tile : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<4>
+    // CHECK: rocir.tiled_divide
+    // CHECK: rocir.logical_divide
+    %tiled = rocir.tiled_divide %global, %tile : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<4>
     
-    %size = cute.size %tiled : !cute.layout<4> -> index
+    %size = rocir.size %tiled : !rocir.layout<4> -> index
     return %size : index
   }
   
@@ -301,19 +301,19 @@ module {
     %c8 = arith.constant 8 : index
     %c1 = arith.constant 1 : index
     
-    %global_shape = cute.make_shape %c16, %c32 : (index, index) -> !cute.shape<2>
-    %global_stride = cute.make_stride %c1, %c16 : (index, index) -> !cute.stride<2>
-    %global = cute.make_layout %global_shape, %global_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %global_shape = rocir.make_shape %c16, %c32 : (index, index) -> !rocir.shape<2>
+    %global_stride = rocir.make_stride %c1, %c16 : (index, index) -> !rocir.stride<2>
+    %global = rocir.make_layout %global_shape, %global_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %tile_shape = cute.make_shape %c4, %c8 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c4 : (index, index) -> !cute.stride<2>
-    %tile = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c4, %c8 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c4 : (index, index) -> !rocir.stride<2>
+    %tile = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.flat_divide
-    // CHECK: cute.logical_divide
-    %flat = cute.flat_divide %global, %tile : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<2>
+    // CHECK: rocir.flat_divide
+    // CHECK: rocir.logical_divide
+    %flat = rocir.flat_divide %global, %tile : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<2>
     
-    %size = cute.size %flat : !cute.layout<2> -> index
+    %size = rocir.size %flat : !rocir.layout<2> -> index
     return %size : index
   }
   
@@ -331,20 +331,20 @@ module {
     %c1 = arith.constant 1 : index
     
     // Global tensor: 128x256
-    %global_shape = cute.make_shape %c128, %c256 : (index, index) -> !cute.shape<2>
-    %global_stride = cute.make_stride %c1, %c128 : (index, index) -> !cute.stride<2>
-    %global = cute.make_layout %global_shape, %global_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %global_shape = rocir.make_shape %c128, %c256 : (index, index) -> !rocir.shape<2>
+    %global_stride = rocir.make_stride %c1, %c128 : (index, index) -> !rocir.stride<2>
+    %global = rocir.make_layout %global_shape, %global_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
     // Thread tile: 8x16
-    %tile_shape = cute.make_shape %c8, %c16 : (index, index) -> !cute.shape<2>
-    %tile_stride = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
-    %tile = cute.make_layout %tile_shape, %tile_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %tile_shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<2>
+    %tile_stride = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
+    %tile = rocir.make_layout %tile_shape, %tile_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.local_partition
-    // CHECK: cute.logical_divide
-    %thread_data = cute.local_partition %global, %tile, %c0 : (!cute.layout<2>, !cute.layout<2>, index) -> !cute.layout<2>
+    // CHECK: rocir.local_partition
+    // CHECK: rocir.logical_divide
+    %thread_data = rocir.local_partition %global, %tile, %c0 : (!rocir.layout<2>, !rocir.layout<2>, index) -> !rocir.layout<2>
     
-    %size = cute.size %thread_data : !cute.layout<2> -> index
+    %size = rocir.size %thread_data : !rocir.layout<2> -> index
     return %size : index
   }
   
@@ -358,21 +358,21 @@ module {
     %c1 = arith.constant 1 : index
     
     // Global tensor: 128x256
-    %global_shape = cute.make_shape %c128, %c256 : (index, index) -> !cute.shape<2>
-    %global_stride = cute.make_stride %c1, %c128 : (index, index) -> !cute.stride<2>
-    %global = cute.make_layout %global_shape, %global_stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %global_shape = rocir.make_shape %c128, %c256 : (index, index) -> !rocir.shape<2>
+    %global_stride = rocir.make_stride %c1, %c128 : (index, index) -> !rocir.stride<2>
+    %global = rocir.make_layout %global_shape, %global_stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
     // CTA tile shape: 32x64
-    %cta_shape = cute.make_shape %c32, %c64 : (index, index) -> !cute.shape<2>
+    %cta_shape = rocir.make_shape %c32, %c64 : (index, index) -> !rocir.shape<2>
     
     // CTA coordinates: (0, 0)
-    %cta_coord = cute.make_shape %c0, %c0 : (index, index) -> !cute.shape<2>
+    %cta_coord = rocir.make_shape %c0, %c0 : (index, index) -> !rocir.shape<2>
     
-    // CHECK: cute.local_tile
-    // CHECK: cute.logical_divide
-    %cta_tile = cute.local_tile %global, %cta_shape, %cta_coord : (!cute.layout<2>, !cute.shape<2>, !cute.shape<2>) -> !cute.layout<2>
+    // CHECK: rocir.local_tile
+    // CHECK: rocir.logical_divide
+    %cta_tile = rocir.local_tile %global, %cta_shape, %cta_coord : (!rocir.layout<2>, !rocir.shape<2>, !rocir.shape<2>) -> !rocir.layout<2>
     
-    %size = cute.size %cta_tile : !cute.layout<2> -> index
+    %size = rocir.size %cta_tile : !rocir.layout<2> -> index
     return %size : index
   }
   
@@ -388,20 +388,20 @@ module {
     %c2 = arith.constant 2 : index
     %c1 = arith.constant 1 : index
     
-    %shape_a = cute.make_shape %c8, %c16 : (index, index) -> !cute.shape<2>
-    %stride_a = cute.make_stride %c1, %c8 : (index, index) -> !cute.stride<2>
-    %layout_a = cute.make_layout %shape_a, %stride_a : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %shape_a = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<2>
+    %stride_a = rocir.make_stride %c1, %c8 : (index, index) -> !rocir.stride<2>
+    %layout_a = rocir.make_layout %shape_a, %stride_a : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    %shape_b = cute.make_shape %c4, %c2 : (index, index) -> !cute.shape<2>
-    %stride_b = cute.make_stride %c2, %c1 : (index, index) -> !cute.stride<2>
-    %layout_b = cute.make_layout %shape_b, %stride_b : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %shape_b = rocir.make_shape %c4, %c2 : (index, index) -> !rocir.shape<2>
+    %stride_b = rocir.make_stride %c2, %c1 : (index, index) -> !rocir.stride<2>
+    %layout_b = rocir.make_layout %shape_b, %stride_b : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    // CHECK: cute.composition
+    // CHECK: rocir.composition
     // CHECK: arith.muli
     // CHECK: arith.addi
-    %composed = cute.composition %layout_a, %layout_b : (!cute.layout<2>, !cute.layout<2>) -> !cute.layout<2>
+    %composed = rocir.composition %layout_a, %layout_b : (!rocir.layout<2>, !rocir.layout<2>) -> !rocir.layout<2>
     
-    %size = cute.size %composed : !cute.layout<2> -> index
+    %size = rocir.size %composed : !rocir.layout<2> -> index
     return %size : index
   }
 }

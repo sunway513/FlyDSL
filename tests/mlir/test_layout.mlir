@@ -1,30 +1,30 @@
 // Test basic layout creation and manipulation
 
 module {
-  func.func @test_make_layout(%i8: !cute.int, %i16: !cute.int, %i1: !cute.int) -> !cute.layout<2> {
+  func.func @test_make_layout(%i8: !rocir.int, %i16: !rocir.int, %i1: !rocir.int) -> !rocir.layout<2> {
     // Create shape and stride
-    %shape = cute.make_shape %i8, %i16 : (!cute.int, !cute.int) -> !cute.shape<2>
-    %stride = cute.make_stride %i1, %i8 : (!cute.int, !cute.int) -> !cute.stride<2>
+    %shape = rocir.make_shape %i8, %i16 : (!rocir.int, !rocir.int) -> !rocir.shape<2>
+    %stride = rocir.make_stride %i1, %i8 : (!rocir.int, !rocir.int) -> !rocir.stride<2>
     
     // Create layout from shape and stride
-    %layout = cute.make_layout %shape, %stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    return %layout : !cute.layout<2>
+    return %layout : !rocir.layout<2>
   }
   
-  func.func @test_layout_size(%arg0: !cute.shape<2>) -> !cute.int {
+  func.func @test_layout_size(%arg0: !rocir.shape<2>) -> !rocir.int {
     // Query layout size
-    %size = cute.size %arg0 : !cute.shape<2> -> !cute.int
+    %size = rocir.size %arg0 : !rocir.shape<2> -> !rocir.int
     
-    return %size : !cute.int
+    return %size : !rocir.int
   }
   
-  func.func @test_coord_to_index(%layout: !cute.layout<2>, %i3: !cute.int, %i5: !cute.int) -> !cute.int {
-    %coord = cute.make_coord %i3, %i5 : (!cute.int, !cute.int) -> !cute.coord<2>
+  func.func @test_coord_to_index(%layout: !rocir.layout<2>, %i3: !rocir.int, %i5: !rocir.int) -> !rocir.int {
+    %coord = rocir.make_coord %i3, %i5 : (!rocir.int, !rocir.int) -> !rocir.coord<2>
     
     // Convert coordinate to linear index
-    %idx = cute.crd2idx %coord, %layout : (!cute.coord<2>, !cute.layout<2>) -> !cute.int
+    %idx = rocir.crd2idx %coord, %layout : (!rocir.coord<2>, !rocir.layout<2>) -> !rocir.int
     
-    return %idx : !cute.int
+    return %idx : !rocir.int
   }
 }

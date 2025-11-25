@@ -30,7 +30,7 @@ def test_logical_product(ctx, insert_point):
         tiler = rocir.make_layout(tile_shape, tile_stride)
         
         # Product creates 4D tiled layout
-        tiled = cute.logical_product(base, tiler)
+        tiled = rocir.logical_product(base, tiler)
         
         size = rocir.size(tiled)
         return size
@@ -60,7 +60,7 @@ def test_zipped_product(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c2)
         tiler = rocir.make_layout(tile_shape, tile_stride)
         
-        zipped = cute.zipped_product(base, tiler)
+        zipped = rocir.zipped_product(base, tiler)
         
         size = rocir.size(zipped)
         return size
@@ -90,7 +90,7 @@ def test_tiled_product(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c8)
         tiler = rocir.make_layout(tile_shape, tile_stride)
         
-        tiled = cute.tiled_product(base, tiler)
+        tiled = rocir.tiled_product(base, tiler)
         
         size = rocir.size(tiled)
         return size
@@ -120,7 +120,7 @@ def test_flat_product(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c4)
         tiler = rocir.make_layout(tile_shape, tile_stride)
         
-        flat = cute.flat_product(base, tiler)
+        flat = rocir.flat_product(base, tiler)
         
         size = rocir.size(flat)
         return size
@@ -149,7 +149,7 @@ def test_raked_product(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c8)
         tiler = rocir.make_layout(tile_shape, tile_stride)
         
-        raked = cute.raked_product(base, tiler)
+        raked = rocir.raked_product(base, tiler)
         
         size = rocir.size(raked)
         return size
@@ -179,7 +179,7 @@ def test_blocked_product(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c8)
         tiler = rocir.make_layout(tile_shape, tile_stride)
         
-        blocked = cute.blocked_product(base, tiler)
+        blocked = rocir.blocked_product(base, tiler)
         
         size = rocir.size(blocked)
         return size

@@ -90,7 +90,7 @@ def test_get_shape_stride(ctx, insert_point):
         extracted_stride = rocir.get_stride(layout)
         
         size1 = rocir.size(extracted_shape)
-        size2 = cute.cosize(layout)
+        size2 = rocir.cosize(layout)
         
         result = arith.addi(size1, size2)
         return result

@@ -29,7 +29,7 @@ def test_logical_divide(ctx, insert_point):
         tile = rocir.make_layout(tile_shape, tile_stride)
         
         # Divide creates partitioned layout
-        partitioned = cute.logical_divide(global_layout, tile)
+        partitioned = rocir.logical_divide(global_layout, tile)
         
         size = rocir.size(partitioned)
         return size
@@ -59,7 +59,7 @@ def test_zipped_divide(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c8)
         tile = rocir.make_layout(tile_shape, tile_stride)
         
-        zipped = cute.zipped_divide(global_layout, tile)
+        zipped = rocir.zipped_divide(global_layout, tile)
         
         size = rocir.size(zipped)
         return size
@@ -89,7 +89,7 @@ def test_tiled_divide(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c4)
         tile = rocir.make_layout(tile_shape, tile_stride)
         
-        tiled = cute.tiled_divide(global_layout, tile)
+        tiled = rocir.tiled_divide(global_layout, tile)
         
         size = rocir.size(tiled)
         return size
@@ -119,7 +119,7 @@ def test_flat_divide(ctx, insert_point):
         tile_stride = rocir.make_stride(c1, c4)
         tile = rocir.make_layout(tile_shape, tile_stride)
         
-        flat = cute.flat_divide(global_layout, tile)
+        flat = rocir.flat_divide(global_layout, tile)
         
         size = rocir.size(flat)
         return size
