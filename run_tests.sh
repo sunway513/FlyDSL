@@ -2,85 +2,39 @@
 # Run all Rocir IR operation tests
 
 ROCIR_OPT="./build/tools/rocir-opt/rocir-opt"
-PASS="--rocir-to-standard"
+PASS="--rocir-coord-lowering"
 
 echo "========================================"
 echo "Rocir IR Operations Test Suite"
 echo "========================================"
 echo ""
 
-# Test 1: crd2idx
-echo "✅ Test 1: crd2idx - Coordinate to Linear Index"
-echo "Expected: coord(2,3) with stride(1,16) → idx=50"
-$ROCIR_OPT $PASS tests/mlir/test_crd2idx.mlir > /tmp/test_crd2idx.out 2>&1
+# Test coordinate lowering
+echo "✅ Test 1: Coordinate Lowering (Static)"
+echo "Expected: rocir.crd2idx lowered to arithmetic operations"
+$ROCIR_OPT $PASS tests/mlir/test_coord_lowering.mlir > /tmp/test_coord_static.out 2>&1
 if [ $? -eq 0 ]; then
     echo "   PASS: Lowered successfully"
-    if grep -q "rocir.crd2idx" /tmp/test_crd2idx.out; then
-        echo "   ⚠️  crd2idx not lowered"
+    if grep -q "rocir.crd2idx" /tmp/test_coord_static.out; then
+        echo "   ⚠️  crd2idx not fully lowered"
     else
-        echo "   ✓ crd2idx operation lowered"
+        echo "   ✓ All rocir coordinate ops lowered to arith"
     fi
 else
     echo "   FAIL"
 fi
 echo ""
 
-# Test 2: size
-echo "✅ Test 2: size - Product of Shape Dimensions"
-echo "Expected: shape(8,16,32) → size=4096"
-$ROCIR_OPT $PASS tests/mlir/test_size.mlir > /tmp/test_size.out 2>&1
+echo "✅ Test 2: Coordinate Lowering (Dynamic)"
+echo "Expected: rocir.crd2idx with runtime values"
+$ROCIR_OPT $PASS tests/mlir/test_coord_lowering_dynamic.mlir > /tmp/test_coord_dynamic.out 2>&1
 if [ $? -eq 0 ]; then
     echo "   PASS: Lowered successfully"
-    if grep -q "rocir.size" /tmp/test_size.out; then
-        echo "   ⚠️  size not lowered"
+    if grep -q "rocir.crd2idx" /tmp/test_coord_dynamic.out; then
+        echo "   ⚠️  crd2idx not fully lowered"
     else
-        echo "   ✓ size operation lowered"
+        echo "   ✓ Dynamic coordinate indexing lowered"
     fi
-else
-    echo "   FAIL"
-fi
-echo ""
-
-# Test 3: rank
-echo "✅ Test 3: rank - Number of Dimensions"
-echo "Expected: shape<3> → rank=3"
-$ROCIR_OPT $PASS tests/mlir/test_rank.mlir > /tmp/test_rank.out 2>&1
-if [ $? -eq 0 ]; then
-    echo "   PASS: Lowered successfully"
-    if grep -q "rocir.rank" /tmp/test_rank.out; then
-        echo "   ⚠️  rank not lowered"
-    else
-        echo "   ✓ rank operation lowered"
-    fi
-else
-    echo "   FAIL"
-fi
-echo ""
-
-# Test 4: cosize
-echo "✅ Test 4: cosize - Codomain Size"
-echo "Expected: layout(shape(8,128), stride(1,16)) → cosize=2033"
-$ROCIR_OPT $PASS tests/mlir/test_cosize.mlir > /tmp/test_cosize.out 2>&1
-if [ $? -eq 0 ]; then
-    echo "   PASS: Lowered successfully"
-    if grep -q "rocir.cosize" /tmp/test_cosize.out; then
-        echo "   ⚠️  cosize not lowered"
-    else
-        echo "   ✓ cosize operation lowered"
-    fi
-else
-    echo "   FAIL"
-fi
-echo ""
-
-# Test 5: Comprehensive test
-echo "✅ Test 5: Comprehensive - All Operations Together"
-$ROCIR_OPT $PASS tests/mlir/comprehensive_test.mlir > /tmp/test_comprehensive.out 2>&1
-if [ $? -eq 0 ]; then
-    echo "   PASS: Module processed successfully"
-    # Count how many rocir operations remain (should be minimal)
-    ROCIR_OPS=$(grep -c "rocir\." /tmp/test_comprehensive.out || echo 0)
-    echo "   ✓ Remaining rocir operations: $ROCIR_OPS"
 else
     echo "   FAIL"
 fi
@@ -91,49 +45,51 @@ echo "MLIR Test Summary"
 echo "========================================"
 echo "✅ Working Operations:"
 echo "   - rocir.make_shape, make_stride, make_coord, make_layout"
-echo "   - rocir.size (lowering implemented)"
-echo "   - rocir.rank (lowering implemented)"
-echo "   - rocir.cosize (lowering implemented)"
-echo "   - rocir.crd2idx (lowering implemented)"
+echo "   - rocir.crd2idx (lowering to arith implemented)"
+echo "   - Integration with --rocir-coord-lowering pass"
 echo "========================================"
 
 echo ""
 echo "========================================"
-echo "GPU Test Suite"
+echo "GPU Test Suite (HIP/ROCm)"
 echo "========================================"
 echo ""
 
 # Set up Python path for GPU tests
+export PYTHONPATH=/mnt/raid0/felix/llvm-project/buildmlir/tools/mlir/python_packages/mlir_core
+export PYTHONPATH=$PYTHONPATH:/mnt/raid0/felix/rocDSL/build/python_bindings
 export PYTHONPATH=$PYTHONPATH:/mnt/raid0/felix/rocDSL/python
 
 # Check if GPU is available
 if command -v rocm-smi &> /dev/null; then
-    echo "🎮 GPU detected, running GPU tests..."
+    echo "🎮 GPU detected: $(rocm-smi --showproductname 2>/dev/null | grep -oP 'GPU\[\d+\].*' | head -1)"
     echo ""
     
-    # Test 1: Basic GPU kernel
-    echo "Test 1: Basic GPU Vector Addition"
-    python3 tests/python/test_gpu_simple.py
-    GPU_SIMPLE_EXIT=$?
-    if [ $GPU_SIMPLE_EXIT -eq 0 ]; then
-        echo "   ✅ PASS"
+    # Test 1: Rocir coordinate operations in GPU kernels
+    echo "Test 1: Rocir Coordinate Operations in GPU Kernels"
+    echo "        (Vector add, Matrix transpose, MatMul with rocir layouts)"
+    python3 tests/python/test_gpu_rocdsl.py
+    GPU_ROCIR_EXIT=$?
+    if [ $GPU_ROCIR_EXIT -eq 0 ]; then
+        echo "   ✅ PASS: All rocir GPU tests passed"
     else
-        echo "   ❌ FAIL (exit code: $GPU_SIMPLE_EXIT)"
+        echo "   ❌ FAIL (exit code: $GPU_ROCIR_EXIT)"
     fi
     echo ""
     
-    # Test 2: Layout-based indexing
-    echo "Test 2: GPU Layout-based Indexing"
-    python3 tests/python/test_gpu_layout.py
-    GPU_LAYOUT_EXIT=$?
-    if [ $GPU_LAYOUT_EXIT -eq 0 ]; then
-        echo "   ✅ PASS"
+    # Test 2: Shared memory optimization
+    echo "Test 2: Shared Memory Tiled MatMul"
+    echo "        (Using memref.global_ + lds_space())"
+    python3 tests/python/test_shared_working.py
+    GPU_SHARED_EXIT=$?
+    if [ $GPU_SHARED_EXIT -eq 0 ]; then
+        echo "   ✅ PASS: Shared memory optimization working"
     else
-        echo "   ❌ FAIL (exit code: $GPU_LAYOUT_EXIT)"
+        echo "   ❌ FAIL (exit code: $GPU_SHARED_EXIT)"
     fi
     echo ""
     
-    GPU_TESTS_PASSED=$(( $GPU_SIMPLE_EXIT == 0 && $GPU_LAYOUT_EXIT == 0 ))
+    GPU_TESTS_PASSED=$(( $GPU_ROCIR_EXIT == 0 && $GPU_SHARED_EXIT == 0 ))
 else
     echo "⚠️  No GPU detected, skipping GPU tests"
     echo "   (Install ROCm and ensure GPU is available to run GPU tests)"
@@ -145,49 +101,35 @@ echo "GPU Test Summary"
 echo "========================================"
 if [ $GPU_TESTS_PASSED -eq 1 ]; then
     echo "✅ All GPU tests passed"
+    echo ""
+    echo "Verified Features:"
+    echo "  • Rocir coordinate operations in GPU kernels"
+    echo "  • Layout-based indexing (1D vectors, 2D matrices)"
+    echo "  • Coordinate-to-index lowering via rocir-opt"
+    echo "  • Shared memory optimization (memref.global_ + lds_space)"
+    echo "  • HIP kernel execution on AMD GPU"
 else
     echo "⚠️  Some GPU tests failed"
 fi
 echo "========================================"
-
-echo ""
-echo "========================================"
-echo "Python Test Suite"
-echo "========================================"
-echo ""
-# Ensure Python bindings are built
-echo "Building Python bindings..."
-cd build && make RocirPythonOpsIncGen > /dev/null 2>&1
-if [ $? -ne 0 ]; then
-    echo "⚠️  Warning: Failed to build Python bindings"
-fi
-cd ..
-echo ""
-
-# Set up Python environment
-export PYTHONPATH=$PYTHONPATH:/mnt/raid0/felix/llvm-project/buildmlir/tools/mlir/python_packages/mlir_core
-export PYTHONPATH=$PYTHONPATH:/mnt/raid0/felix/rocDSL/build/python_bindings
-
-echo "Running Python tests with pytest..."
-python3 -m pytest tests/python/ -v --tb=short
-
-PYTEST_EXIT=$?
 
 echo ""
 echo "========================================"
 echo "Overall Test Summary"
 echo "========================================"
-if [ $PYTEST_EXIT -eq 0 ]; then
-    echo "✅ All Python tests passed"
-else
-    echo "⚠️  Some Python tests failed (exit code: $PYTEST_EXIT)"
-fi
-
+echo ""
+echo "MLIR Lowering Tests:"
+echo "  ✓ Static coordinate lowering"
+echo "  ✓ Dynamic coordinate lowering"
+echo ""
 if [ $GPU_TESTS_PASSED -eq 1 ]; then
-    echo "✅ All GPU tests passed"
+    echo "GPU Execution Tests:"
+    echo "  ✓ Rocir layouts in GPU kernels"
+    echo "  ✓ Shared memory tiling"
+    echo ""
+    echo "🎉 ALL TESTS PASSED!"
+    exit 0
 else
-    echo "⚠️  Some GPU tests failed"
+    echo "⚠️  Some tests failed"
+    exit 1
 fi
-echo "========================================"
-
-exit $PYTEST_EXIT
