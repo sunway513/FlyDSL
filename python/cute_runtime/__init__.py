@@ -5,7 +5,7 @@ CuTe Runtime Python API
 High-level Python interface for compiling and executing CuTe kernels.
 
 Example usage:
-    >>> import cute_runtime as cute
+    >>> import rocir_runtime as cute
     >>> import numpy as np
     
     >>> # Create GEMM executor

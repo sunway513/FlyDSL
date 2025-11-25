@@ -6,10 +6,10 @@ sys.path.insert(0, '/mnt/raid0/felix/rocDSL/python')
 
 from mlir.ir import Context, Location, Module, InsertionPoint, F16Type, IndexType
 from mlir.dialects import func
-from rocdsl.dialects.ext import arith, cute
+from rocdsl.dialects.ext import arith, rocir
 from rocdsl.passes import Pipeline, run_pipeline
 
-def test_cute_layout_hierarchy():
+def test_rocir_layout_hierarchy():
     """Test CuTe: make_layout for I/O, local_tile for register slices."""
     print("=" * 70)
     print("GPU GEMM: CuTe Layout Hierarchy")
@@ -33,29 +33,29 @@ def test_cute_layout_hierarchy():
                 
                 print("\n1. make_layout() - Describe Input/Output Matrices")
                 # Global Matrix A: 2048x2048, column-major
-                shape_a = cute.make_shape(c2048, c2048)
-                stride_a = cute.make_stride(c1, c2048)
-                layout_a = cute.make_layout(shape_a, stride_a)
+                shape_a = rocir.make_shape(c2048, c2048)
+                stride_a = rocir.make_stride(c1, c2048)
+                layout_a = rocir.make_layout(shape_a, stride_a)
                 print("   ✓ layout_a_global = make_layout((2048,2048), (1,2048))")
                 
                 # Global Matrix C: 2048x2048, column-major
-                shape_c = cute.make_shape(c2048, c2048)
-                stride_c = cute.make_stride(c1, c2048)
-                layout_c = cute.make_layout(shape_c, stride_c)
+                shape_c = rocir.make_shape(c2048, c2048)
+                stride_c = rocir.make_stride(c1, c2048)
+                layout_c = rocir.make_layout(shape_c, stride_c)
                 print("   ✓ layout_c_global = make_layout((2048,2048), (1,2048))")
                 
                 print("\n2. local_tile() - Extract CTA Tile (128x16)")
                 # CTA tiling
-                cta_tiler = cute.make_shape(c128, c16)
-                cta_coord = cute.make_shape(c0, c0)
-                layout_cta = cute.local_tile(layout_a, cta_tiler, cta_coord)
+                cta_tiler = rocir.make_shape(c128, c16)
+                cta_coord = rocir.make_shape(c0, c0)
+                layout_cta = rocir.local_tile(layout_a, cta_tiler, cta_coord)
                 print("   ✓ layout_cta = local_tile(global, (128,16), (0,0))")
                 
                 print("\n3. local_tile() - Extract Thread Register Slice (16x16)")
                 # Thread register slice
-                thread_tiler = cute.make_shape(c16, c16)
-                thread_coord = cute.make_shape(c0, c0)
-                layout_thread = cute.local_tile(layout_cta, thread_tiler, thread_coord)
+                thread_tiler = rocir.make_shape(c16, c16)
+                thread_coord = rocir.make_shape(c0, c0)
+                layout_thread = rocir.local_tile(layout_cta, thread_tiler, thread_coord)
                 print("   ✓ layout_thread = local_tile(cta, (16,16), (0,0))")
                 
                 # Compute tile counts
@@ -71,21 +71,21 @@ def test_cute_layout_hierarchy():
     
     # Verify CuTe ops
     ir_str = str(module)
-    assert "cute.make_layout" in ir_str, "Missing make_layout"
-    assert "cute.local_tile" in ir_str, "Missing local_tile"
-    assert "cute.make_shape" in ir_str, "Missing make_shape"
+    assert "rocir.make_layout" in ir_str, "Missing make_layout"
+    assert "rocir.local_tile" in ir_str, "Missing local_tile"
+    assert "rocir.make_shape" in ir_str, "Missing make_shape"
     
     print("\n✅ Verification passed!")
-    print("   ✓ cute.make_layout - describes input/output")
-    print("   ✓ cute.local_tile - extracts register slices")
+    print("   ✓ rocir.make_layout - describes input/output")
+    print("   ✓ rocir.local_tile - extracts register slices")
     
-    # Test cute-to-standard lowering
+    # Test rocir-to-standard lowering
     print("\n" + "-" * 70)
-    print("Testing cute-to-standard lowering pass...")
+    print("Testing rocir-to-standard lowering pass...")
     print("-" * 70)
     
     try:
-        pipeline = Pipeline().cute_to_standard()
+        pipeline = Pipeline().rocir_to_standard()
         print(f"Pipeline: {pipeline}")
         lowered = run_pipeline(module, pipeline)
         
@@ -94,10 +94,10 @@ def test_cute_layout_hierarchy():
         
         # Check what was lowered
         lowered_str = str(lowered)
-        if "cute.make_shape" not in lowered_str:
-            print("\n✅ cute.make_shape was completely lowered!")
+        if "rocir.make_shape" not in lowered_str:
+            print("\n✅ rocir.make_shape was completely lowered!")
         else:
-            print("\n⚠️  cute.make_shape remains (partial lowering)")
+            print("\n⚠️  rocir.make_shape remains (partial lowering)")
             
         if "arith.muli" in lowered_str or "arith.addi" in lowered_str:
             print("✅ Arithmetic operations generated")
@@ -115,11 +115,11 @@ def test_cute_layout_hierarchy():
 
 def main():
     print("\n" + "=" * 70)
-    print("CuTe Layout Test: make_layout + local_tile + cute-to-standard")
+    print("CuTe Layout Test: make_layout + local_tile + rocir-to-standard")
     print("=" * 70)
     
     try:
-        test_cute_layout_hierarchy()
+        test_rocir_layout_hierarchy()
         
         print("\n" + "=" * 70)
         print("✅ All tests passed!")
@@ -128,7 +128,7 @@ def main():
         print("  • make_layout() used for global I/O description")
         print("  • local_tile() used for register slice extraction")
         print("  • Hierarchical tiling: global → CTA → thread")
-        print("  • cute-to-standard lowering tested")
+        print("  • rocir-to-standard lowering tested")
         return 0
         
     except Exception as e:

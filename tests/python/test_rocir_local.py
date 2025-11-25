@@ -4,7 +4,7 @@ import pytest
 from mlir.ir import IndexType
 from mlir.dialects import func, arith
 
-import rocdsl.dialects.ext.cute as cute
+import rocdsl.dialects.ext.rocir as rocir
 
 
 def test_local_partition(ctx, insert_point):
@@ -20,19 +20,19 @@ def test_local_partition(ctx, insert_point):
         c0 = arith.constant(IndexType.get(), 0)
         c1 = arith.constant(IndexType.get(), 1)
         
-        global_shape = cute.make_shape(c128, c256)
-        global_stride = cute.make_stride(c1, c128)
-        global_layout = cute.make_layout(global_shape, global_stride)
+        global_shape = rocir.make_shape(c128, c256)
+        global_stride = rocir.make_stride(c1, c128)
+        global_layout = rocir.make_layout(global_shape, global_stride)
         
         # Thread tile: 8x16
-        tile_shape = cute.make_shape(c8, c16)
-        tile_stride = cute.make_stride(c1, c8)
-        tile = cute.make_layout(tile_shape, tile_stride)
+        tile_shape = rocir.make_shape(c8, c16)
+        tile_stride = rocir.make_stride(c1, c8)
+        tile = rocir.make_layout(tile_shape, tile_stride)
         
         # Partition for thread 0
-        thread_data = cute.local_partition(global_layout, tile, c0)
+        thread_data = rocir.local_partition(global_layout, tile, c0)
         
-        size = cute.size(thread_data)
+        size = rocir.size(thread_data)
         return size
     
     ctx.module.operation.verify()
@@ -54,20 +54,20 @@ def test_local_tile(ctx, insert_point):
         c0 = arith.constant(IndexType.get(), 0)
         c1 = arith.constant(IndexType.get(), 1)
         
-        global_shape = cute.make_shape(c128, c256)
-        global_stride = cute.make_stride(c1, c128)
-        global_layout = cute.make_layout(global_shape, global_stride)
+        global_shape = rocir.make_shape(c128, c256)
+        global_stride = rocir.make_stride(c1, c128)
+        global_layout = rocir.make_layout(global_shape, global_stride)
         
         # CTA tile shape: 32x64
-        cta_shape = cute.make_shape(c32, c64)
+        cta_shape = rocir.make_shape(c32, c64)
         
         # CTA coordinates: (0, 0)
-        cta_coord = cute.make_shape(c0, c0)
+        cta_coord = rocir.make_shape(c0, c0)
         
         # Extract CTA tile
-        cta_tile = cute.local_tile(global_layout, cta_shape, cta_coord)
+        cta_tile = rocir.local_tile(global_layout, cta_shape, cta_coord)
         
-        size = cute.size(cta_tile)
+        size = rocir.size(cta_tile)
         return size
     
     ctx.module.operation.verify()
@@ -87,18 +87,18 @@ def test_composition(ctx, insert_point):
         c2 = arith.constant(IndexType.get(), 2)
         c1 = arith.constant(IndexType.get(), 1)
         
-        shape_a = cute.make_shape(c8, c16)
-        stride_a = cute.make_stride(c1, c8)
-        layout_a = cute.make_layout(shape_a, stride_a)
+        shape_a = rocir.make_shape(c8, c16)
+        stride_a = rocir.make_stride(c1, c8)
+        layout_a = rocir.make_layout(shape_a, stride_a)
         
-        shape_b = cute.make_shape(c4, c2)
-        stride_b = cute.make_stride(c2, c1)
-        layout_b = cute.make_layout(shape_b, stride_b)
+        shape_b = rocir.make_shape(c4, c2)
+        stride_b = rocir.make_stride(c2, c1)
+        layout_b = rocir.make_layout(shape_b, stride_b)
         
         # Compose layouts
         composed = cute.composition(layout_a, layout_b)
         
-        size = cute.size(composed)
+        size = rocir.size(composed)
         return size
     
     ctx.module.operation.verify()
@@ -123,23 +123,23 @@ def test_thread_block_hierarchy(ctx, insert_point):
         c1 = arith.constant(IndexType.get(), 1)
         
         # Global layout
-        global_shape = cute.make_shape(c256, c512)
-        global_stride = cute.make_stride(c1, c256)
-        global_layout = cute.make_layout(global_shape, global_stride)
+        global_shape = rocir.make_shape(c256, c512)
+        global_stride = rocir.make_stride(c1, c256)
+        global_layout = rocir.make_layout(global_shape, global_stride)
         
         # Block tile: 64x128
-        block_shape = cute.make_shape(c64, c128)
-        block_coord = cute.make_shape(c0, c0)
-        block_tile = cute.local_tile(global_layout, block_shape, block_coord)
+        block_shape = rocir.make_shape(c64, c128)
+        block_coord = rocir.make_shape(c0, c0)
+        block_tile = rocir.local_tile(global_layout, block_shape, block_coord)
         
         # Thread tile within block: 8x16
-        thread_shape = cute.make_shape(c8, c16)
-        thread_stride = cute.make_stride(c1, c8)
-        thread_layout = cute.make_layout(thread_shape, thread_stride)
+        thread_shape = rocir.make_shape(c8, c16)
+        thread_stride = rocir.make_stride(c1, c8)
+        thread_layout = rocir.make_layout(thread_shape, thread_stride)
         
-        thread_data = cute.local_partition(block_tile, thread_layout, c0)
+        thread_data = rocir.local_partition(block_tile, thread_layout, c0)
         
-        size = cute.size(thread_data)
+        size = rocir.size(thread_data)
         return size
     
     ctx.module.operation.verify()

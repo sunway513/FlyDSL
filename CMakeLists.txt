@@ -34,7 +34,7 @@ if(MLIR_FOUND)
     add_definitions(${LLVM_DEFINITIONS})
     
     # TableGen targets
-    add_subdirectory(include/cute)
+    add_subdirectory(include/rocir)
     
     message(STATUS "TableGen targets configured")
 else()
@@ -70,7 +70,7 @@ endif()
 
 
 # Installation
-install(DIRECTORY include/cute
+install(DIRECTORY include/rocir
     DESTINATION include
     FILES_MATCHING PATTERN "*.td"
 )

@@ -19,10 +19,10 @@ def test_make_shape(ctx):
             c16 = arith.constant(16, index=True)
             
             # Create 2D shape
-            shape = cute.make_shape(c8, c16)
+            shape = rocir.make_shape(c8, c16)
             
             # Verify rank
-            rank = cute.rank(shape)
+            rank = rocir.rank(shape)
             return rank
     
     # Verify the module
@@ -48,11 +48,11 @@ def test_make_layout(ctx):
             c1 = arith.constant(1, index=True)
             
             # Create shape and stride
-            shape = cute.make_shape(c8, c16)
-            stride = cute.make_stride(c1, c8)
+            shape = rocir.make_shape(c8, c16)
+            stride = rocir.make_stride(c1, c8)
             
             # Create layout (column-major 8x16)
-            layout = cute.make_layout(shape, stride)
+            layout = rocir.make_layout(shape, stride)
             
             return layout
     
@@ -73,10 +73,10 @@ def test_size_operation(ctx):
             c8 = arith.constant(8, index=True)
             
             # Create shape
-            shape = cute.make_shape(c4, c8)
+            shape = rocir.make_shape(c4, c8)
             
             # Compute size (should be 32) - Pythonic way!
-            total_size = cute.size(shape)
+            total_size = rocir.size(shape)
             
             # Could also verify: 4 * 8 = 32
             expected = c4 * c8  # Using * operator instead of MulIOp!
@@ -100,16 +100,16 @@ def test_get_shape_stride(ctx):
             c16 = arith.constant(16, index=True)
             c1 = arith.constant(1, index=True)
             
-            shape = cute.make_shape(c8, c16)
-            stride = cute.make_stride(c1, c8)
-            layout = cute.make_layout(shape, stride)
+            shape = rocir.make_shape(c8, c16)
+            stride = rocir.make_stride(c1, c8)
+            layout = rocir.make_layout(shape, stride)
             
             # Extract shape and stride
-            extracted_shape = cute.get_shape(layout)
-            extracted_stride = cute.get_stride(layout)
+            extracted_shape = rocir.get_shape(layout)
+            extracted_stride = rocir.get_stride(layout)
             
             # Compute size from extracted shape
-            size_val = cute.size(extracted_shape)
+            size_val = rocir.size(extracted_shape)
             
             return size_val
     
@@ -130,10 +130,10 @@ def test_rank_operation(ctx):
             c4 = arith.constant(4, index=True)
             
             # Create 3D shape
-            shape = cute.make_shape(c2, c3, c4)
+            shape = rocir.make_shape(c2, c3, c4)
             
             # Get rank (should be 3)
-            rank_val = cute.rank(shape)
+            rank_val = rocir.rank(shape)
             
             return rank_val
     
@@ -153,9 +153,9 @@ def test_cosize_operation(ctx):
             c16 = arith.constant(16, index=True)
             c1 = arith.constant(1, index=True)
             
-            shape = cute.make_shape(c8, c16)
-            stride = cute.make_stride(c1, c8)
-            layout = cute.make_layout(shape, stride)
+            shape = rocir.make_shape(c8, c16)
+            stride = rocir.make_stride(c1, c8)
+            layout = rocir.make_layout(shape, stride)
             
             # Compute cosize
             cosize_val = cute.cosize(layout)
@@ -181,14 +181,14 @@ def test_composition(ctx):
             c1 = arith.constant(1, index=True)
             
             # First layout
-            shape_a = cute.make_shape(c8, c16)
-            stride_a = cute.make_stride(c1, c8)
-            layout_a = cute.make_layout(shape_a, stride_a)
+            shape_a = rocir.make_shape(c8, c16)
+            stride_a = rocir.make_stride(c1, c8)
+            layout_a = rocir.make_layout(shape_a, stride_a)
             
             # Second layout
-            shape_b = cute.make_shape(c4, c2)
-            stride_b = cute.make_stride(c2, c1)
-            layout_b = cute.make_layout(shape_b, stride_b)
+            shape_b = rocir.make_shape(c4, c2)
+            stride_b = rocir.make_stride(c2, c1)
+            layout_b = rocir.make_layout(shape_b, stride_b)
             
             # Compose
             composed = cute.composition(layout_a, layout_b)

@@ -1,13 +1,13 @@
-add_mlir_library(CuteTransforms
-  CuteToStandard.cpp
+add_mlir_library(RocirTransforms
+  RocirToStandard.cpp
   
   PARTIAL_SOURCES_INTENDED
   
   DEPENDS
-  CutePassesIncGen
+  RocirPassesIncGen
   
   LINK_LIBS
-  CuteDialect
+  RocirDialect
   MLIRIR
   MLIRPass
   MLIRTransforms

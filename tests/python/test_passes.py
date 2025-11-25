@@ -6,7 +6,7 @@ from mlir.ir import Context, Module
 try:
     from rocdsl.passes import (
         Pipeline, run_pipeline, RocDSLCompilerError,
-        lower_cute_to_standard
+        lower_rocir_to_standard
     )
 except ImportError:
     pytest.skip("RocDSL passes not available", allow_module_level=True)
@@ -15,14 +15,14 @@ except ImportError:
 def test_pipeline_construction():
     """Test Pipeline fluent API construction."""
     pipeline = (Pipeline()
-                .cute_to_standard()
+                .rocir_to_standard()
                 .Func(Pipeline().canonicalize().cse())
                 .symbol_dce())
     
     pipeline_str = str(pipeline)
     
     # Should contain all passes
-    assert "cute-to-standard" in pipeline_str
+    assert "rocir-to-standard" in pipeline_str
     assert "func.func(canonicalize,cse)" in pipeline_str
     assert "symbol-dce" in pipeline_str
     assert pipeline_str.startswith("builtin.module(")
@@ -38,19 +38,19 @@ def test_pipeline_add_pass_with_options():
     pipeline_str = str(pipeline)
     
     # Should format options correctly
-    assert "cute-nvgpu-to-nvgpu" in pipeline_str
+    assert "rocir-nvgpu-to-nvgpu" in pipeline_str
     assert "target-arch=sm_90" in pipeline_str
     assert "enable-tma=1" in pipeline_str
 
 
 def test_pipeline_composition():
     """Test pipeline addition operators."""
-    p1 = Pipeline().cute_to_standard()
+    p1 = Pipeline().rocir_to_standard()
     p2 = Pipeline().canonicalize()
     
     # Test += operator
     p1 += p2
-    assert "cute-to-standard" in str(p1)
+    assert "rocir-to-standard" in str(p1)
     assert "canonicalize" in str(p1)
     
     # Test + operator
@@ -73,22 +73,22 @@ def test_nested_pipelines():
     pipeline_str = str(pipeline)
     
     assert "func.func(canonicalize,cse)" in pipeline_str
-    assert "gpu.module(cute-memory-coalescing)" in pipeline_str
+    assert "gpu.module(rocir-memory-coalescing)" in pipeline_str
 
 
 def test_pipeline_recipes():
     """Test pre-built pipeline recipes."""
     # CuTe to Standard recipe
-    p1 = Pipeline().lower_cute_to_standard()
+    p1 = Pipeline().lower_rocir_to_standard()
     s1 = str(p1)
-    assert "cute-to-standard" in s1
+    assert "rocir-to-standard" in s1
     assert "canonicalize" in s1
     
     # Optimization recipe
     p2 = Pipeline().optimize_cute_layouts()
     s2 = str(p2)
-    assert "cute-layout-fusion" in s2
-    assert "cute-vectorization" in s2
+    assert "rocir-layout-fusion" in s2
+    assert "rocir-vectorization" in s2
     
     # LLVM lowering recipe  
     p3 = Pipeline().lower_to_llvm()
@@ -143,12 +143,12 @@ def test_run_pipeline_with_string():
         assert isinstance(result, Module)
 
 
-def test_cute_pass_methods():
+def test_rocir_pass_methods():
     """Test all CuTe-specific pass methods are callable."""
     pipeline = Pipeline()
     
     # Lowering passes
-    pipeline.cute_to_standard()
+    pipeline.rocir_to_standard()
     pipeline.cute_layout_canonicalize()
     pipeline.cute_tensor_partition()
     pipeline.cute_nvgpu_to_nvgpu()
@@ -202,7 +202,7 @@ def test_async_pipeline_options():
     
     pipeline_str = str(pipeline)
     
-    assert "cute-async-pipeline" in pipeline_str
+    assert "rocir-async-pipeline" in pipeline_str
     assert "pipeline-depth=4" in pipeline_str
     assert "warp-specialization=1" in pipeline_str
 
@@ -215,7 +215,7 @@ def test_warp_specialization_options():
     
     pipeline_str = str(pipeline)
     
-    assert "cute-warp-specialization" in pipeline_str
+    assert "rocir-warp-specialization" in pipeline_str
     assert "num-producer-warps=2" in pipeline_str
 
 
@@ -225,7 +225,7 @@ def test_layout_analysis_options():
     
     pipeline_str = str(pipeline)
     
-    assert "cute-layout-analysis" in pipeline_str
+    assert "rocir-layout-analysis" in pipeline_str
     assert "print-analysis=1" in pipeline_str
 
 
@@ -234,7 +234,7 @@ def test_complex_pipeline():
     pipeline = (
         Pipeline()
         # Initial CuTe lowering
-        .cute_to_standard()
+        .rocir_to_standard()
         
         # Function-level optimizations
         .Func(Pipeline()
@@ -262,7 +262,7 @@ def test_complex_pipeline():
     pipeline_str = str(pipeline)
     
     # Verify all stages present
-    assert "cute-to-standard" in pipeline_str
+    assert "rocir-to-standard" in pipeline_str
     assert "func.func(" in pipeline_str
     assert "gpu.module(" in pipeline_str
     assert "convert-scf-to-cf" in pipeline_str
@@ -279,10 +279,10 @@ def test_nvgpu_lowering_pipeline():
     pipeline_str = str(pipeline)
     
     assert "gpu.module(" in pipeline_str
-    assert "cute-nvgpu-to-nvgpu" in pipeline_str
+    assert "rocir-nvgpu-to-nvgpu" in pipeline_str
     assert "target-arch=sm_80" in pipeline_str
-    assert "cute-nvgpu-mma-lowering" in pipeline_str
-    assert "cute-async-pipeline" in pipeline_str
+    assert "rocir-nvgpu-mma-lowering" in pipeline_str
+    assert "rocir-async-pipeline" in pipeline_str
 
 
 def test_materialize_with_without_module():

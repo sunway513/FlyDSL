@@ -12,7 +12,7 @@ tests/
 └── python/            # Python binding tests
     ├── test_passes.py          # Pass management (16 tests) ✅
     ├── test_arith_operators.py # Operator overloading
-    ├── test_basic_ops.py       # CuTe basic operations
+    ├── test_basic_ops.py       # Rocir basic operations
     ├── conftest.py             # Pytest fixtures
     ├── pytest.ini              # Pytest configuration
     └── examples/
@@ -23,9 +23,9 @@ tests/
 
 ### MLIR Tests
 ```bash
-# Run with cute-opt
-./build/tools/cute-opt/cute-opt tests/mlir/test_crd2idx.mlir --cute-to-standard
-./build/tools/cute-opt/cute-opt tests/mlir/test_size.mlir --cute-to-standard
+# Run with rocir-opt
+./build/tools/rocir-opt/rocir-opt tests/mlir/test_crd2idx.mlir --rocir-to-standard
+./build/tools/rocir-opt/rocir-opt tests/mlir/test_size.mlir --rocir-to-standard
 ```
 
 ### Python Tests
@@ -46,7 +46,7 @@ docker exec -it felixatt bash -c "export PYTHONPATH=/mnt/raid0/felix/llvm-projec
 |------------|----------|--------|-------|
 | Pass Management | `python/test_passes.py` | ✅ Passing | 16/16 |
 | Operator Overload | `python/test_arith_operators.py` | ⚠️ Partial | 2/5 |
-| CuTe Basic Ops | `python/test_basic_ops.py` | ❌ Needs dialect | 0/7 |
+| Rocir Basic Ops | `python/test_basic_ops.py` | ❌ Needs dialect | 0/7 |
 | MLIR IR Tests | `mlir/*.mlir` | ✅ Passing | 20+ |
 
 See `python/TESTING.md` for detailed testing instructions.

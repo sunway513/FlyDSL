@@ -4,12 +4,12 @@ Provides Pythonic interface for MLIR transformation passes, following
 mlir-python-extras patterns.
 """
 
-# Import cute-opt runner for cute-specific passes
+# Import rocir-opt runner for cute-specific passes
 try:
-    from .cute_opt_runner import run_cute_opt
-    HAS_CUTE_OPT = True
+    from .rocir_opt_runner import run_cute_opt
+    HAS_ROCIR_OPT = True
 except ImportError:
-    HAS_CUTE_OPT = False
+    HAS_ROCIR_OPT = False
 
 import logging
 import sys
@@ -62,26 +62,26 @@ def run_pipeline(
         
     Example:
         >>> module = Module.parse(mlir_code)
-        >>> lowered = run_pipeline(module, "cute-to-standard")
+        >>> lowered = run_pipeline(module, "rocir-to-standard")
         >>> print(lowered)
     """
     # Convert pipeline to string if needed
     if isinstance(pipeline, Pipeline):
         pipeline = str(pipeline)
     
-    # Check if this is a cute-specific pass that needs cute-opt
+    # Check if this is a cute-specific pass that needs rocir-opt
     # Do this BEFORE re-parsing to avoid parsing errors with unregistered dialect
-    cute_passes = ["cute-to-standard", "cute-to-rocm", "cute-nvgpu-to-nvgpu"]
-    needs_cute_opt = any(cp in pipeline for cp in cute_passes)
+    rocir_passes = ["rocir-to-standard", "rocir-to-rocm", "rocir-nvgpu-to-nvgpu"]
+    needs_cute_opt = any(cp in pipeline for cp in rocir_passes)
 
-    if needs_cute_opt and HAS_CUTE_OPT:
-        # Use cute-opt for cute-specific passes (bypasses Python MLIR parser)
-        for cute_pass in cute_passes:
+    if needs_cute_opt and HAS_ROCIR_OPT:
+        # Use rocir-opt for cute-specific passes (bypasses Python MLIR parser)
+        for cute_pass in rocir_passes:
             if cute_pass in pipeline:
                 try:
                     return run_cute_opt(module, cute_pass)
                 except Exception as e:
-                    raise RocDSLCompilerError(f"cute-opt execution failed: {e}") from e
+                    raise RocDSLCompilerError(f"rocir-opt execution failed: {e}") from e
     
     # Re-parse to get fresh module (only for non-cute passes)
     module = Module.parse(module.operation.get_asm(enable_debug_info=True), context=module.context)
@@ -150,11 +150,11 @@ class Pipeline:
     
     Example:
         >>> pipeline = (Pipeline()
-        ...     .cute_to_standard()
+        ...     .rocir_to_standard()
         ...     .Func(Pipeline().canonicalize())
         ...     .lower_to_llvm())
         >>> print(pipeline)
-        builtin.module(cute-to-standard,func.func(canonicalize),...)
+        builtin.module(rocir-to-standard,func.func(canonicalize),...)
     """
     
     def __init__(self, passes: Optional[List[str]] = None):
@@ -202,8 +202,8 @@ class Pipeline:
             **kwargs: Pass options (bool converted to 0/1)
             
         Example:
-            >>> pipeline.add_pass("cute-to-standard")
-            >>> pipeline.add_pass("cute-nvgpu-to-nvgpu", target_arch="sm_90")
+            >>> pipeline.add_pass("rocir-to-standard")
+            >>> pipeline.add_pass("rocir-nvgpu-to-nvgpu", target_arch="sm_90")
         """
         # Convert Python conventions to MLIR
         kwargs = {
@@ -225,17 +225,17 @@ class Pipeline:
     # RocDSL/CuTe Passes
     # =========================================================================
     
-    def cute_to_standard(self) -> "Pipeline":
+    def rocir_to_standard(self) -> "Pipeline":
         """Lower CuTe IR to standard MLIR dialects (scf, arith, memref)."""
-        return self.add_pass("cute-to-standard")
+        return self.add_pass("rocir-to-standard")
     
     def cute_layout_canonicalize(self) -> "Pipeline":
         """Canonicalize and simplify Layout operations."""
-        return self.add_pass("cute-layout-canonicalize")
+        return self.add_pass("rocir-layout-canonicalize")
     
     def cute_tensor_partition(self) -> "Pipeline":
         """Materialize tensor partitioning into explicit indexing."""
-        return self.add_pass("cute-tensor-partition")
+        return self.add_pass("rocir-tensor-partition")
     
     def cute_nvgpu_to_nvgpu(
         self,
@@ -249,26 +249,26 @@ class Pipeline:
             enable_tma: Enable TMA operations (SM90+)
         """
         return self.add_pass(
-            "cute-nvgpu-to-nvgpu",
+            "rocir-nvgpu-to-nvgpu",
             target_arch=target_arch,
             enable_tma=enable_tma
         )
     
     def cute_nvgpu_mma_lowering(self) -> "Pipeline":
         """Lower TiledMma to architecture-specific MMA instructions."""
-        return self.add_pass("cute-nvgpu-mma-lowering")
+        return self.add_pass("rocir-nvgpu-mma-lowering")
     
     def cute_nvgpu_copy_lowering(self) -> "Pipeline":
         """Lower TiledCopy to architecture-specific copy instructions."""
-        return self.add_pass("cute-nvgpu-copy-lowering")
+        return self.add_pass("rocir-nvgpu-copy-lowering")
     
     def cute_nvgpu_tma_materialize(self) -> "Pipeline":
         """Materialize TMA descriptor creation and initialization."""
-        return self.add_pass("cute-nvgpu-tma-materialize")
+        return self.add_pass("rocir-nvgpu-tma-materialize")
     
     def cute_to_rocm(self) -> "Pipeline":
         """Lower CuTe IR to ROCm-specific dialects."""
-        return self.add_pass("cute-to-rocm")
+        return self.add_pass("rocir-to-rocm")
     
     # =========================================================================
     # Optimization Passes
@@ -276,19 +276,19 @@ class Pipeline:
     
     def cute_layout_fusion(self) -> "Pipeline":
         """Fuse adjacent Layout transformations."""
-        return self.add_pass("cute-layout-fusion")
+        return self.add_pass("rocir-layout-fusion")
     
     def cute_vectorization(self) -> "Pipeline":
         """Vectorize tensor copy operations based on Layout."""
-        return self.add_pass("cute-vectorization")
+        return self.add_pass("rocir-vectorization")
     
     def cute_memory_coalescing(self) -> "Pipeline":
         """Optimize memory access patterns for coalescing."""
-        return self.add_pass("cute-memory-coalescing")
+        return self.add_pass("rocir-memory-coalescing")
     
     def cute_smem_swizzling(self) -> "Pipeline":
         """Apply shared memory swizzling to avoid bank conflicts."""
-        return self.add_pass("cute-smem-swizzling")
+        return self.add_pass("rocir-smem-swizzling")
     
     def cute_async_pipeline(
         self,
@@ -302,7 +302,7 @@ class Pipeline:
             warp_specialization: Use warp specialization (SM90+)
         """
         return self.add_pass(
-            "cute-async-pipeline",
+            "rocir-async-pipeline",
             pipeline_depth=pipeline_depth,
             warp_specialization=warp_specialization
         )
@@ -317,7 +317,7 @@ class Pipeline:
             num_producer_warps: Number of producer warps (typically 1 for TMA)
         """
         return self.add_pass(
-            "cute-warp-specialization",
+            "rocir-warp-specialization",
             num_producer_warps=num_producer_warps
         )
     
@@ -327,11 +327,11 @@ class Pipeline:
     
     def cute_layout_analysis(self, print_analysis: bool = False) -> "Pipeline":
         """Analyze Layout properties for optimization decisions."""
-        return self.add_pass("cute-layout-analysis", print_analysis=print_analysis)
+        return self.add_pass("rocir-layout-analysis", print_analysis=print_analysis)
     
     def cute_atom_validation(self) -> "Pipeline":
         """Validate MmaAtom/CopyAtom configurations."""
-        return self.add_pass("cute-atom-validation")
+        return self.add_pass("rocir-atom-validation")
     
     # =========================================================================
     # Standard MLIR Passes
@@ -393,14 +393,14 @@ class Pipeline:
     # Pipeline Recipes
     # =========================================================================
     
-    def lower_cute_to_standard(self) -> "Pipeline":
+    def lower_rocir_to_standard(self) -> "Pipeline":
         """Complete pipeline: CuTe → Standard dialects.
         
         Returns optimized IR using scf, arith, memref.
         """
         return (
             self
-            .cute_to_standard()
+            .rocir_to_standard()
             .Func(Pipeline()
                   .cute_layout_canonicalize()
                   .canonicalize()
@@ -457,9 +457,9 @@ class Pipeline:
 
 
 # Convenience functions
-def lower_cute_to_standard(module: Module) -> Module:
+def lower_rocir_to_standard(module: Module) -> Module:
     """One-step lowering: CuTe → Standard dialects."""
-    pipeline = Pipeline().lower_cute_to_standard()
+    pipeline = Pipeline().lower_rocir_to_standard()
     return run_pipeline(module, pipeline, "CuTe to Standard")
 
 
@@ -479,7 +479,7 @@ __all__ = [
     "Pipeline",
     "run_pipeline",
     "RocDSLCompilerError",
-    "lower_cute_to_standard",
+    "lower_rocir_to_standard",
     "lower_cute_to_nvgpu",
     "optimize_layouts",
 ]

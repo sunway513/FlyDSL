@@ -1,3 +1,3 @@
-add_subdirectory(Cute)
-#add_subdirectory(CuteRocm)
-#add_subdirectory(CuteNvgpu)
+add_subdirectory(Rocir)
+#add_subdirectory(RocirRocm)
+#add_subdirectory(RocirNvgpu)

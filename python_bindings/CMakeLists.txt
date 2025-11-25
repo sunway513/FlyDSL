@@ -1,23 +1,23 @@
 # Generate Python bindings for CuTe dialect
 
-add_custom_target(CutePythonModules)
+add_custom_target(RocirPythonModules)
 
-set(LLVM_TARGET_DEFINITIONS ${CMAKE_SOURCE_DIR}/include/cute/CuteOps.td)
+set(LLVM_TARGET_DEFINITIONS ${CMAKE_SOURCE_DIR}/include/rocir/RocirOps.td)
 
 # Add include path for TableGen
 set(MLIR_TABLEGEN_EXE ${MLIR_TABLEGEN_EXE})
 list(APPEND LLVM_TABLEGEN_FLAGS -I ${CMAKE_SOURCE_DIR}/include)
-list(APPEND LLVM_TABLEGEN_FLAGS -I ${CMAKE_SOURCE_DIR}/include/cute)
+list(APPEND LLVM_TABLEGEN_FLAGS -I ${CMAKE_SOURCE_DIR}/include/rocir)
 
 # Generate Python bindings
-mlir_tablegen(_cute_ops_gen.py -gen-python-op-bindings -bind-dialect=cute)
-add_public_tablegen_target(CutePythonOpsIncGen)
-add_dependencies(CutePythonModules CutePythonOpsIncGen)
+mlir_tablegen(_rocir_ops_gen.py -gen-python-op-bindings -bind-dialect=rocir)
+add_public_tablegen_target(RocirPythonOpsIncGen)
+add_dependencies(RocirPythonModules RocirPythonOpsIncGen)
 
 # Generate Python enum bindings if needed
-mlir_tablegen(_cute_enum_gen.py -gen-python-enum-bindings)
-add_public_tablegen_target(CutePythonEnumIncGen)
-add_dependencies(CutePythonModules CutePythonEnumIncGen)
+mlir_tablegen(_rocir_enum_gen.py -gen-python-enum-bindings)
+add_public_tablegen_target(RocirPythonEnumIncGen)
+add_dependencies(RocirPythonModules RocirPythonEnumIncGen)
 
 # Build Python extension module for pass registration
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
@@ -37,26 +37,26 @@ endif()
 if(pybind11_FOUND)
   message(STATUS "Found pybind11: ${pybind11_DIR}")
   
-  pybind11_add_module(_cutePassesExt CutePassesModule.cpp)
+  pybind11_add_module(_rocirPassesExt RocirPassesModule.cpp)
   
-  target_include_directories(_cutePassesExt PRIVATE
+  target_include_directories(_rocirPassesExt PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${MLIR_INCLUDE_DIRS}
     ${LLVM_INCLUDE_DIRS}
   )
   
-  target_link_libraries(_cutePassesExt PRIVATE
-    CuteTransforms
+  target_link_libraries(_rocirPassesExt PRIVATE
+    RocirTransforms
     MLIRPass
     MLIRIR
   )
   
   # Install to python_bindings directory
-  set_target_properties(_cutePassesExt PROPERTIES
+  set_target_properties(_rocirPassesExt PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
   
-  add_dependencies(CutePythonModules _cutePassesExt)
+  add_dependencies(RocirPythonModules _rocirPassesExt)
   
   message(STATUS "CuTe passes Python extension module will be built")
 else()
@@ -64,22 +64,22 @@ else()
 endif()
 
   # Build Python extension module for dialect registration
-  pybind11_add_module(_cuteDialect CuteDialectModule.cpp)
+  pybind11_add_module(_rocirDialect RocirDialectModule.cpp)
   
-  target_include_directories(_cuteDialect PRIVATE
+  target_include_directories(_rocirDialect PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${MLIR_INCLUDE_DIRS}
     ${LLVM_INCLUDE_DIRS}
   )
   
   # No additional libraries needed for simple stub module
-  # target_link_libraries(_cuteDialect PRIVATE)
+  # target_link_libraries(_rocirDialect PRIVATE)
   
   # Install to python_bindings directory
-  set_target_properties(_cuteDialect PROPERTIES
+  set_target_properties(_rocirDialect PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
   
-  add_dependencies(CutePythonModules _cuteDialect)
+  add_dependencies(RocirPythonModules _rocirDialect)
   
   message(STATUS "CuTe dialect Python extension module will be built")

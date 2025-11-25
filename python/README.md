@@ -1,10 +1,10 @@
 # RocDSL Python Bindings
 
-Python bindings for RocDSL - ROCm Domain Specific Language for CuTe Layout Algebra.
+Python bindings for RocDSL - ROCm Domain Specific Language for Rocir Layout Algebra.
 
 ## Overview
 
-RocDSL provides Python wrappers for CuTe dialect operations in MLIR, making it easy to:
+RocDSL provides Python wrappers for Rocir dialect operations in MLIR, making it easy to:
 - Construct layouts from Python
 - Perform layout transformations (product, divide, partition, tile)
 - Generate MLIR IR programmatically for GPU kernels
@@ -31,7 +31,7 @@ pip install -e .
 ```python
 from mlir.ir import Context, Module, InsertionPoint
 from mlir.dialects import func, arith
-import rocdsl.dialects.ext.cute as cute
+import rocdsl.dialects.ext.rocir as rocir
 
 with Context() as ctx:
     module = Module.create()
@@ -45,16 +45,16 @@ with Context() as ctx:
             c1 = arith.constant(1, index=True)
             
             # Create shape (8, 16)
-            shape = cute.make_shape(c8, c16)
+            shape = rocir.make_shape(c8, c16)
             
             # Create stride (1, 8) - column-major
-            stride = cute.make_stride(c1, c8)
+            stride = rocir.make_stride(c1, c8)
             
             # Create layout
-            layout = cute.make_layout(shape, stride)
+            layout = rocir.make_layout(shape, stride)
             
             # Compute total size
-            total = cute.size(layout)  # Returns 128
+            total = rocir.size(layout)  # Returns 128
             
             return total
     
@@ -65,44 +65,44 @@ with Context() as ctx:
 
 ```python
 # Create a 32x64 base layout
-base_shape = cute.make_shape(c32, c64)
-base_stride = cute.make_stride(c1, c32)
-base_layout = cute.make_layout(base_shape, base_stride)
+base_shape = rocir.make_shape(c32, c64)
+base_stride = rocir.make_stride(c1, c32)
+base_layout = rocir.make_layout(base_shape, base_stride)
 
 # Create a 4x4 tiler
-tile_shape = cute.make_shape(c4, c4)
-tile_stride = cute.make_stride(c1, c4)
-tile_layout = cute.make_layout(tile_shape, tile_stride)
+tile_shape = rocir.make_shape(c4, c4)
+tile_stride = rocir.make_stride(c1, c4)
+tile_layout = rocir.make_layout(tile_shape, tile_stride)
 
 # Tile the layout
-tiled = cute.logical_product(base_layout, tile_layout)
+tiled = rocir.logical_product(base_layout, tile_layout)
 ```
 
 ### Thread-Level Partitioning
 
 ```python
 # Global 128x128 tensor
-global_shape = cute.make_shape(c128, c128)
-global_stride = cute.make_stride(c1, c128)
-global_layout = cute.make_layout(global_shape, global_stride)
+global_shape = rocir.make_shape(c128, c128)
+global_stride = rocir.make_stride(c1, c128)
+global_layout = rocir.make_layout(global_shape, global_stride)
 
 # Thread tile 8x8
-tile_shape = cute.make_shape(c8, c8)
-tile_stride = cute.make_stride(c1, c8)
-tile_layout = cute.make_layout(tile_shape, tile_stride)
+tile_shape = rocir.make_shape(c8, c8)
+tile_stride = rocir.make_stride(c1, c8)
+tile_layout = rocir.make_layout(tile_shape, tile_stride)
 
 # Partition for thread 0
-thread_data = cute.local_partition(global_layout, tile_layout, c0)
+thread_data = rocir.local_partition(global_layout, tile_layout, c0)
 ```
 
 ### Block-Level Tiling
 
 ```python
 # Extract a CTA tile from global tensor
-cta_shape = cute.make_shape(c32, c64)
-cta_coord = cute.make_shape(c0, c0)
+cta_shape = rocir.make_shape(c32, c64)
+cta_coord = rocir.make_shape(c0, c0)
 
-cta_tile = cute.local_tile(global_layout, cta_shape, cta_coord)
+cta_tile = rocir.local_tile(global_layout, cta_shape, cta_coord)
 ```
 
 ## API Reference
@@ -154,10 +154,10 @@ See the `examples/` directory for more examples:
 
 ## Architecture
 
-The Python bindings wrap the CuTe MLIR dialect operations:
+The Python bindings wrap the Rocir MLIR dialect operations:
 
 ```
-Python API (cute.make_layout)
+Python API (rocir.make_layout)
     ↓
 MLIR Dialect Ops (MakeLayoutOp)
     ↓
@@ -183,7 +183,7 @@ pytest tests/
 
 ## Notes
 
-- These bindings require the CuTe dialect to be registered in your MLIR installation
+- These bindings require the Rocir dialect to be registered in your MLIR installation
 - The operations are designed to lower through MLIR passes to GPU code
 - For actual execution, you need the full RocDSL compilation pipeline
 

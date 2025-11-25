@@ -4,7 +4,7 @@ import pytest
 from mlir.ir import IndexType
 from mlir.dialects import func, arith
 
-import rocdsl.dialects.ext.cute as cute
+import rocdsl.dialects.ext.rocir as rocir
 
 
 def test_logical_divide(ctx, insert_point):
@@ -19,19 +19,19 @@ def test_logical_divide(ctx, insert_point):
         c32 = arith.constant(IndexType.get(), 32)
         c1 = arith.constant(IndexType.get(), 1)
         
-        global_shape = cute.make_shape(c128, c256)
-        global_stride = cute.make_stride(c1, c128)
-        global_layout = cute.make_layout(global_shape, global_stride)
+        global_shape = rocir.make_shape(c128, c256)
+        global_stride = rocir.make_stride(c1, c128)
+        global_layout = rocir.make_layout(global_shape, global_stride)
         
         # Tile: 16x32
-        tile_shape = cute.make_shape(c16, c32)
-        tile_stride = cute.make_stride(c1, c16)
-        tile = cute.make_layout(tile_shape, tile_stride)
+        tile_shape = rocir.make_shape(c16, c32)
+        tile_stride = rocir.make_stride(c1, c16)
+        tile = rocir.make_layout(tile_shape, tile_stride)
         
         # Divide creates partitioned layout
         partitioned = cute.logical_divide(global_layout, tile)
         
-        size = cute.size(partitioned)
+        size = rocir.size(partitioned)
         return size
     
     ctx.module.operation.verify()
@@ -51,17 +51,17 @@ def test_zipped_divide(ctx, insert_point):
         c16 = arith.constant(IndexType.get(), 16)
         c1 = arith.constant(IndexType.get(), 1)
         
-        global_shape = cute.make_shape(c64, c128)
-        global_stride = cute.make_stride(c1, c64)
-        global_layout = cute.make_layout(global_shape, global_stride)
+        global_shape = rocir.make_shape(c64, c128)
+        global_stride = rocir.make_stride(c1, c64)
+        global_layout = rocir.make_layout(global_shape, global_stride)
         
-        tile_shape = cute.make_shape(c8, c16)
-        tile_stride = cute.make_stride(c1, c8)
-        tile = cute.make_layout(tile_shape, tile_stride)
+        tile_shape = rocir.make_shape(c8, c16)
+        tile_stride = rocir.make_stride(c1, c8)
+        tile = rocir.make_layout(tile_shape, tile_stride)
         
         zipped = cute.zipped_divide(global_layout, tile)
         
-        size = cute.size(zipped)
+        size = rocir.size(zipped)
         return size
     
     ctx.module.operation.verify()
@@ -81,17 +81,17 @@ def test_tiled_divide(ctx, insert_point):
         c8 = arith.constant(IndexType.get(), 8)
         c1 = arith.constant(IndexType.get(), 1)
         
-        global_shape = cute.make_shape(c32, c64)
-        global_stride = cute.make_stride(c1, c32)
-        global_layout = cute.make_layout(global_shape, global_stride)
+        global_shape = rocir.make_shape(c32, c64)
+        global_stride = rocir.make_stride(c1, c32)
+        global_layout = rocir.make_layout(global_shape, global_stride)
         
-        tile_shape = cute.make_shape(c4, c8)
-        tile_stride = cute.make_stride(c1, c4)
-        tile = cute.make_layout(tile_shape, tile_stride)
+        tile_shape = rocir.make_shape(c4, c8)
+        tile_stride = rocir.make_stride(c1, c4)
+        tile = rocir.make_layout(tile_shape, tile_stride)
         
         tiled = cute.tiled_divide(global_layout, tile)
         
-        size = cute.size(tiled)
+        size = rocir.size(tiled)
         return size
     
     ctx.module.operation.verify()
@@ -111,17 +111,17 @@ def test_flat_divide(ctx, insert_point):
         c8 = arith.constant(IndexType.get(), 8)
         c1 = arith.constant(IndexType.get(), 1)
         
-        global_shape = cute.make_shape(c16, c32)
-        global_stride = cute.make_stride(c1, c16)
-        global_layout = cute.make_layout(global_shape, global_stride)
+        global_shape = rocir.make_shape(c16, c32)
+        global_stride = rocir.make_stride(c1, c16)
+        global_layout = rocir.make_layout(global_shape, global_stride)
         
-        tile_shape = cute.make_shape(c4, c8)
-        tile_stride = cute.make_stride(c1, c4)
-        tile = cute.make_layout(tile_shape, tile_stride)
+        tile_shape = rocir.make_shape(c4, c8)
+        tile_stride = rocir.make_stride(c1, c4)
+        tile = rocir.make_layout(tile_shape, tile_stride)
         
         flat = cute.flat_divide(global_layout, tile)
         
-        size = cute.size(flat)
+        size = rocir.size(flat)
         return size
     
     ctx.module.operation.verify()

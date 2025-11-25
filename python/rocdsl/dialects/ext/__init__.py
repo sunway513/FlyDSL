@@ -2,6 +2,6 @@
 
 from . import arith
 from . import scf
-from . import cute
+from . import rocir
 
-__all__ = ["arith", "scf", "cute"]
+__all__ = ["arith", "scf", "rocir"]

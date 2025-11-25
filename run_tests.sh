@@ -1,21 +1,21 @@
 #!/bin/bash
-# Run all CuTe IR operation tests
+# Run all Rocir IR operation tests
 
-CUTE_OPT="./build/tools/cute-opt/cute-opt"
-PASS="--cute-to-standard"
+ROCIR_OPT="./build/tools/rocir-opt/rocir-opt"
+PASS="--rocir-to-standard"
 
 echo "========================================"
-echo "CuTe IR Operations Test Suite"
+echo "Rocir IR Operations Test Suite"
 echo "========================================"
 echo ""
 
 # Test 1: crd2idx
 echo "✅ Test 1: crd2idx - Coordinate to Linear Index"
 echo "Expected: coord(2,3) with stride(1,16) → idx=50"
-$CUTE_OPT $PASS tests/mlir/test_crd2idx.mlir > /tmp/test_crd2idx.out 2>&1
+$ROCIR_OPT $PASS tests/mlir/test_crd2idx.mlir > /tmp/test_crd2idx.out 2>&1
 if [ $? -eq 0 ]; then
     echo "   PASS: Lowered successfully"
-    if grep -q "cute.crd2idx" /tmp/test_crd2idx.out; then
+    if grep -q "rocir.crd2idx" /tmp/test_crd2idx.out; then
         echo "   ⚠️  crd2idx not lowered"
     else
         echo "   ✓ crd2idx operation lowered"
@@ -28,10 +28,10 @@ echo ""
 # Test 2: size
 echo "✅ Test 2: size - Product of Shape Dimensions"
 echo "Expected: shape(8,16,32) → size=4096"
-$CUTE_OPT $PASS tests/mlir/test_size.mlir > /tmp/test_size.out 2>&1
+$ROCIR_OPT $PASS tests/mlir/test_size.mlir > /tmp/test_size.out 2>&1
 if [ $? -eq 0 ]; then
     echo "   PASS: Lowered successfully"
-    if grep -q "cute.size" /tmp/test_size.out; then
+    if grep -q "rocir.size" /tmp/test_size.out; then
         echo "   ⚠️  size not lowered"
     else
         echo "   ✓ size operation lowered"
@@ -44,10 +44,10 @@ echo ""
 # Test 3: rank
 echo "✅ Test 3: rank - Number of Dimensions"
 echo "Expected: shape<3> → rank=3"
-$CUTE_OPT $PASS tests/mlir/test_rank.mlir > /tmp/test_rank.out 2>&1
+$ROCIR_OPT $PASS tests/mlir/test_rank.mlir > /tmp/test_rank.out 2>&1
 if [ $? -eq 0 ]; then
     echo "   PASS: Lowered successfully"
-    if grep -q "cute.rank" /tmp/test_rank.out; then
+    if grep -q "rocir.rank" /tmp/test_rank.out; then
         echo "   ⚠️  rank not lowered"
     else
         echo "   ✓ rank operation lowered"
@@ -60,10 +60,10 @@ echo ""
 # Test 4: cosize
 echo "✅ Test 4: cosize - Codomain Size"
 echo "Expected: layout(shape(8,128), stride(1,16)) → cosize=2033"
-$CUTE_OPT $PASS tests/mlir/test_cosize.mlir > /tmp/test_cosize.out 2>&1
+$ROCIR_OPT $PASS tests/mlir/test_cosize.mlir > /tmp/test_cosize.out 2>&1
 if [ $? -eq 0 ]; then
     echo "   PASS: Lowered successfully"
-    if grep -q "cute.cosize" /tmp/test_cosize.out; then
+    if grep -q "rocir.cosize" /tmp/test_cosize.out; then
         echo "   ⚠️  cosize not lowered"
     else
         echo "   ✓ cosize operation lowered"
@@ -75,12 +75,12 @@ echo ""
 
 # Test 5: Comprehensive test
 echo "✅ Test 5: Comprehensive - All Operations Together"
-$CUTE_OPT $PASS tests/mlir/comprehensive_test.mlir > /tmp/test_comprehensive.out 2>&1
+$ROCIR_OPT $PASS tests/mlir/comprehensive_test.mlir > /tmp/test_comprehensive.out 2>&1
 if [ $? -eq 0 ]; then
     echo "   PASS: Module processed successfully"
-    # Count how many cute operations remain (should be minimal)
-    CUTE_OPS=$(grep -c "cute\." /tmp/test_comprehensive.out || echo 0)
-    echo "   ✓ Remaining cute operations: $CUTE_OPS"
+    # Count how many rocir operations remain (should be minimal)
+    ROCIR_OPS=$(grep -c "rocir\." /tmp/test_comprehensive.out || echo 0)
+    echo "   ✓ Remaining rocir operations: $ROCIR_OPS"
 else
     echo "   FAIL"
 fi
@@ -90,11 +90,11 @@ echo "========================================"
 echo "MLIR Test Summary"
 echo "========================================"
 echo "✅ Working Operations:"
-echo "   - cute.make_shape, make_stride, make_coord, make_layout"
-echo "   - cute.size (lowering implemented)"
-echo "   - cute.rank (lowering implemented)"
-echo "   - cute.cosize (lowering implemented)"
-echo "   - cute.crd2idx (lowering implemented)"
+echo "   - rocir.make_shape, make_stride, make_coord, make_layout"
+echo "   - rocir.size (lowering implemented)"
+echo "   - rocir.rank (lowering implemented)"
+echo "   - rocir.cosize (lowering implemented)"
+echo "   - rocir.crd2idx (lowering implemented)"
 echo "========================================"
 
 echo ""

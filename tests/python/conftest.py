@@ -11,8 +11,8 @@ def register_cute_passes():
     try:
         # Try to find and load the CuTe dialect library
         lib_paths = [
-            '/mnt/raid0/felix/rocDSL/build/lib/Dialect/Cute/libCuteDialect.so',
-            '/mnt/raid0/felix/rocDSL/build/lib/libCuteDialect.so',
+            '/mnt/raid0/felix/rocDSL/build/lib/Dialect/Rocir/libRocirDialect.so',
+            '/mnt/raid0/felix/rocDSL/build/lib/libRocirDialect.so',
         ]
         
         for lib_path in lib_paths:

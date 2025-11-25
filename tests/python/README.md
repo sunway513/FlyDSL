@@ -1,6 +1,6 @@
 # RocDSL Python Tests
 
-Python unit tests for RocDSL (CuTe dialect Python bindings), following the structure of mlir-python-extras.
+Python unit tests for RocDSL (Rocir dialect Python bindings), following the structure of mlir-python-extras.
 
 ## Structure
 
@@ -69,7 +69,7 @@ pytest --cov=rocdsl --cov-report=html
 
 ### test_basic_ops.py
 
-Tests for fundamental CuTe operations:
+Tests for fundamental Rocir operations:
 
 - `test_make_shape` - Shape creation
 - `test_make_layout` - Layout creation from shape/stride
@@ -126,7 +126,7 @@ def test_something(ctx):
     ctx.module.operation.verify()
     
     ir = str(ctx.module)
-    assert "cute.operation" in ir
+    assert "rocir.operation" in ir
 ```
 
 ## Writing New Tests
@@ -141,7 +141,7 @@ from mlir.ir import InsertionPoint
 from mlir.dialects import func, arith
 
 try:
-    import rocdsl.dialects.ext.cute as cute
+    import rocdsl.dialects.ext.rocir as rocir
 except ImportError:
     pytest.skip("RocDSL dialect not available", allow_module_level=True)
 
@@ -153,8 +153,8 @@ def test_my_operation(ctx):
         def test_func():
             c8 = arith.constant(8, index=True)
             
-            # Use cute operations
-            result = cute.my_operation(c8)
+            # Use rocir operations
+            result = rocir.my_operation(c8)
             
             return result
     
@@ -163,7 +163,7 @@ def test_my_operation(ctx):
     
     # Check generated IR
     ir = str(ctx.module)
-    assert "cute.my_operation" in ir
+    assert "rocir.my_operation" in ir
 
 
 if __name__ == "__main__":
@@ -201,9 +201,9 @@ cd python && pip install -e .
 Skipped: RocDSL dialect not available
 ```
 
-**Solution:** Ensure cute-opt is built and the CuTe dialect library is available:
+**Solution:** Ensure rocir-opt is built and the Rocir dialect library is available:
 ```bash
-cd build && ninja cute-opt
+cd build && ninja rocir-opt
 ```
 
 ### Verification Errors
@@ -213,7 +213,7 @@ MLIR verification failed
 ```
 
 **Solution:** Check that:
-1. All operations use correct types (`index` not `!cute.int`)
+1. All operations use correct types (`index` not `!rocir.int`)
 2. Operation signatures match TableGen definitions
 3. Module structure is valid
 

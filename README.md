@@ -8,11 +8,11 @@ A modern MLIR-based compiler infrastructure for high performance rocm kernels, p
 
 ## 🎯 Features
 
-- **CuTe Dialect**: Layout algebra IR with custom types and operations
-  - Type system: `!cute.int`, `!cute.shape<N>`, `!cute.stride<N>`, `!cute.layout<N>`, `!cute.coord<N>`
+- **Rocir Dialect**: Layout algebra IR with custom types and operations
+  - Type system: `!rocir.int`, `!rocir.shape<N>`, `!rocir.stride<N>`, `!rocir.layout<N>`, `!rocir.coord<N>`
   - Operations: `make_shape`, `make_stride`, `make_layout`, `make_coord`, `size`, `crd2idx`
 - **Transformation Passes**: Lowering ROCDSL to standard MLIR dialects
-- **cute-opt Tool**: MLIR optimization and transformation tool
+- **rocir-opt Tool**: MLIR optimization and transformation tool
 - **Modern MLIR API**: Built with latest MLIR (amd-staging branch)
 
 ## 🚀 Quick Start
@@ -25,7 +25,7 @@ cpp test:
 cd rocdsl
 mkdir -p build && cd build
 cmake .. -DMLIR_DIR=/mnt/raid0/felix/llvm-project/buildmlir/lib/cmake/mlir
-make -j; make cute-opt -j
+make -j; make rocir-opt -j
 
 python test:
 cd python
@@ -36,19 +36,19 @@ python setup.py develop
 
 ```bash
 # Test type parsing
-./build/tools/cute-opt/cute-opt tests/test_basic.mlir
+./build/tools/rocir-opt/rocir-opt tests/test_basic.mlir
 
 # Test all operations
-./build/tools/cute-opt/cute-opt tests/test_ops.mlir
+./build/tools/rocir-opt/rocir-opt tests/test_ops.mlir
 
 # Test layout operations
-./build/tools/cute-opt/cute-opt tests/test_layout.mlir
+./build/tools/rocir-opt/rocir-opt tests/test_layout.mlir
 
 # Run transformation pass
-./build/tools/cute-opt/cute-opt tests/test_pass.mlir --cute-to-standard
+./build/tools/rocir-opt/rocir-opt tests/test_pass.mlir --rocir-to-standard
 
 # run python test
-pytest -sv tests/python/test_cute_basic.py
+pytest -sv tests/python/test_rocir_basic.py
 ```
 
 ## 📝 Example Usage
@@ -57,15 +57,15 @@ pytest -sv tests/python/test_cute_basic.py
 
 ```mlir
 module {
-  func.func @test_types(%i1: !cute.int, %i2: !cute.int) -> !cute.layout<2> {
-    %shape = cute.make_shape %i1, %i2 : (!cute.int, !cute.int) -> !cute.shape<2>
-    %stride = cute.make_stride %i1, %i2 : (!cute.int, !cute.int) -> !cute.stride<2>
-    %layout = cute.make_layout %shape, %stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
-    return %layout : !cute.layout<2>
+  func.func @test_types(%i1: !rocir.int, %i2: !rocir.int) -> !rocir.layout<2> {
+    %shape = rocir.make_shape %i1, %i2 : (!rocir.int, !rocir.int) -> !rocir.shape<2>
+    %stride = rocir.make_stride %i1, %i2 : (!rocir.int, !rocir.int) -> !rocir.stride<2>
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
+    return %layout : !rocir.layout<2>
   }
   
-  func.func @test_all_types(%s: !cute.shape<3>, %st: !cute.stride<3>, 
-                            %l: !cute.layout<2>, %c: !cute.coord<2>) {
+  func.func @test_all_types(%s: !rocir.shape<3>, %st: !rocir.stride<3>, 
+                            %l: !rocir.layout<2>, %c: !rocir.coord<2>) {
     return
   }
 }
@@ -75,24 +75,24 @@ module {
 
 ```mlir
 module {
-  func.func @test_make_layout(%i8: !cute.int, %i16: !cute.int, %i1: !cute.int) -> !cute.layout<2> {
+  func.func @test_make_layout(%i8: !rocir.int, %i16: !rocir.int, %i1: !rocir.int) -> !rocir.layout<2> {
     // Create shape and stride
-    %shape = cute.make_shape %i8, %i16 : (!cute.int, !cute.int) -> !cute.shape<2>
-    %stride = cute.make_stride %i1, %i8 : (!cute.int, !cute.int) -> !cute.stride<2>
+    %shape = rocir.make_shape %i8, %i16 : (!rocir.int, !rocir.int) -> !rocir.shape<2>
+    %stride = rocir.make_stride %i1, %i8 : (!rocir.int, !rocir.int) -> !rocir.stride<2>
     
     // Create layout from shape and stride
-    %layout = cute.make_layout %shape, %stride : (!cute.shape<2>, !cute.stride<2>) -> !cute.layout<2>
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
     
-    return %layout : !cute.layout<2>
+    return %layout : !rocir.layout<2>
   }
   
-  func.func @test_coord_to_index(%layout: !cute.layout<2>, %i3: !cute.int, %i5: !cute.int) -> !cute.int {
-    %coord = cute.make_coord %i3, %i5 : (!cute.int, !cute.int) -> !cute.coord<2>
+  func.func @test_coord_to_index(%layout: !rocir.layout<2>, %i3: !rocir.int, %i5: !rocir.int) -> !rocir.int {
+    %coord = rocir.make_coord %i3, %i5 : (!rocir.int, !rocir.int) -> !rocir.coord<2>
     
     // Convert coordinate to linear index
-    %idx = cute.crd2idx %coord, %layout : (!cute.coord<2>, !cute.layout<2>) -> !cute.int
+    %idx = rocir.crd2idx %coord, %layout : (!rocir.coord<2>, !rocir.layout<2>) -> !rocir.int
     
-    return %idx : !cute.int
+    return %idx : !rocir.int
   }
 }
 ```
@@ -101,21 +101,21 @@ module {
 
 ```
 rocdsl/
-├── include/cute/          # Dialect definitions (TableGen)
-│   ├── CuteDialect.h      # Dialect and type declarations (5 types)
-│   ├── CuteDialect.td     # Dialect definition with custom type parsing
-│   ├── CuteOps.td         # 6 operations with modern MLIR API
-│   ├── CutePasses.td      # Pass definitions
-│   └── CutePasses.h       # Pass interface
+├── include/rocir/          # Dialect definitions (TableGen)
+│   ├── RocirDialect.h      # Dialect and type declarations (5 types)
+│   ├── RocirDialect.td     # Dialect definition with custom type parsing
+│   ├── RocirOps.td         # 6 operations with modern MLIR API
+│   ├── RocirPasses.td      # Pass definitions
+│   └── RocirPasses.h       # Pass interface
 ├── lib/
-│   ├── Dialect/Cute/
-│   │   └── CuteDialect.cpp    # Dialect implementation (90 lines)
+│   ├── Dialect/Rocir/
+│   │   └── RocirDialect.cpp    # Dialect implementation (90 lines)
 │   └── Transforms/
-│       ├── CuteToStandard.cpp # Lowering pass (partial implementation)
-│       ├── CuteToRocm.cpp
-│       └── CuteNvgpuToNvgpu.cpp
-├── tools/cute-opt/        # Optimization tool
-│   └── cute-opt.cpp       # Tool entry point
+│       ├── RocirToStandard.cpp # Lowering pass (partial implementation)
+│       ├── RocirToRocm.cpp
+│       └── RocirNvgpuToNvgpu.cpp
+├── tools/rocir-opt/        # Optimization tool
+│   └── rocir-opt.cpp       # Tool entry point
 ├── tests/                 # MLIR test files
 │   ├── test_basic.mlir    # Type parsing test
 │   ├── test_ops.mlir      # All operations test
@@ -128,36 +128,36 @@ rocdsl/
 
 | Type | Syntax | Description |
 |------|--------|-------------|
-| `IntType` | `!cute.int` | Compile-time integer value |
-| `ShapeType` | `!cute.shape<N>` | N-dimensional shape (N elements) |
-| `StrideType` | `!cute.stride<N>` | N-dimensional stride (N elements) |
-| `LayoutType` | `!cute.layout<N>` | Combined shape+stride layout |
-| `CoordType` | `!cute.coord<N>` | N-dimensional coordinate |
+| `IntType` | `!rocir.int` | Compile-time integer value |
+| `ShapeType` | `!rocir.shape<N>` | N-dimensional shape (N elements) |
+| `StrideType` | `!rocir.stride<N>` | N-dimensional stride (N elements) |
+| `LayoutType` | `!rocir.layout<N>` | Combined shape+stride layout |
+| `CoordType` | `!rocir.coord<N>` | N-dimensional coordinate |
 
 ## 🔧 Operations
 
 | Operation | Description | Signature |
 |-----------|-------------|-----------|
-| `make_shape` | Create shape from integers | `(!cute.int, ...) -> !cute.shape<N>` |
-| `make_stride` | Create stride from integers | `(!cute.int, ...) -> !cute.stride<N>` |
-| `make_layout` | Create layout from shape+stride | `(!cute.shape<N>, !cute.stride<N>) -> !cute.layout<N>` |
-| `make_coord` | Create coordinate from integers | `(!cute.int, ...) -> !cute.coord<N>` |
-| `size` | Get total size of shape | `!cute.shape<N> -> !cute.int` |
-| `crd2idx` | Convert coord to linear index | `(!cute.coord<N>, !cute.layout<N>) -> !cute.int` |
+| `make_shape` | Create shape from integers | `(!rocir.int, ...) -> !rocir.shape<N>` |
+| `make_stride` | Create stride from integers | `(!rocir.int, ...) -> !rocir.stride<N>` |
+| `make_layout` | Create layout from shape+stride | `(!rocir.shape<N>, !rocir.stride<N>) -> !rocir.layout<N>` |
+| `make_coord` | Create coordinate from integers | `(!rocir.int, ...) -> !rocir.coord<N>` |
+| `size` | Get total size of shape | `!rocir.shape<N> -> !rocir.int` |
+| `crd2idx` | Convert coord to linear index | `(!rocir.coord<N>, !rocir.layout<N>) -> !rocir.int` |
 
 ## 🎨 Passes
 
 | Pass | Flag | Status | Description |
 |------|------|--------|-------------|
-| `CuteToStandardPass` | `--cute-to-standard` | ✅ Partial | Lower ROCDSL to standard dialects (only `crd2idx` implemented) |
-| `CuteToRocmPass` | `--cute-to-rocm` | ⚠️ Skeleton | Lower to ROCm-specific operations |
-| `CuteNvgpuToNvgpuPass` | `--cute-nvgpu-to-nvgpu` | ⚠️ Skeleton | Lower to NVGPU dialect |
+| `RocirToStandardPass` | `--rocir-to-standard` | ✅ Partial | Lower ROCDSL to standard dialects (only `crd2idx` implemented) |
+| `RocirToRocmPass` | `--rocir-to-rocm` | ⚠️ Skeleton | Lower to ROCm-specific operations |
+| `RocirNvgpuToNvgpuPass` | `--rocir-nvgpu-to-nvgpu` | ⚠️ Skeleton | Lower to NVGPU dialect |
 
 ## ✅ Testing Status
 
 - ✅ **Type parsing**: All 5 types parse and print correctly
 - ✅ **Operations**: All 6 operations parse successfully
-- ✅ **Pass registration**: `--cute-to-standard` registered in cute-opt
+- ✅ **Pass registration**: `--rocir-to-standard` registered in rocir-opt
 - ⚠️ **Pass execution**: Only `crd2idx` lowering implemented (type conversion warnings are expected)
 
 ## 🛠️ Prerequisites
@@ -171,7 +171,7 @@ rocdsl/
 ## 🔍 Implementation Notes
 
 - **Type System**: Manual implementation using `TypeBase` and `TypeStorage` (not TableGen `TypeDef`)
-- **Type Parsing**: Custom `parseType()` and `printType()` in `CuteDialect.cpp`
+- **Type Parsing**: Custom `parseType()` and `printType()` in `RocirDialect.cpp`
 - **Pass System**: Modern MLIR using `GEN_PASS_DEF` macros and `impl::PassBase` inheritance
 - **Dependencies**: Requires `MLIRSCFDialect` for pass infrastructure
 - **API Compatibility**: Uses modern `llvm::isa<>()` instead of legacy `.isa<>()`
@@ -199,11 +199,11 @@ All test files have been organized in the `tests/` directory:
 ./run_tests.sh
 
 # Or run individual tests
-./build/tools/cute-opt/cute-opt --cute-to-standard tests/test_crd2idx.mlir
-./build/tools/cute-opt/cute-opt --cute-to-standard tests/test_size.mlir
-./build/tools/cute-opt/cute-opt --cute-to-standard tests/test_rank.mlir
-./build/tools/cute-opt/cute-opt --cute-to-standard tests/test_cosize.mlir
-./build/tools/cute-opt/cute-opt --cute-to-standard tests/comprehensive_test.mlir
+./build/tools/rocir-opt/rocir-opt --rocir-to-standard tests/test_crd2idx.mlir
+./build/tools/rocir-opt/rocir-opt --rocir-to-standard tests/test_size.mlir
+./build/tools/rocir-opt/rocir-opt --rocir-to-standard tests/test_rank.mlir
+./build/tools/rocir-opt/rocir-opt --rocir-to-standard tests/test_cosize.mlir
+./build/tools/rocir-opt/rocir-opt --rocir-to-standard tests/comprehensive_test.mlir
 ```
 
 ### Test Coverage
