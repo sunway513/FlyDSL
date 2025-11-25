@@ -656,6 +656,50 @@ struct LocalTileOpLowering : public OpRewritePattern<LocalTileOp> {
   }
 };
 
+
+// DCE patterns for make_shape, make_stride, make_layout
+struct MakeShapeOpLowering : public OpRewritePattern<MakeShapeOp> {
+  using OpRewritePattern<MakeShapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MakeShapeOp op,
+                                PatternRewriter &rewriter) const override {
+    // If the result is unused, erase the op
+    if (op.getResult().use_empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct MakeStrideOpLowering : public OpRewritePattern<MakeStrideOp> {
+  using OpRewritePattern<MakeStrideOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MakeStrideOp op,
+                                PatternRewriter &rewriter) const override {
+    // If the result is unused, erase the op
+    if (op.getResult().use_empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    return failure();
+  }
+};
+
+struct MakeLayoutOpLowering : public OpRewritePattern<MakeLayoutOp> {
+  using OpRewritePattern<MakeLayoutOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(MakeLayoutOp op,
+                                PatternRewriter &rewriter) const override {
+    // If the result is unused, erase the op
+    if (op.getResult().use_empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    return failure();
+  }
+};
+
 #define GEN_PASS_DEF_CUTETOSTANDARDPASS
 #include "cute/CutePasses.h.inc"
 
@@ -689,6 +733,9 @@ struct CuteToStandardPass
     patterns.add<FlatDivideOpLowering>(&getContext());
     patterns.add<LocalPartitionOpLowering>(&getContext());
     patterns.add<LocalTileOpLowering>(&getContext());
+    patterns.add<MakeShapeOpLowering>(&getContext());
+    patterns.add<MakeStrideOpLowering>(&getContext());
+    patterns.add<MakeLayoutOpLowering>(&getContext());
     patterns.add<TiledDivideOpLowering>(&getContext());
     
 
