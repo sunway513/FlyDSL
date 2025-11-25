@@ -84,10 +84,21 @@ endif()
   
   message(STATUS "CuTe dialect Python extension module will be built")
 
-# Fix relative imports in generated Python bindings
+# Fix TableGen-generated relative imports for standalone usage
+# TableGen generates "from ._ods_common import ..." which assumes the code is part of mlir.dialects package
+# Since we use build/python_bindings directly in PYTHONPATH, we need absolute imports
 add_custom_command(
     TARGET RocirPythonOpsIncGen POST_BUILD
     COMMAND sed -i 's/from \._ods_common/from mlir.dialects._ods_common/g' 
         ${CMAKE_CURRENT_BINARY_DIR}/_rocir_ops_gen.py
-    COMMENT "Fixing relative imports in _rocir_ops_gen.py"
+    COMMENT "Fixing imports in generated Python bindings"
 )
+
+# Copy Python wrapper files to build directory at configure time
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/rocir.py
+    ${CMAKE_CURRENT_BINARY_DIR}/rocir.py
+    COPYONLY
+)
+
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/__init__.py "")

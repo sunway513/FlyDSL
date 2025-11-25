@@ -102,6 +102,14 @@ echo "========================================"
 echo "Python Test Suite"
 echo "========================================"
 echo ""
+# Ensure Python bindings are built
+echo "Building Python bindings..."
+cd build && make RocirPythonOpsIncGen > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "⚠️  Warning: Failed to build Python bindings"
+fi
+cd ..
+echo ""
 
 # Set up Python environment
 export PYTHONPATH=$PYTHONPATH:/mnt/raid0/felix/llvm-project/buildmlir/tools/mlir/python_packages/mlir_core
