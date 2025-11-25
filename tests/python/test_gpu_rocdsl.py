@@ -140,10 +140,11 @@ def test_vector_add():
         
         valid = arith.cmpi(arith.CmpIPredicate.slt, tid, size_c)
         with ir.InsertionPoint(scf.IfOp(valid).then_block):
-            a = memref.load(A, [tid])
-            b = memref.load(B, [tid])
+            # Use layout-computed linear index for memory access
+            a = memref.load(A, [linear_idx])
+            b = memref.load(B, [linear_idx])
             c = arith.addf(a, b)
-            memref.store(c, C, [tid])
+            memref.store(c, C, [linear_idx])
             scf.yield_([])
     
     ip.__exit__(None, None, None)
@@ -312,7 +313,7 @@ def test_matmul():
     ip.__enter__()
     
     @gpu.func(emit=True)
-    def matmul(A: T.memref(M, K, T.f32()), B: T.memref(K, N, T.f32()), C: T.memref(M, N, T.f32())):
+    def matmul(A: T.memref(M * K, T.f32()), B: T.memref(K * N, T.f32()), C: T.memref(M * N, T.f32())):
         bx = gpu.block_id("x")
         by = gpu.block_id("y")
         tx = gpu.thread_id("x")
@@ -356,15 +357,24 @@ def test_matmul():
                 k = for_op.induction_variable
                 acc = for_op.inner_iter_args[0]
                 
-                a_val = memref.load(A, [row, k])
-                b_val = memref.load(B, [k, col])
+                # Use layout to compute A[row, k] linear address
+                a_coord = rocir.make_coord(row, k)
+                a_idx = rocir.crd2idx(a_coord, a_layout)
+                a_val = memref.load(A, [a_idx])
+                
+                # Use layout to compute B[k, col] linear address
+                b_coord = rocir.make_coord(k, col)
+                b_idx = rocir.crd2idx(b_coord, b_layout)
+                b_val = memref.load(B, [b_idx])
+                
                 prod = arith.mulf(a_val, b_val)
                 new_acc = arith.addf(acc, prod)
                 
                 scf.yield_([new_acc])
             
             result = for_op.results[0]
-            memref.store(result, C, [row, col])
+            # Use layout-computed linear index for C
+            memref.store(result, C, [c_idx])
             scf.yield_([])
     
     ip.__exit__(None, None, None)
