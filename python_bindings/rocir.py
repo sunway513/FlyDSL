@@ -4,19 +4,16 @@ from mlir import ir
 from mlir.dialects._ods_common import _cext as _ods_cext
 
 # Import generated ops
-from ._rocir_ops_gen import *
-from ._rocir_ops_gen import _Dialect
+from _rocir_ops_gen import *
+from _rocir_ops_gen import _Dialect
 
-# Register the dialect and passes when imported
+# Register the dialect when imported
 try:
-    # Import the C++ extension module
-    from . import _rocirDialect
-    
-    # Register Rocir passes
-    _rocirDialect.rocir.register_passes()
-    
+    # The dialect is automatically registered via @_ods_cext.register_dialect decorator
+    # in _rocir_ops_gen.py, but we need to ensure it's loaded in the context
+    pass
 except Exception as e:
     import warnings
-    warnings.warn(f"Failed to register Rocir passes: {e}")
+    warnings.warn(f"Failed to register Rocir dialect: {e}")
 
 __all__ = []

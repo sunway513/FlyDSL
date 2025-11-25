@@ -83,3 +83,11 @@ endif()
   add_dependencies(RocirPythonModules _rocirDialect)
   
   message(STATUS "CuTe dialect Python extension module will be built")
+
+# Fix relative imports in generated Python bindings
+add_custom_command(
+    TARGET RocirPythonOpsIncGen POST_BUILD
+    COMMAND sed -i 's/from \._ods_common/from mlir.dialects._ods_common/g' 
+        ${CMAKE_CURRENT_BINARY_DIR}/_rocir_ops_gen.py
+    COMMENT "Fixing relative imports in _rocir_ops_gen.py"
+)
