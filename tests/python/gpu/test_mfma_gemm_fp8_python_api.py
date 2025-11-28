@@ -20,11 +20,12 @@ from hip import hip
 import ctypes
 
 def construct_module(val_a_list, val_b_list):
+    gpu_arch = get_hip_arch()
     loc = ir.Location.unknown()
     with loc:
         module = ir.Module.create(loc=loc)
         
-        targets_attr = ir.Attribute.parse('[#rocdl.target<chip = gpu_arch, abi = "500">]')
+        targets_attr = ir.Attribute.parse(f'[#rocdl.target<chip = "{gpu_arch}", abi = "500">]')
         
         with ir.InsertionPoint(module.body):
             gpu_mod = gpu.GPUModuleOp("mfma_mod", targets=targets_attr)
@@ -122,7 +123,8 @@ def test_mfma_fp8_api():
     print("MFMA FP8 GEMM Test - 1024x1024x1024 (Python API)")
     print("="*80)
     
-    print(f"Detected HIP Arch: {get_hip_arch()}")
+    gpu_arch = get_hip_arch()
+    print(f"Detected HIP Arch: {gpu_arch}")
 
     # Generate random inputs
     rng = np.random.default_rng()

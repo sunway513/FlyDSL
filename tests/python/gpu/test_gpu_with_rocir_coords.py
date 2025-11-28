@@ -185,7 +185,7 @@ if __name__ == "__main__":
         print("Rocir layout algebra integrated into GPU kernel")
         print("Coordinate operations (make_coord, make_layout, crd2idx)")
         print("Lowered to arithmetic via rocir-opt subprocess")
-        print("Compiled and executed on "${gpu_arch}"")
+        print(f"Compiled and executed on {get_hip_arch()}")
         sys.exit(0)
     else:
         print("⚠️ TEST FAILED")

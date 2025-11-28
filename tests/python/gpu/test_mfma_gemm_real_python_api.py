@@ -23,12 +23,13 @@ from hip import hip
 import ctypes
 
 def construct_module(val_a, val_b):
+    gpu_arch = get_hip_arch()
     loc = ir.Location.unknown()
     with loc:
         module = ir.Module.create(loc=loc)
         
         # Parse the array attribute directly to ensure correct type
-        targets_attr = ir.Attribute.parse('[#rocdl.target<chip = gpu_arch, abi = "500">]')
+        targets_attr = ir.Attribute.parse(f'[#rocdl.target<chip = "{gpu_arch}", abi = "500">]')
         
         # Use InsertionPoint to insert into module body
         with ir.InsertionPoint(module.body):
@@ -116,7 +117,8 @@ def test_mfma_real_api():
     print("MFMA Real GEMM Test - 1024x1024x1024 (Python API)")
     print("="*80)
     
-    print(f"Detected HIP Arch: {get_hip_arch()}")
+    gpu_arch = get_hip_arch()
+    print(f"Detected HIP Arch: {gpu_arch}")
 
     # Generate random inputs
     val_a = float(np.random.uniform(0.5, 2.0))

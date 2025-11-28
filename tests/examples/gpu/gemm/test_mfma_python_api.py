@@ -7,9 +7,9 @@ Following test_gpu_rocdsl.py style without ir.Module.parse().
 """
 import sys
 import os
-sys.path.insert(0, os.environ['MLIR_PATH'] + '/tools/mlir/python_packages/mlir_core')
-sys.path.insert(0, '/mnt/raid0/felix/rocDSL/build/python_bindings')
-sys.path.insert(0, '/mnt/raid0/felix/rocDSL/python')
+sys.path.insert(0, os.path.join(os.environ.get('MLIR_PATH', '/home/yanronli/llvm-project/buildmlir'), 'tools/mlir/python_packages/mlir_core'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../../build/python_bindings'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../../python'))
 
 from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
@@ -94,7 +94,7 @@ def test_mfma_simple():
         Pipeline()
         .canonicalize()
         .cse()
-        .rocdl_attach_target(chip="gfx942")
+        .rocdl_attach_target(chip=get_hip_arch())
         .Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP"))
         .gpu_to_llvm()
         .lower_to_llvm()

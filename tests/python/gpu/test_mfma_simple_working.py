@@ -15,9 +15,10 @@ ir.Module.parse() is the STANDARD Python binding approach for complex MLIR.
 All compilation and execution uses Python APIs (no shell commands).
 """
 import sys
-sys.path.insert(0, "/mnt/raid0/felix/llvm-project/buildmlir/tools/mlir/python_packages/mlir_core")
-sys.path.insert(0, "/mnt/raid0/felix/rocDSL/build/python_bindings")
-sys.path.insert(0, "/mnt/raid0/felix/rocDSL/python")
+import os
+sys.path.insert(0, os.path.join(os.environ.get('MLIR_PATH', '/home/yanronli/llvm-project/buildmlir'), 'tools/mlir/python_packages/mlir_core'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../build/python_bindings'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../python'))
 
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
@@ -56,6 +57,8 @@ def test_mfma():
     print("="*80)
     print()
     
+    gpu_arch = get_hip_arch()
+
     # Parse MLIR text using Python binding
     with ir.Context() as ctx:
         module = ir.Module.parse(MLIR_TEXT)

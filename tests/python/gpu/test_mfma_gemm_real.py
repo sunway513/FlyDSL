@@ -76,10 +76,11 @@ def test_mfma_real():
     print("MFMA Real GEMM Test - 64x64x64")
     print("="*80)
     
-    print(f"Detected HIP Arch: {get_hip_arch()}")
+    gpu_arch = get_hip_arch()
+    print(f"Detected HIP Arch: {gpu_arch}")
 
     with ir.Context() as ctx:
-        module = ir.Module.parse(MLIR_TEXT)
+        module = ir.Module.parse(MLIR_TEXT.replace("gpu_arch", f'"{gpu_arch}"'))
         print("✓ MLIR module parsed")
         
         print("Compiling...")
