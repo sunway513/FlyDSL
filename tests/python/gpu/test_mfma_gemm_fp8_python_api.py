@@ -5,6 +5,7 @@ sys.path.insert(0, "/mnt/raid0/felix/rocDSL/python")
 
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
+from rocdsl.runtime.fp8_util import to_byte
 import rocdsl.dialects.ext.rocir as rocir
 import numpy as np
 from mlir import ir
@@ -303,13 +304,6 @@ def construct_module():
                 
     return module
 
-def to_byte(v):
-    # gfx942 uses E4M3FNUZ (Bias 8)
-    if v == 0.0: return 0x00
-    if v == 1.0: return 0x40
-    if v == 2.0: return 0x48
-    return 0x00
-
 def test_mfma_fp8_rocir():
     print("="*80)
     print("MFMA Real FP8 GEMM Test (Rocir) - 1024x1024x1280")
@@ -343,9 +337,9 @@ def test_mfma_fp8_rocir():
             .rocdl_attach_target(chip="gfx942") \
             .convert_vector_to_llvm() \
             .Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP", chipset="gfx942")) \
-            .gpu_to_llvm() \
-            .lower_to_llvm() \
-            .gpu_module_to_binary(format="bin")
+           .gpu_to_llvm() \
+           .lower_to_llvm(use_bare_ptr_memref_call_conv=True) \
+           .gpu_module_to_binary(format="bin")
             
         lowered = run_pipeline(module, pipeline)
     
@@ -361,9 +355,11 @@ def test_mfma_fp8_rocir():
     size_b = N * K
     
     # Random inputs (0, 1, 2)
-    a_host = np.random.randint(0, 3, size=(M, K)).astype(np.float32)
-    b_host = np.random.randint(0, 3, size=(K, N)).astype(np.float32)
+    a_host = np.random.randint(-16, 16, size=(M, K)).astype(np.float32)
+    b_host = np.random.randint(-16, 16, size=(K, N)).astype(np.float32)
     
+    # a_host = np.random.randint(-128, 128, size=(M, K)).astype(np.float32) / 128.0
+    # b_host = np.random.randint(-128, 128, size=(K, N)).astype(np.float32) /128.0
     # Transpose B for the kernel (NxK)
     b_host_T = np.ascontiguousarray(b_host.T)
     
@@ -398,6 +394,8 @@ def test_mfma_fp8_rocir():
     print(f"Max Absolute Difference: {np.max(np.abs(c_host - expected))}")
     
     if np.allclose(c_host, expected, atol=1.0):
+        print("c_host:",c_host)
+        print("expected_matrix:",expected)
         print(f"✓ Kernel executed correctly (Matches np.matmul)")
     else:
         print(f"✗ Unexpected result")
