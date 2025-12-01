@@ -1,45 +1,18 @@
-"""Shared utilities for GPU testing and compilation."""
+"""Utilities forwarding to shared tests/utils.py for backward compatibility."""
 
-from rocdsl.compiler.pipeline import Pipeline, run_pipeline
-from rocdsl.compiler.rocir_opt_helper import apply_rocir_coord_lowering
-from rocdsl.runtime.hip_util import get_hip_arch
+import sys
+import os
+import importlib.util
 
+# Load the shared utils module from tests/utils.py
+_utils_path = os.path.join(os.path.dirname(__file__), '../../utils.py')
+_spec = importlib.util.spec_from_file_location("_shared_utils", _utils_path)
+_shared_utils = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_shared_utils)
 
-def compile_to_hsaco(mlir_module):
-    """
-    Compile MLIR module to HSACO binary for AMD GPUs.
-    
-    Pipeline:
-    1. Apply rocir coordinate lowering (rocir ops -> arithmetic)
-    2. Canonicalize and CSE
-    3. Attach ROCDL target for current GPU architecture
-    4. Convert GPU dialect to ROCDL
-    5. Lower to LLVM
-    6. Generate binary
-    
-    Args:
-        mlir_module: MLIR module containing GPU kernels
-        
-    Returns:
-        bytes: HSACO binary object
-    """
-    # Apply rocir coordinate lowering first
-    lowered_module = apply_rocir_coord_lowering(mlir_module)
-    
-    # Get the current GPU architecture
-    gpu_arch = get_hip_arch()
-    
-    # Then run the main GPU compilation pipeline
-    lowered = run_pipeline(
-        lowered_module,
-        Pipeline()
-        .canonicalize()
-        .cse()
-        .rocdl_attach_target(chip=gpu_arch)
-        .Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP"))
-        .gpu_to_llvm()
-        .lower_to_llvm()
-        .gpu_module_to_binary(format="bin")
-    )
-    from rocdsl.dialects.ext.gpu import get_compile_object_bytes
-    return get_compile_object_bytes(lowered)
+# Re-export all utilities
+compile_to_hsaco = _shared_utils.compile_to_hsaco
+BenchmarkResults = _shared_utils.BenchmarkResults
+perftest = _shared_utils.perftest
+
+__all__ = ['compile_to_hsaco', 'BenchmarkResults', 'perftest']

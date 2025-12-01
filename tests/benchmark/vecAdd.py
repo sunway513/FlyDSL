@@ -6,6 +6,7 @@ import os
 sys.path.insert(0, os.path.join(os.environ.get('MLIR_PATH'), 'tools/mlir/python_packages/mlir_core'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../build/python_bindings'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../python'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.dialects.ext import gpu, rocir, arith, scf
@@ -17,7 +18,7 @@ from hip import hip
 import numpy as np
 import ctypes
 
-# Import benchmark utilities
+# Import benchmark utilities from shared tests/utils.py
 from utils import BenchmarkResults, perftest, compile_to_hsaco
     
 def benchmark_vector_add():
@@ -252,6 +253,23 @@ def benchmark_matrix_transpose():
     hip_check(hip.hipModuleUnload(hip_module))
     
     return error < 1e-5
+
+# Pytest test functions
+def test_benchmark_vector_add():
+    """Pytest wrapper for vector addition benchmark."""
+    print("\n" + "="*80)
+    print("ROCm GPU Tests - Rocir Coordinate Operations in GPU Kernels")
+    print(f"GPU: {get_hip_arch()}")
+    print("="*80)
+    assert benchmark_vector_add(), "Vector addition benchmark failed correctness check"
+
+def test_benchmark_matrix_transpose():
+    """Pytest wrapper for matrix transpose benchmark."""
+    print("\n" + "="*80)
+    print("ROCm GPU Tests - Rocir Coordinate Operations in GPU Kernels")
+    print(f"GPU: {get_hip_arch()}")
+    print("="*80)
+    assert benchmark_matrix_transpose(), "Matrix transpose benchmark failed correctness check"
 
 if __name__ == "__main__":
     import argparse
