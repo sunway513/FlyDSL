@@ -74,64 +74,64 @@ def compile_to_hsaco(mlir_module, kernel_name="kernel"):
     # Stage 1: Canonicalize
     canonicalized = run_pipeline(
         lowered_module,
-        Pipeline().canonicalize(),
-        enable_ir_printing=enable_ir_printing
+        Pipeline().canonicalize()
     )
     dump_stage(canonicalized, "03_canonicalized")
     
     # Stage 2: CSE
     cse_result = run_pipeline(
         canonicalized,
-        Pipeline().cse(),
-        enable_ir_printing=enable_ir_printing
+        Pipeline().cse()
     )
     dump_stage(cse_result, "04_cse")
     
     # Stage 3: Attach ROCDL target
     with_target = run_pipeline(
         cse_result,
-        Pipeline().rocdl_attach_target(chip=gpu_arch),
-        enable_ir_printing=enable_ir_printing
+        Pipeline().rocdl_attach_target(chip=gpu_arch)
     )
     dump_stage(with_target, "05_with_target")
     
-    # Stage 4: Convert GPU to ROCDL
-    rocdl_converted = run_pipeline(
+    # Stage 4: Convert SCF to CF before GPU lowering (structured control flow to control flow)
+    cf_converted = run_pipeline(
         with_target,
-        Pipeline().Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP")),
-        enable_ir_printing=enable_ir_printing
+        Pipeline().convert_scf_to_cf()
     )
-    dump_stage(rocdl_converted, "06_rocdl")
+    dump_stage(cf_converted, "06_scf_to_cf")
     
-    # Stage 5: GPU to LLVM
+    # Stage 5: Convert GPU to ROCDL
+    rocdl_converted = run_pipeline(
+        cf_converted,
+        Pipeline().Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP"))
+    )
+    dump_stage(rocdl_converted, "07_rocdl")
+    
+    # Stage 6: GPU to LLVM  
     llvm_converted = run_pipeline(
         rocdl_converted,
-        Pipeline().gpu_to_llvm(),
-        enable_ir_printing=enable_ir_printing
+        Pipeline().gpu_to_llvm()
     )
-    dump_stage(llvm_converted, "07_llvm_gpu")
+    dump_stage(llvm_converted, "08_llvm_gpu")
     
-    # Stage 6: Lower to LLVM
+    # Stage 7: Lower to LLVM (includes CF to LLVM conversion)
     llvm_lowered = run_pipeline(
         llvm_converted,
-        Pipeline().lower_to_llvm(),
-        enable_ir_printing=enable_ir_printing
+        Pipeline().lower_to_llvm()
     )
-    dump_stage(llvm_lowered, "08_llvm_final")
+    dump_stage(llvm_lowered, "09_llvm_final")
     
-    # Stage 7: Generate binary (ISA/assembly)
+    # Stage 8: Generate binary (ISA/assembly)
     # For assembly dump, we need to use a different format first
     if dump_ir:
         try:
             # Try to get assembly output
             asm_module = run_pipeline(
                 llvm_lowered,
-                Pipeline().gpu_module_to_binary(format="isa"),
-                enable_ir_printing=False
+                Pipeline().gpu_module_to_binary(format="isa")
             )
             from rocdsl.dialects.ext.gpu import get_compile_object_bytes
             asm_bytes = get_compile_object_bytes(asm_module)
-            asm_filename = os.path.join(dump_dir, f"{kernel_name}_09_assembly.s")
+            asm_filename = os.path.join(dump_dir, f"{kernel_name}_10_assembly.s")
             with open(asm_filename, 'wb') as f:
                 f.write(asm_bytes)
             print(f"  📝 Dumped assembly: {asm_filename}")
@@ -141,17 +141,16 @@ def compile_to_hsaco(mlir_module, kernel_name="kernel"):
     # Final binary generation
     lowered = run_pipeline(
         llvm_lowered,
-        Pipeline().gpu_module_to_binary(format="bin"),
-        enable_ir_printing=enable_ir_printing
+        Pipeline().gpu_module_to_binary(format="bin")
     )
-    dump_stage(lowered, "10_binary_module")
+    dump_stage(lowered, "11_binary_module")
     
     from rocdsl.dialects.ext.gpu import get_compile_object_bytes
     hsaco_bytes = get_compile_object_bytes(lowered)
     
     # Save HSACO binary if dumping
     if dump_ir:
-        hsaco_filename = os.path.join(dump_dir, f"{kernel_name}_11_final.hsaco")
+        hsaco_filename = os.path.join(dump_dir, f"{kernel_name}_12_final.hsaco")
         with open(hsaco_filename, 'wb') as f:
             f.write(hsaco_bytes)
         print(f"  📝 Dumped HSACO binary: {hsaco_filename}")
