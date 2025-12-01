@@ -5,6 +5,9 @@ set -ex
 export MLIR_PATH=${MLIR_PATH:-/home/yanronli/llvm-project/buildmlir}
 export PYTHONPATH=$MLIR_PATH/tools/mlir/python_packages/mlir_core:$PYTHONPATH
 
+# Install Python requirements
+pip install -r python/requirements.txt
+
 # Build C++ components
 mkdir -p build && cd build
 cmake .. -DMLIR_DIR=$MLIR_PATH/lib/cmake/mlir

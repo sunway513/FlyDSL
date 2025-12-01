@@ -1,10 +1,15 @@
-"""Helper utilities to run Rocir coordinate lowering via the MLIR Python API."""
+"""Helper utilities to run Rocir coordinate lowering via the MLIR Python API.
+
+This module is maintained for backward compatibility. New code should use
+the Pipeline class from rocdsl.compiler.pipeline instead.
+"""
 
 from mlir.ir import Module as ir_Module
-from mlir.passmanager import PassManager
 
-from rocdsl.compiler.context import ensure_rocir_python_extensions
+# Import from the new pipeline module
+from rocdsl.compiler.pipeline import Pipeline, RocDSLCompilerError
 
+# Legacy constant for backward compatibility
 _ROCIR_COORD_LOWERING_PIPELINE = "builtin.module(rocir-coord-lowering)"
 
 
@@ -14,6 +19,9 @@ def apply_rocir_coord_lowering(module: ir_Module) -> ir_Module:
     The pass mutates the provided module in-place and also returns it for
     convenience so callers can chain additional processing.
 
+    Note: This function is maintained for backward compatibility. New code
+    should use Pipeline().rocir_coord_lowering().run(module) instead.
+
     Args:
         module: MLIR module containing Rocir coordinate operations.
 
@@ -22,15 +30,15 @@ def apply_rocir_coord_lowering(module: ir_Module) -> ir_Module:
 
     Raises:
         RuntimeError: If the pass pipeline fails.
+    
+    Example (new API):
+        >>> from rocdsl.compiler.pipeline import Pipeline
+        >>> pipeline = Pipeline().rocir_coord_lowering()
+        >>> result = pipeline.run(module)
     """
-    ctx = module.context
-    ensure_rocir_python_extensions(ctx)
-
-    pm = PassManager.parse(_ROCIR_COORD_LOWERING_PIPELINE, context=ctx)
     try:
-        with ctx:
-            pm.run(module.operation)
-    except RuntimeError as exc:
-        raise RuntimeError(f"rocir-coord-lowering failed: {exc}") from exc
-
-    return module
+        pipeline = Pipeline().rocir_coord_lowering()
+        return pipeline.run(module)
+    except RocDSLCompilerError as exc:
+        # Re-raise as RuntimeError for backward compatibility
+        raise RuntimeError(str(exc)) from exc

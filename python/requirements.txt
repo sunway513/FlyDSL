@@ -1,2 +1,9 @@
 # MLIR Python bindings (requires LLVM/MLIR installation)
 # These are typically provided by the MLIR build
+
+# Python binding library
+pybind11
+
+# Install hip-python from test PyPI
+--index-url https://test.pypi.org/simple
+hip-python~=7.0.0
