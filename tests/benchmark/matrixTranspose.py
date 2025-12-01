@@ -85,7 +85,7 @@ def benchmark_matrix_transpose():
     
     ip.__exit__(None, None, None)
     
-    hsaco = compile_to_hsaco(ctx.module)
+    hsaco = compile_to_hsaco(ctx.module, kernel_name="matrixTranspose")
     print(f"  Compiled to HSACO: {len(hsaco)} bytes")
     
     # Allocate device memory

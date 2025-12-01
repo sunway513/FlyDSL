@@ -6,9 +6,11 @@ from rocdsl.runtime.hip_util import get_hip_arch
 from hip import hip
 import numpy as np
 from functools import wraps
+import os
+import tempfile
 
 
-def compile_to_hsaco(mlir_module):
+def compile_to_hsaco(mlir_module, kernel_name="kernel"):
     """
     Compile MLIR module to HSACO binary for AMD GPUs.
     
@@ -20,32 +22,141 @@ def compile_to_hsaco(mlir_module):
     5. Lower to LLVM
     6. Generate binary
     
+    Environment Variables:
+    - ROCDSL_DUMP_IR=1: Enable IR dumping at each compilation stage
+    - ROCDSL_DUMP_DIR=/path/to/dir: Directory to save IR files (default: /tmp/rocdsl_dump)
+    - ROCDSL_ENABLE_IR_PRINTING=1: Print IR to console during compilation
+    
     Args:
         mlir_module: MLIR module containing GPU kernels
+        kernel_name: Name prefix for dumped files (default: "kernel")
         
     Returns:
         bytes: HSACO binary object
     """
+    # Check environment variables for IR dumping
+    dump_ir = os.environ.get('ROCDSL_DUMP_IR', '0') == '1'
+    dump_dir = os.environ.get('ROCDSL_DUMP_DIR', '/tmp/rocdsl_dump')
+    enable_ir_printing = os.environ.get('ROCDSL_ENABLE_IR_PRINTING', '0') == '1'
+    
+    # Create dump directory if needed
+    if dump_ir:
+        os.makedirs(dump_dir, exist_ok=True)
+        print(f"  📁 IR dump directory: {dump_dir}")
+    
+    def dump_stage(module, stage_name):
+        """Helper function to dump IR at a specific stage."""
+        if dump_ir:
+            ir_str = str(module)
+            filename = os.path.join(dump_dir, f"{kernel_name}_{stage_name}.mlir")
+            with open(filename, 'w') as f:
+                f.write(ir_str)
+            print(f"  📝 Dumped {stage_name}: {filename}")
+            
+            if enable_ir_printing:
+                print(f"\n{'='*80}")
+                print(f"IR Stage: {stage_name}")
+                print(f"{'='*80}")
+                print(ir_str)
+                print(f"{'='*80}\n")
+    
+    # Dump initial IR (with rocir ops)
+    dump_stage(mlir_module, "01_initial")
+    
     # Apply rocir coordinate lowering first
     lowered_module = apply_rocir_coord_lowering(mlir_module)
+    dump_stage(lowered_module, "02_rocir_lowered")
     
     # Get the current GPU architecture
     gpu_arch = get_hip_arch()
     
-    # Then run the main GPU compilation pipeline
-    lowered = run_pipeline(
+    # Build pipeline step by step for intermediate dumps
+    # Stage 1: Canonicalize
+    canonicalized = run_pipeline(
         lowered_module,
-        Pipeline()
-        .canonicalize()
-        .cse()
-        .rocdl_attach_target(chip=gpu_arch)
-        .Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP"))
-        .gpu_to_llvm()
-        .lower_to_llvm()
-        .gpu_module_to_binary(format="bin")
+        Pipeline().canonicalize(),
+        enable_ir_printing=enable_ir_printing
     )
+    dump_stage(canonicalized, "03_canonicalized")
+    
+    # Stage 2: CSE
+    cse_result = run_pipeline(
+        canonicalized,
+        Pipeline().cse(),
+        enable_ir_printing=enable_ir_printing
+    )
+    dump_stage(cse_result, "04_cse")
+    
+    # Stage 3: Attach ROCDL target
+    with_target = run_pipeline(
+        cse_result,
+        Pipeline().rocdl_attach_target(chip=gpu_arch),
+        enable_ir_printing=enable_ir_printing
+    )
+    dump_stage(with_target, "05_with_target")
+    
+    # Stage 4: Convert GPU to ROCDL
+    rocdl_converted = run_pipeline(
+        with_target,
+        Pipeline().Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP")),
+        enable_ir_printing=enable_ir_printing
+    )
+    dump_stage(rocdl_converted, "06_rocdl")
+    
+    # Stage 5: GPU to LLVM
+    llvm_converted = run_pipeline(
+        rocdl_converted,
+        Pipeline().gpu_to_llvm(),
+        enable_ir_printing=enable_ir_printing
+    )
+    dump_stage(llvm_converted, "07_llvm_gpu")
+    
+    # Stage 6: Lower to LLVM
+    llvm_lowered = run_pipeline(
+        llvm_converted,
+        Pipeline().lower_to_llvm(),
+        enable_ir_printing=enable_ir_printing
+    )
+    dump_stage(llvm_lowered, "08_llvm_final")
+    
+    # Stage 7: Generate binary (ISA/assembly)
+    # For assembly dump, we need to use a different format first
+    if dump_ir:
+        try:
+            # Try to get assembly output
+            asm_module = run_pipeline(
+                llvm_lowered,
+                Pipeline().gpu_module_to_binary(format="isa"),
+                enable_ir_printing=False
+            )
+            from rocdsl.dialects.ext.gpu import get_compile_object_bytes
+            asm_bytes = get_compile_object_bytes(asm_module)
+            asm_filename = os.path.join(dump_dir, f"{kernel_name}_09_assembly.s")
+            with open(asm_filename, 'wb') as f:
+                f.write(asm_bytes)
+            print(f"  📝 Dumped assembly: {asm_filename}")
+        except Exception as e:
+            print(f"  ⚠️  Could not dump assembly: {e}")
+    
+    # Final binary generation
+    lowered = run_pipeline(
+        llvm_lowered,
+        Pipeline().gpu_module_to_binary(format="bin"),
+        enable_ir_printing=enable_ir_printing
+    )
+    dump_stage(lowered, "10_binary_module")
+    
     from rocdsl.dialects.ext.gpu import get_compile_object_bytes
-    return get_compile_object_bytes(lowered)
+    hsaco_bytes = get_compile_object_bytes(lowered)
+    
+    # Save HSACO binary if dumping
+    if dump_ir:
+        hsaco_filename = os.path.join(dump_dir, f"{kernel_name}_11_final.hsaco")
+        with open(hsaco_filename, 'wb') as f:
+            f.write(hsaco_bytes)
+        print(f"  📝 Dumped HSACO binary: {hsaco_filename}")
+    
+    return hsaco_bytes
 
 
 class BenchmarkResults:
