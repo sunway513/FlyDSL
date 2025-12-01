@@ -6,6 +6,13 @@ from mlir.dialects import func, arith
 
 import rocdsl.dialects.ext.rocir as rocir
 
+def _unwrap(val):
+    """Unwrap ArithValue to get underlying MLIR Value."""
+    if hasattr(val, '_value'):
+        return val._value
+    return val
+from test_utils import unwrap_values
+
 
 def test_logical_divide(ctx, insert_point):
     """Test logical divide for basic partitioning."""
@@ -32,7 +39,7 @@ def test_logical_divide(ctx, insert_point):
         partitioned = rocir.logical_divide(global_layout, tile)
         
         size = rocir.size(partitioned)
-        return size
+        return unwrap_values(size)
     
     ctx.module.operation.verify()
     # Apply lowering
@@ -62,7 +69,7 @@ def test_zipped_divide(ctx, insert_point):
         zipped = rocir.zipped_divide(global_layout, tile)
         
         size = rocir.size(zipped)
-        return size
+        return unwrap_values(size)
     
     ctx.module.operation.verify()
     # Apply lowering
@@ -92,7 +99,7 @@ def test_tiled_divide(ctx, insert_point):
         tiled = rocir.tiled_divide(global_layout, tile)
         
         size = rocir.size(tiled)
-        return size
+        return unwrap_values(size)
     
     ctx.module.operation.verify()
     # Apply lowering
@@ -122,7 +129,7 @@ def test_flat_divide(ctx, insert_point):
         flat = rocir.flat_divide(global_layout, tile)
         
         size = rocir.size(flat)
-        return size
+        return unwrap_values(size)
     
     ctx.module.operation.verify()
     # Apply lowering

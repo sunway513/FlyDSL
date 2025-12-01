@@ -8,6 +8,13 @@ from mlir.dialects import func, arith
 import rocdsl.dialects.ext.rocir as rocir
 
 
+def _unwrap(val):
+    """Unwrap ArithValue to get underlying MLIR Value."""
+    if hasattr(val, '_value'):
+        return val._value
+    return val
+
+
 def test_make_shape(ctx, insert_point):
     """Test shape creation."""
     
@@ -15,7 +22,7 @@ def test_make_shape(ctx, insert_point):
     def create_shape(dim0, dim1):
         shape = rocir.make_shape(dim0, dim1)
         size = rocir.size(shape)
-        return size
+        return (_unwrap(size),)  # Unwrap and return tuple
     
     # Verify the module
     ctx.module.operation.verify()
@@ -33,7 +40,7 @@ def test_make_layout(ctx, insert_point):
         stride = rocir.make_stride(stride_val, dim0)
         layout = rocir.make_layout(shape, stride)
         size = rocir.size(layout)
-        return size
+        return (_unwrap(size),)
     
     ctx.module.operation.verify()
     # Apply lowering
@@ -52,7 +59,7 @@ def test_constant_shape(ctx, insert_point):
         shape = rocir.make_shape(c8, c16)
         size = rocir.size(shape)
         
-        return size
+        return (_unwrap(size),)
     
     ctx.module.operation.verify()
     # Apply lowering
@@ -67,7 +74,7 @@ def test_rank_operation(ctx, insert_point):
     def get_rank(dim0, dim1, dim2):
         shape = rocir.make_shape(dim0, dim1, dim2)
         rank_val = rocir.rank(shape)
-        return rank_val
+        return (_unwrap(rank_val),)
     
     ctx.module.operation.verify()
     # Apply lowering
@@ -92,8 +99,8 @@ def test_get_shape_stride(ctx, insert_point):
         size1 = rocir.size(extracted_shape)
         size2 = rocir.cosize(layout)
         
-        result = arith.addi(size1, size2)
-        return result
+        result = arith.addi(_unwrap(size1), _unwrap(size2))
+        return (_unwrap(result),)
     
     ctx.module.operation.verify()
     # Apply lowering
@@ -116,7 +123,7 @@ def test_2d_layout(ctx, insert_point):
         layout = rocir.make_layout(shape, stride)
         
         size = rocir.size(layout)  # Should be 128
-        return size
+        return (_unwrap(size),)
     
     ctx.module.operation.verify()
     # Apply lowering

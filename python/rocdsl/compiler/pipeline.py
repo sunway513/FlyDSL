@@ -30,7 +30,7 @@ class Pipeline:
     
     def __init__(self, passes: Optional[List[str]] = None):
         """Initialize a new pipeline.
-        
+
         Args:
             passes: Optional list of pass strings to start with.
         """
@@ -48,12 +48,13 @@ class Pipeline:
             Self for method chaining.
         """
         if options:
-            opts = ",".join(f"{k}={v}" for k, v in options.items())
+            # Use space separation for MLIR pass options
+            opts = " ".join(f"{k}={v}" for k, v in options.items())
             self._passes.append(f"{pass_name}{{{opts}}}")
         else:
             self._passes.append(pass_name)
         return self
-    
+
     def nest(self, op_name: str, nested_pipeline: "Pipeline") -> "Pipeline":
         """Add a nested pipeline for a specific operation type.
         
@@ -67,7 +68,7 @@ class Pipeline:
         nested_str = ",".join(nested_pipeline._passes)
         self._passes.append(f"{op_name}({nested_str})")
         return self
-    
+
     def Func(self, nested_pipeline: "Pipeline") -> "Pipeline":
         """Add a nested pipeline for func.func operations."""
         return self.nest("func.func", nested_pipeline)
@@ -104,9 +105,19 @@ class Pipeline:
         """Partition tensors for parallel execution."""
         return self.add_pass("cute-tensor-partition")
     
-    def cute_nvgpu_to_nvgpu(self) -> "Pipeline":
-        """Transform NVGPU operations."""
-        return self.add_pass("cute-nvgpu-to-nvgpu")
+    def cute_nvgpu_to_nvgpu(self, target_arch: Optional[str] = None, enable_tma: Optional[bool] = None) -> "Pipeline":
+        """Transform NVGPU operations.
+        
+        Args:
+            target_arch: Target architecture (e.g., "sm_80", "sm_90")
+            enable_tma: Enable Tensor Memory Accelerator
+        """
+        options = {}
+        if target_arch is not None:
+            options["target-arch"] = target_arch
+        if enable_tma is not None:
+            options["enable-tma"] = 1 if enable_tma else 0
+        return self.add_pass("cute-nvgpu-to-nvgpu", **options)
     
     def cute_nvgpu_mma_lowering(self) -> "Pipeline":
         """Lower NVGPU MMA operations."""
@@ -134,7 +145,7 @@ class Pipeline:
     
     def cute_async_pipeline(self, pipeline_depth: Optional[int] = None) -> "Pipeline":
         """Apply async pipelining.
-        
+
         Args:
             pipeline_depth: Optional depth for the async pipeline.
         """
@@ -142,9 +153,16 @@ class Pipeline:
             return self.add_pass("cute-async-pipeline", pipeline_depth=pipeline_depth)
         return self.add_pass("cute-async-pipeline")
     
-    def cute_warp_specialization(self) -> "Pipeline":
-        """Apply warp-level specialization."""
-        return self.add_pass("cute-warp-specialization")
+    def cute_warp_specialization(self, enable_producer_consumer: Optional[bool] = None) -> "Pipeline":
+        """Apply warp-level specialization.
+
+        Args:
+            enable_producer_consumer: Enable producer-consumer specialization
+        """
+        options = {}
+        if enable_producer_consumer is not None:
+            options["enable-producer-consumer"] = 1 if enable_producer_consumer else 0
+        return self.add_pass("cute-warp-specialization", **options)
     
     def cute_layout_analysis(self, print_analysis: bool = False) -> "Pipeline":
         """Run layout analysis.
@@ -208,9 +226,19 @@ class Pipeline:
         """Convert MemRef dialect to LLVM dialect."""
         return self.add_pass("convert-memref-to-llvm")
     
-    def convert_gpu_to_rocdl(self) -> "Pipeline":
-        """Convert GPU dialect to ROCDL dialect."""
-        return self.add_pass("convert-gpu-to-rocdl")
+    def convert_gpu_to_rocdl(self, use_bare_ptr_memref_call_conv: Optional[bool] = None, runtime: Optional[str] = None) -> "Pipeline":
+        """Convert GPU dialect to ROCDL dialect.
+
+        Args:
+            use_bare_ptr_memref_call_conv: Use bare pointer calling convention for memrefs
+            runtime: Runtime to target ("HIP", "OpenCL")
+        """
+        options = {}
+        if use_bare_ptr_memref_call_conv is not None:
+            options["use-bare-ptr-memref-call-conv"] = 1 if use_bare_ptr_memref_call_conv else 0
+        if runtime is not None:
+            options["runtime"] = runtime
+        return self.add_pass("convert-gpu-to-rocdl", **options)
     
     def convert_gpu_to_nvvm(self) -> "Pipeline":
         """Convert GPU dialect to NVVM dialect."""
@@ -219,6 +247,49 @@ class Pipeline:
     def reconcile_unrealized_casts(self) -> "Pipeline":
         """Reconcile unrealized conversion casts."""
         return self.add_pass("reconcile-unrealized-casts")
+    
+    def gpu_to_llvm(self, use_bare_ptr_memref_call_conv: Optional[bool] = None) -> "Pipeline":
+        """Convert GPU-related types to LLVM types.
+
+        Args:
+            use_bare_ptr_memref_call_conv: Use bare pointer calling convention for memrefs
+        """
+        options = {}
+        if use_bare_ptr_memref_call_conv is not None:
+            options["use-bare-ptr-memref-call-conv"] = 1 if use_bare_ptr_memref_call_conv else 0
+        return self.add_pass("gpu-to-llvm", **options)
+    
+    def lower_to_llvm(self) -> "Pipeline":
+        """Lower to LLVM dialect (alias for convert-func-to-llvm)."""
+        return self.add_pass("convert-func-to-llvm")
+    
+    def rocdl_attach_target(self, chip: Optional[str] = None, features: Optional[str] = None) -> "Pipeline":
+        """Attach ROCDL target for AMD GPU compilation.
+
+        Args:
+            chip: Target chip architecture (e.g., "gfx908", "gfx90a", "gfx942")
+            features: Additional target features
+        """
+        options = {}
+        if chip is not None:
+            options["chip"] = chip
+        if features is not None:
+            options["features"] = features
+        return self.add_pass("rocdl-attach-target", **options)
+    
+    def gpu_module_to_binary(self, format: Optional[str] = None, toolkit_path: Optional[str] = None) -> "Pipeline":
+        """Compile GPU module to binary.
+        
+        Args:
+            format: Output format ("bin", "fatbin", "isa")
+            toolkit_path: Path to GPU toolkit
+        """
+        options = {}
+        if format is not None:
+            options["format"] = format
+        if toolkit_path is not None:
+            options["toolkit-path"] = toolkit_path
+        return self.add_pass("gpu-module-to-binary", **options)
     
     # ========================================================================
     # Pipeline composition
@@ -240,7 +311,7 @@ class Pipeline:
         """
         self._passes.extend(other._passes)
         return self
-    
+
     def __str__(self) -> str:
         """Get the pipeline string representation."""
         if not self._passes:
@@ -289,6 +360,19 @@ class Pipeline:
     def to_string(self) -> str:
         """Get the pipeline string (alias for __str__)."""
         return str(self)
+    
+    # ========================================================================
+    # Convenience/Recipe Methods
+    # ========================================================================
+    
+    def lower_cute_nvgpu_to_nvgpu(self, target_arch: Optional[str] = None, enable_pipeline: Optional[bool] = None) -> "Pipeline":
+        """Convenience method for NVGPU lowering pipeline.
+
+        Args:
+            target_arch: Target architecture
+            enable_pipeline: Enable async pipeline
+        """
+        return self.cute_nvgpu_to_nvgpu(target_arch=target_arch).cute_nvgpu_mma_lowering().cute_nvgpu_copy_lowering()
 
 
 # ========================================================================
@@ -298,7 +382,7 @@ class Pipeline:
 def run_pipeline(module: ir_Module, pipeline: Union[Pipeline, str]) -> ir_Module:
     """Run a pipeline on a module.
     
-    Args:
+        Args:
         module: MLIR module to transform.
         pipeline: Pipeline object or pipeline string.
     
@@ -328,8 +412,8 @@ def run_pipeline(module: ir_Module, pipeline: Union[Pipeline, str]) -> ir_Module
 
 def lower_rocir_to_standard(module: ir_Module) -> ir_Module:
     """Convenience function to lower Rocir to standard dialects.
-    
-    Args:
+
+        Args:
         module: MLIR module containing Rocir operations.
     
     Returns:
@@ -342,7 +426,7 @@ def lower_rocir_to_standard(module: ir_Module) -> ir_Module:
 def apply_rocir_coord_lowering(module: ir_Module) -> ir_Module:
     """Apply the rocir-coord-lowering pass (backward compatibility).
     
-    Args:
+        Args:
         module: MLIR module containing Rocir coordinate operations.
     
     Returns:

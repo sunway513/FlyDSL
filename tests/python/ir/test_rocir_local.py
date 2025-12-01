@@ -6,6 +6,12 @@ from mlir.dialects import func, arith
 
 import rocdsl.dialects.ext.rocir as rocir
 
+def _unwrap(val):
+    """Unwrap ArithValue to get underlying MLIR Value."""
+    if hasattr(val, '_value'):
+        return val._value
+    return val
+
 
 def test_local_partition(ctx, insert_point):
     """Test local_partition for thread-level data partitioning."""
@@ -33,7 +39,7 @@ def test_local_partition(ctx, insert_point):
         thread_data = rocir.local_partition(global_layout, tile, c0)
         
         size = rocir.size(thread_data)
-        return size
+        return (_unwrap(size),)
     
     ctx.module.operation.verify()
     # Apply lowering

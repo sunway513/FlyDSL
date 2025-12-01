@@ -51,8 +51,9 @@ def test_mfma_fp8_rocir():
     # LDS Globals (Tile size 32x128)
     lds_mem_type = ir.MemRefType.get([4096], f8, memory_space=ir.Attribute.parse("3"))
     
-    # Create LDS globals before the module
-    with ir.InsertionPoint(ctx.module.body):
+    @gpu.module("mfma_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500", features = "+sramecc,+xnack">' ])
+    def gpu_mod():
+        # Create LDS globals inside the GPU module
         lds_a_global = memref.GlobalOp(
             sym_name="lds_a",
             type_=lds_mem_type,
@@ -65,9 +66,6 @@ def test_mfma_fp8_rocir():
             initial_value=ir.UnitAttr.get(),
             sym_visibility=ir.StringAttr.get("private")
         )
-    
-    @gpu.module("mfma_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500", features = "+sramecc,+xnack">'])
-    def gpu_mod():
         
         @gpu.func(emit=True)
         def kernel(
@@ -75,15 +73,16 @@ def test_mfma_fp8_rocir():
             arg_a: T.memref(size_a, f8),
             arg_b: T.memref(size_b, f8)
         ):
-            c0_i32 = arith.ConstantOp(ir.IntegerType.get_signless(32), 0).result
-            c128 = arith.ConstantOp(ir.IndexType.get(), 128).result
-            c32 = arith.ConstantOp(ir.IndexType.get(), 32).result
-            c16 = arith.ConstantOp(ir.IndexType.get(), 16).result
-            c8 = arith.ConstantOp(ir.IndexType.get(), 8).result
-            c4 = arith.ConstantOp(ir.IndexType.get(), 4).result
-            c2 = arith.ConstantOp(ir.IndexType.get(), 2).result
-            c64 = arith.ConstantOp(ir.IndexType.get(), 64).result
-            c1024 = arith.ConstantOp(ir.IndexType.get(), 1024).result
+            c0_i32 = _arith_mlir.ConstantOp(ir.IntegerType.get_signless(32), ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 0)).result
+            c128 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 128)).result
+            c32 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 32)).result
+            c16 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 16)).result
+            c8 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 8)).result
+            c4 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 4)).result
+            c2 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 2)).result
+            c64 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 64)).result
+            c1024 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 1024)).result
+            c1280 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 1280)).result
             
             identity_map = ir.AffineMap.get_identity(1)
             
@@ -97,23 +96,24 @@ def test_mfma_fp8_rocir():
             # Accumulator Init
             vec4_f32 = ir.VectorType.get([4], f32)
             zero_attr = ir.DenseElementsAttr.get_splat(vec4_f32, ir.FloatAttr.get(f32, 0.0))
-            acc_init = _arith_mlir.ConstantOp(vec4_f32, zero_attr).result
+            acc_init = _arith_mlir.ConstantOp(vec4_f32, unwrap(zero_attr)).result
             
             # Global Load Indices
-            tx_16 = arith.MulIOp(tx._value, c16).result
             
-            row_a_local = arith.DivUIOp(tx_16, c128).result
-            col_a_local = arith.RemUIOp(tx_16, c128).result
+            tx_16 = _arith_mlir.MulIOp(unwrap(tx), unwrap(c16)).result
             
-            bx_32 = arith.MulIOp(bx._value, c32).result
-            row_a_global = arith.AddIOp(bx_32, row_a_local).result
+            row_a_local = _arith_mlir.DivUIOp(unwrap(tx_16), unwrap(c128)).result
+            col_a_local = _arith_mlir.RemUIOp(unwrap(tx_16), unwrap(c128)).result
+            
+            bx_32 = _arith_mlir.MulIOp(unwrap(bx._value), unwrap(c32)).result
+            row_a_global = _arith_mlir.AddIOp(unwrap(bx_32), unwrap(row_a_local)).result
             
             # For B (Transposed)
-            row_b_local = arith.DivUIOp(tx_16, c128).result
-            col_b_local = arith.RemUIOp(tx_16, c128).result
+            row_b_local = _arith_mlir.DivUIOp(unwrap(tx_16), unwrap(c128)).result
+            col_b_local = _arith_mlir.RemUIOp(unwrap(tx_16), unwrap(c128)).result
             
-            by_32 = arith.MulIOp(by._value, c32).result
-            row_b_global = arith.AddIOp(by_32, row_b_local).result
+            by_32 = _arith_mlir.MulIOp(unwrap(by._value), unwrap(c32)).result
+            row_b_global = _arith_mlir.AddIOp(unwrap(by_32), unwrap(row_b_local)).result
             
             # LDS Write Index
             lds_write_idx = tx_16
@@ -122,69 +122,69 @@ def test_mfma_fp8_rocir():
             pad_f8 = _arith_mlir.ConstantOp(f8, ir.FloatAttr.get(f8, 0.0)).result
             
             # Pre-calculate LDS read indices
-            wave_id = arith.DivUIOp(tx._value, c64).result
-            lane_id = arith.RemUIOp(tx._value, c64).result
+            wave_id = _arith_mlir.DivUIOp(unwrap(tx._value), unwrap(c64)).result
+            lane_id = _arith_mlir.RemUIOp(unwrap(tx._value), unwrap(c64)).result
             
-            wave_row = arith.DivUIOp(wave_id, c2).result
-            wave_col = arith.RemUIOp(wave_id, c2).result
+            wave_row = _arith_mlir.DivUIOp(unwrap(wave_id), unwrap(c2)).result
+            wave_col = _arith_mlir.RemUIOp(unwrap(wave_id), unwrap(c2)).result
             
-            lane_mod_16 = arith.RemUIOp(lane_id, c16).result
-            lane_div_16 = arith.DivUIOp(lane_id, c16).result
+            lane_mod_16 = _arith_mlir.RemUIOp(unwrap(lane_id), unwrap(c16)).result
+            lane_div_16 = _arith_mlir.DivUIOp(unwrap(lane_id), unwrap(c16)).result
             
-            row_a_lds_base = arith.MulIOp(wave_row, c16).result
-            row_a_lds = arith.AddIOp(row_a_lds_base, lane_mod_16).result
+            row_a_lds_base = _arith_mlir.MulIOp(unwrap(wave_row), unwrap(c16)).result
+            row_a_lds = _arith_mlir.AddIOp(unwrap(row_a_lds_base), unwrap(lane_mod_16)).result
             
-            col_offset_base = arith.MulIOp(lane_div_16, c8).result
+            col_offset_base = _arith_mlir.MulIOp(unwrap(lane_div_16), unwrap(c8)).result
             
-            row_b_lds_base = arith.MulIOp(wave_col, c16).result
-            row_b_lds = arith.AddIOp(row_b_lds_base, lane_mod_16).result
+            row_b_lds_base = _arith_mlir.MulIOp(unwrap(wave_col), unwrap(c16)).result
+            row_b_lds = _arith_mlir.AddIOp(unwrap(row_b_lds_base), unwrap(lane_mod_16)).result
             
             # Main Loop K
             current_acc = acc_init
             for k in range(0, 1280, 128):
-                k_const = arith.ConstantOp(ir.IndexType.get(), k).result
+                k_const = _arith_mlir.ConstantOp(ir.IndexType.get(), k).result
                 
                 # Load A
-                col_a_global_k = arith.AddIOp(k_const, col_a_local).result
-                row_a_g_1024 = arith.MulIOp(row_a_global, c1024).result
-                idx_a = arith.AddIOp(row_a_g_1024, col_a_global_k).result
+                col_a_global_k = _arith_mlir.AddIOp(unwrap(k_const), unwrap(col_a_local)).result
+                row_a_g_1280 = _arith_mlir.MulIOp(unwrap(row_a_global), unwrap(c1280)).result
+                idx_a = _arith_mlir.AddIOp(unwrap(row_a_g_1280), unwrap(col_a_global_k)).result
                 
-                vec_a = vector.TransferReadOp(vec16_f8, arg_a, [idx_a], identity_map, pad_f8, [True]).result
-                vector.StoreOp(vec_a, lds_a, [lds_write_idx])
+                vec_a = vector.TransferReadOp(vec16_f8, arg_a, [unwrap(idx_a)], identity_map, unwrap(pad_f8), [True]).result
+                vector.StoreOp(unwrap(vec_a), lds_a, [unwrap(lds_write_idx)])
                 
                 # Load B (Transposed)
-                col_b_global_k = arith.AddIOp(k_const, col_b_local).result
-                row_b_g_1024 = arith.MulIOp(row_b_global, c1024).result
-                idx_b = arith.AddIOp(row_b_g_1024, col_b_global_k).result
+                col_b_global_k = _arith_mlir.AddIOp(unwrap(k_const), unwrap(col_b_local)).result
+                row_b_g_1280 = _arith_mlir.MulIOp(unwrap(row_b_global), unwrap(c1280)).result
+                idx_b = _arith_mlir.AddIOp(unwrap(row_b_g_1280), unwrap(col_b_global_k)).result
                 
-                vec_b = vector.TransferReadOp(vec16_f8, arg_b, [idx_b], identity_map, pad_f8, [True]).result
-                vector.StoreOp(vec_b, lds_b, [lds_write_idx])
+                vec_b = vector.TransferReadOp(vec16_f8, arg_b, [unwrap(idx_b)], identity_map, unwrap(pad_f8), [True]).result
+                vector.StoreOp(unwrap(vec_b), lds_b, [unwrap(lds_write_idx)])
                 
                 gpu.barrier()
                 
                 # Inner Loop
                 acc = current_acc
                 for ki in range(0, 128, 32):
-                    ki_const = arith.ConstantOp(ir.IndexType.get(), ki).result
-                    col_lds = arith.AddIOp(ki_const, col_offset_base).result
+                    ki_const = _arith_mlir.ConstantOp(ir.IndexType.get(), ki).result
+                    col_lds = _arith_mlir.AddIOp(unwrap(ki_const), unwrap(col_offset_base)).result
                     
                     # A LDS Index
-                    row_a_lds_128 = arith.MulIOp(row_a_lds, c128).result
-                    idx_a_mfma = arith.AddIOp(row_a_lds_128, col_lds).result
+                    row_a_lds_128 = _arith_mlir.MulIOp(unwrap(row_a_lds), unwrap(c128)).result
+                    idx_a_mfma = _arith_mlir.AddIOp(unwrap(row_a_lds_128), unwrap(col_lds)).result
                     
                     # B LDS Index
-                    row_b_lds_128 = arith.MulIOp(row_b_lds, c128).result
-                    idx_b_mfma = arith.AddIOp(row_b_lds_128, col_lds).result
+                    row_b_lds_128 = _arith_mlir.MulIOp(unwrap(row_b_lds), unwrap(c128)).result
+                    idx_b_mfma = _arith_mlir.AddIOp(unwrap(row_b_lds_128), unwrap(col_lds)).result
                     
                     vec8_f8 = ir.VectorType.get([8], f8)
                     vec8_i8 = ir.VectorType.get([8], ir.IntegerType.get_signless(8))
                     vec1_i64 = ir.VectorType.get([1], ir.IntegerType.get_signless(64))
                     
-                    vec_a_load = vector.LoadOp(vec8_f8, lds_a, [idx_a_mfma]).result
-                    vec_b_load = vector.LoadOp(vec8_f8, lds_b, [idx_b_mfma]).result
+                    vec_a_load = vector.LoadOp(vec8_f8, lds_a, [unwrap(idx_a_mfma)]).result
+                    vec_b_load = vector.LoadOp(vec8_f8, lds_b, [unwrap(idx_b_mfma)]).result
                     
-                    a_bytes = _arith_mlir.BitcastOp(vec8_i8, vec_a_load).result
-                    b_bytes = _arith_mlir.BitcastOp(vec8_i8, vec_b_load).result
+                    a_bytes = _arith_mlir.BitcastOp(unwrap(vec8_i8), unwrap(vec_a_load)).result
+                    b_bytes = _arith_mlir.BitcastOp(unwrap(vec8_i8), unwrap(vec_b_load)).result
                     
                     a_vec64 = vector.BitCastOp(vec1_i64, a_bytes).result
                     b_vec64 = vector.BitCastOp(vec1_i64, b_bytes).result
@@ -193,7 +193,7 @@ def test_mfma_fp8_rocir():
                     b_pack = vector.ExtractOp(b_vec64, static_position=[0], dynamic_position=[]).result
                     
                     acc = rocdl.mfma_f32_16x16x32_fp8_fp8(
-                        vec4_f32, [a_pack, b_pack, acc, c0_i32, c0_i32, c0_i32]
+                        vec4_f32, [unwrap(a_pack), unwrap(b_pack), unwrap(acc), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
                     ).result
                     
                 gpu.barrier()
@@ -202,34 +202,34 @@ def test_mfma_fp8_rocir():
             final_acc = current_acc
             
             # Store Result
-            lane_div_16 = arith.DivUIOp(lane_id, c16).result
-            lane_rem_16 = arith.RemUIOp(lane_id, c16).result
+            lane_div_16 = _arith_mlir.DivUIOp(unwrap(lane_id), unwrap(c16)).result
+            lane_rem_16 = _arith_mlir.RemUIOp(unwrap(lane_id), unwrap(c16)).result
             
-            row_wave_base = arith.MulIOp(wave_row, c16).result
-            col_wave_base = arith.MulIOp(wave_col, c16).result
+            row_wave_base = _arith_mlir.MulIOp(unwrap(wave_row), unwrap(c16)).result
+            col_wave_base = _arith_mlir.MulIOp(unwrap(wave_col), unwrap(c16)).result
             
-            bx_32 = arith.MulIOp(bx._value, c32).result
-            by_32 = arith.MulIOp(by._value, c32).result
+            bx_32 = _arith_mlir.MulIOp(unwrap(bx._value), unwrap(c32)).result
+            by_32 = _arith_mlir.MulIOp(unwrap(by._value), unwrap(c32)).result
             
-            row_base_g = arith.AddIOp(bx_32, row_wave_base).result
-            col_base_g = arith.AddIOp(by_32, col_wave_base).result
+            row_base_g = _arith_mlir.AddIOp(unwrap(bx_32), unwrap(row_wave_base)).result
+            col_base_g = _arith_mlir.AddIOp(unwrap(by_32), unwrap(col_wave_base)).result
             
             for i in range(4):
-                val = vector.ExtractOp(final_acc, [], [i]).result
+                val = vector.ExtractOp(final_acc, [], [unwrap(i)]).result
                 
-                c_i = arith.ConstantOp(ir.IndexType.get(), i).result
-                row_offset_base = arith.MulIOp(lane_div_16, c4).result
-                row_offset = arith.AddIOp(row_offset_base, c_i).result
+                c_i = _arith_mlir.ConstantOp(ir.IndexType.get(), i).result
+                row_offset_base = _arith_mlir.MulIOp(unwrap(lane_div_16), unwrap(c4)).result
+                row_offset = _arith_mlir.AddIOp(unwrap(row_offset_base), unwrap(c_i)).result
                 
                 col_offset = lane_rem_16
                 
-                row_g = arith.AddIOp(row_base_g, row_offset).result
-                col_g = arith.AddIOp(col_base_g, col_offset).result
+                row_g = _arith_mlir.AddIOp(unwrap(row_base_g), unwrap(row_offset)).result
+                col_g = _arith_mlir.AddIOp(unwrap(col_base_g), unwrap(col_offset)).result
                 
-                row_g_1024 = arith.MulIOp(row_g, c1024).result
-                idx = arith.AddIOp(row_g_1024, col_g).result
+                row_g_1024 = _arith_mlir.MulIOp(unwrap(row_g), unwrap(c1024)).result
+                idx = _arith_mlir.AddIOp(unwrap(row_g_1024), unwrap(col_g)).result
                 
-                memref.StoreOp(val, arg_c, [idx])
+                memref.StoreOp(unwrap(val), arg_c, [unwrap(idx)])
     
     print("✓ MLIR module constructed via @gpu.func decorator")
     
@@ -237,7 +237,8 @@ def test_mfma_fp8_rocir():
     gpu_func_op = None
     for op in ctx.module.body.operations:
         if isinstance(op, ir.OpView) and op.OPERATION_NAME == "gpu.module":
-            for inner_op in op.body.blocks[0].operations:
+            body_block = op.body.blocks[0] if hasattr(op.body, "blocks") else op.body
+            for inner_op in body_block.operations:
                 if hasattr(inner_op, 'OPERATION_NAME') and inner_op.OPERATION_NAME == "gpu.func":
                     gpu_func_op = inner_op
                     break

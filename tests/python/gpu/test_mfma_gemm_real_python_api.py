@@ -16,7 +16,7 @@ from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from utils import compile_to_hsaco
 import numpy as np
 from mlir import ir
-from mlir.dialects import arith, vector, memref
+from mlir.dialects import arith as _arith_mlir, vector, memref
 from rocdsl.dialects.ext import gpu
 import mlir.dialects.rocdl as rocdl
 import mlir.extras.types as T
@@ -45,8 +45,12 @@ def test_mfma_real_api():
         
         @gpu.func(emit=True)
         def kernel(arg_c: T.memref(total_elements, T.f32())):
-            c0_i32 = arith.ConstantOp(ir.IntegerType.get_signless(32), 0).result
-            c4 = arith.ConstantOp(ir.IndexType.get(), 4).result
+            # Helper to unwrap ArithValue
+            def unwrap(v):
+                return v._value if hasattr(v, '_value') else v
+                
+            c0_i32 = _arith_mlir.ConstantOp(ir.IntegerType.get_signless(32), ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 0)).result
+            c4 = _arith_mlir.ConstantOp(ir.IndexType.get(), ir.IntegerAttr.get(ir.IndexType.get(), 4)).result
             
             f16 = ir.F16Type.get()
             f32 = ir.F32Type.get()
@@ -58,38 +62,38 @@ def test_mfma_real_api():
             b_val = ir.DenseElementsAttr.get_splat(vec4_f16, ir.FloatAttr.get(f16, val_b))
             c_val = ir.DenseElementsAttr.get_splat(vec4_f32, ir.FloatAttr.get(f32, 0.0))
             
-            a_vec = arith.ConstantOp(vec4_f16, a_val).result
-            b_vec = arith.ConstantOp(vec4_f16, b_val).result
-            c_init = arith.ConstantOp(vec4_f32, c_val).result
+            a_vec = _arith_mlir.ConstantOp(vec4_f16, a_val).result
+            b_vec = _arith_mlir.ConstantOp(vec4_f16, b_val).result
+            c_init = _arith_mlir.ConstantOp(vec4_f32, c_val).result
             
             # Unroll K=1024 (64 iterations of 16)
             d = c_init
             for _ in range(64):
                 d = rocdl.mfma_f32_16x16x16f16(
                     vec4_f32, 
-                    [a_vec, b_vec, d, c0_i32, c0_i32, c0_i32]
+                    [unwrap(a_vec), unwrap(b_vec), unwrap(d), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
                 ).result
             
             tx = gpu.thread_id("x")
             bx = gpu.block_id("x")
             bdx = gpu.block_dim("x")
             
-            mul = arith.MulIOp(bx._value, bdx._value).result
-            idx = arith.AddIOp(mul, tx._value).result
+            mul = _arith_mlir.MulIOp(unwrap(bx._value), unwrap(bdx._value)).result
+            idx = _arith_mlir.AddIOp(unwrap(mul), unwrap(tx._value)).result
             
-            offset = arith.MulIOp(idx, c4).result
+            offset = _arith_mlir.MulIOp(unwrap(idx), unwrap(c4)).result
             
             in_bounds_attr = ir.ArrayAttr.get([ir.BoolAttr.get(True)])
             map = ir.AffineMap.get_identity(1)
             map_attr = ir.AffineMapAttr.get(map)
             
             vector.TransferWriteOp(
-                None, 
-                d, 
-                arg_c, 
-                [offset], 
-                map_attr,
-                in_bounds_attr
+                None,
+                valueToStore=d, 
+                base=arg_c, 
+                indices=[unwrap(offset)], 
+                permutation_map=map_attr,
+                in_bounds=in_bounds_attr
             )
     
     
@@ -97,7 +101,9 @@ def test_mfma_real_api():
     gpu_func_op = None
     for op in ctx.module.body.operations:
         if isinstance(op, ir.OpView) and op.OPERATION_NAME == "gpu.module":
-            for inner_op in op.body.blocks[0].operations:
+            # op.body is a Region, need to access its first block
+            body_block = op.body.blocks[0] if hasattr(op.body, 'blocks') else op.body
+            for inner_op in body_block.operations:
                 if hasattr(inner_op, 'OPERATION_NAME') and inner_op.OPERATION_NAME == "gpu.func":
                     gpu_func_op = inner_op
                     break
@@ -110,7 +116,9 @@ def test_mfma_real_api():
     gpu_func_op = None
     for op in ctx.module.body.operations:
         if isinstance(op, ir.OpView) and op.OPERATION_NAME == "gpu.module":
-            for inner_op in op.body.blocks[0].operations:
+            # op.body is a Region, need to access its first block
+            body_block = op.body.blocks[0] if hasattr(op.body, 'blocks') else op.body
+            for inner_op in body_block.operations:
                 if hasattr(inner_op, 'OPERATION_NAME') and inner_op.OPERATION_NAME == "gpu.func":
                     gpu_func_op = inner_op
                     break

@@ -62,8 +62,9 @@ def test_mfma_fp8_rocir():
     # LDS Globals (Tile size 32x128)
     lds_mem_type = ir.MemRefType.get([4096], f8, memory_space=ir.Attribute.parse("3"))
     
-    # Create LDS globals before the module
-    with ir.InsertionPoint(ctx.module.body):
+    @gpu.module("mfma_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500", features = "+sramecc,+xnack">'])
+    def gpu_mod():
+        # Create LDS globals inside the GPU module
         lds_a_global = memref.GlobalOp(
             sym_name="lds_a",
             type_=lds_mem_type,
@@ -76,9 +77,6 @@ def test_mfma_fp8_rocir():
             initial_value=ir.UnitAttr.get(),
             sym_visibility=ir.StringAttr.get("private")
         )
-    
-    @gpu.module("mfma_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500", features = "+sramecc,+xnack">'])
-    def gpu_mod():
         
         @gpu.func(emit=True)
         def kernel(
@@ -266,7 +264,9 @@ def test_mfma_fp8_rocir():
     gpu_func_op = None
     for op in ctx.module.body.operations:
         if isinstance(op, ir.OpView) and op.OPERATION_NAME == "gpu.module":
-            for inner_op in op.body.blocks[0].operations:
+            # op.body is a Region, need to access its first block
+            body_block = op.body.blocks[0] if hasattr(op.body, 'blocks') else op.body
+            for inner_op in body_block.operations:
                 if hasattr(inner_op, 'OPERATION_NAME') and inner_op.OPERATION_NAME == "gpu.func":
                     gpu_func_op = inner_op
                     break
