@@ -132,6 +132,26 @@ static LayoutNode deserializeLayoutNode(Operation* op) {
 // Forward declaration
 static void flatten_to_leaves(const LayoutNode& node, std::vector<LayoutNode>& leaves);
 
+// Helper to aggressively fold binary arithmetic operations on constants
+static Value foldBinaryOp(Location loc, Value lhs, Value rhs, 
+                          std::function<int64_t(int64_t, int64_t)> op,
+                          std::function<Value(Location, Value, Value, PatternRewriter&)> createOp,
+                          PatternRewriter& rewriter) {
+    auto lhsConst = dyn_cast_or_null<arith::ConstantOp>(lhs.getDefiningOp());
+    auto rhsConst = dyn_cast_or_null<arith::ConstantOp>(rhs.getDefiningOp());
+    
+    if (lhsConst && rhsConst) {
+        auto lhsAttr = dyn_cast<IntegerAttr>(lhsConst.getValue());
+        auto rhsAttr = dyn_cast<IntegerAttr>(rhsConst.getValue());
+        if (lhsAttr && rhsAttr) {
+            int64_t result = op(lhsAttr.getInt(), rhsAttr.getInt());
+            return rewriter.create<arith::ConstantIndexOp>(loc, result);
+        }
+    }
+    
+    return createOp(loc, lhs, rhs, rewriter);
+}
+
 // Helper to coalesce a LayoutNode (combines consecutive modes where stride[i]*shape[i] == stride[i+1])
 static std::pair<LayoutNode, LayoutNode> coalesceLayoutNode(
     const LayoutNode& shapeNode, const LayoutNode& strideNode,
@@ -397,56 +417,116 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
     flatten_to_leaves(lhsShape, lhsLeavesShape);
     flatten_to_leaves(lhsStride, lhsLeavesStride);
     
+    Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    
     for (size_t i = 0; i < lhsLeavesShape.size(); ++i) {
         Value currShape = lhsLeavesShape[i].value;
         Value currStride = lhsLeavesStride[i].value;
         
         // Logic from CuTe `composition_impl` fold (lines 1059+)
-        // `curr_shape` and `curr_stride` are integers (leaves).
-        // `rest_shape` and `rest_stride` are integers (RHS is leaf).
+        // next_shape = ceil_div(curr_shape, abs(rest_stride))  (line 1084)
+        Value nextShape = foldBinaryOp(loc, currShape, restStride,
+            [](int64_t a, int64_t b) { return b != 0 ? (a + b - 1) / b : a; },  // ceil_div
+            [](Location l, Value a, Value b, PatternRewriter& r) { 
+                return r.create<arith::CeilDivUIOp>(l, a, b).getResult(); 
+            },
+            rewriter);
         
-        // new_shape = min(currShape, restShape)
-        Value newShape = rewriter.create<arith::MinUIOp>(loc, currShape, restShape);
+        // Check for early exit: if next_shape == 1 or rest_shape == 1  (line 1088-1092)
+        auto nextShapeConst = dyn_cast_or_null<arith::ConstantOp>(nextShape.getDefiningOp());
+        auto restShapeConst = dyn_cast_or_null<arith::ConstantOp>(restShape.getDefiningOp());
         
-        // new_stride = currStride * restStride
-        Value newStride = rewriter.create<arith::MulIOp>(loc, currStride, restStride);
+        bool nextIsOne = false, restIsOne = false;
+        if (nextShapeConst) {
+            if (auto attr = dyn_cast<IntegerAttr>(nextShapeConst.getValue())) {
+                nextIsOne = (attr.getInt() == 1);
+            }
+        }
+        if (restShapeConst) {
+            if (auto attr = dyn_cast<IntegerAttr>(restShapeConst.getValue())) {
+                restIsOne = (attr.getInt() == 1);
+            }
+        }
+        
+        if (nextIsOne || restIsOne) {
+            break; // Don't add more modes
+        }
+        
+        // new_shape = min(next_shape, rest_shape)  (line 1094)
+        Value newShape = foldBinaryOp(loc, nextShape, restShape,
+            [](int64_t a, int64_t b) { return std::min(a, b); },
+            [](Location l, Value a, Value b, PatternRewriter& r) {
+                return r.create<arith::MinUIOp>(l, a, b).getResult();
+            },
+            rewriter);
+        
+        // new_stride = currStride * restStride  (line 1108)
+        Value newStride = foldBinaryOp(loc, currStride, restStride,
+            [](int64_t a, int64_t b) { return a * b; },
+            [](Location l, Value a, Value b, PatternRewriter& r) {
+                return r.create<arith::MulIOp>(l, a, b).getResult();
+            },
+            rewriter);
         
         // Append to result
         resultShapeNodes.push_back(LayoutNode(newShape));
         resultStrideNodes.push_back(LayoutNode(newStride));
         
-        // Update restShape = restShape / newShape
-        restShape = rewriter.create<arith::DivUIOp>(loc, restShape, newShape);
+        // Update restShape = restShape / newShape  (line 1109) - WITH AGGRESSIVE FOLDING
+        restShape = foldBinaryOp(loc, restShape, newShape,
+            [](int64_t a, int64_t b) { return b != 0 ? a / b : a; },
+            [](Location l, Value a, Value b, PatternRewriter& r) {
+                return r.create<arith::DivUIOp>(l, a, b).getResult();
+            },
+            rewriter);
         
-        // Update restStride = restStride * newShape (scaling up for next mode)
-        // Wait, logic check:
-        // In CuTe: `next_stride` is computed as `ceil_div(abs(rest_stride), curr_shape) * ...`
-        // If `rest_stride` divides `curr_shape`, it's `rest_stride / curr_shape`?
-        // No.
-        // If we consume `newShape` from RHS, the "next" part of RHS corresponds to stride `restStride * newShape`.
-        // Yes.
-        restStride = rewriter.create<arith::MulIOp>(loc, restStride, newShape);
+        // Update restStride: next_stride = ceil_div(rest_stride, curr_shape)  (line 1086 & 1110)
+        restStride = foldBinaryOp(loc, restStride, currShape,
+            [](int64_t a, int64_t b) { return b != 0 ? (a + b - 1) / b : a; },
+            [](Location l, Value a, Value b, PatternRewriter& r) {
+                return r.create<arith::CeilDivUIOp>(l, a, b).getResult();
+            },
+            rewriter);
     }
     
-    // Handle remainder of RHS (if restShape > 1)
-    Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value isRestGt1 = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ugt, restShape, one);
+    // Handle remainder of RHS according to CuTe logic (lines 1116-1124)
+    // Three cases:
+    // 1. If result is empty: return (rest_shape, rest_stride * last_lhs_stride)
+    // 2. If rest_shape == 1: don't append (early return)
+    // 3. Otherwise: append (rest_shape, rest_stride * last_lhs_stride)
     
-    // We always append, but if it's 1, it's effectively a no-op mode.
-    // CuTe only appends if it's not 1 (or dynamic).
-    // Since we are dynamic, we append.
+    if (resultShapeNodes.empty()) {
+        // Case 1: No modes were added - return rest as the only mode
+        Value lastLhsStride = lhsLeavesStride.empty() ? one : lhsLeavesStride.back().value;
+        Value tailStride = foldBinaryOp(loc, restStride, lastLhsStride,
+            [](int64_t a, int64_t b) { return a * b; },
+            [](Location l, Value a, Value b, PatternRewriter& r) {
+                return r.create<arith::MulIOp>(l, a, b).getResult();
+            },
+            rewriter);
+        return {LayoutNode(restShape), LayoutNode(tailStride)};
+    }
+    
+    // Case 2: Check if rest_shape == 1 (try constant folding)
+    auto restShapeConst = dyn_cast_or_null<arith::ConstantOp>(restShape.getDefiningOp());
+    if (restShapeConst) {
+        if (auto attr = dyn_cast<IntegerAttr>(restShapeConst.getValue())) {
+            if (attr.getInt() == 1) {
+                // rest_shape is 1, don't append
+                return {LayoutNode(resultShapeNodes), LayoutNode(resultStrideNodes)};
+            }
+        }
+    }
+    
+    // Case 3: Append rest to result
     resultShapeNodes.push_back(LayoutNode(restShape));
-    
-    // Stride for remainder: restStride * lastLhsStride
-    // Wait, if we ran out of LHS modes, the remainder of RHS maps to... where?
-    // It repeats the whole LHS? 
-    // CuTe line 1123: `rest_stride * get<R-1>(lhs_stride)`
-    // `lhs_stride` here is the *original* stride passed to `fold`.
-    // `R-1` is the last element.
-    // So it uses the stride of the last LHS mode.
-    // This seems to imply "repeat the last stride pattern".
     Value lastLhsStride = lhsLeavesStride.empty() ? one : lhsLeavesStride.back().value;
-    Value tailStride = rewriter.create<arith::MulIOp>(loc, restStride, lastLhsStride);
+    Value tailStride = foldBinaryOp(loc, restStride, lastLhsStride,
+        [](int64_t a, int64_t b) { return a * b; },
+        [](Location l, Value a, Value b, PatternRewriter& r) {
+            return r.create<arith::MulIOp>(l, a, b).getResult();
+        },
+        rewriter);
     resultStrideNodes.push_back(LayoutNode(tailStride));
     
     return {LayoutNode(resultShapeNodes), LayoutNode(resultStrideNodes)};
@@ -1385,20 +1465,27 @@ struct LogicalDivideOpLowering : public OpRewritePattern<LogicalDivideOp> {
     Value tilerStride = tilerLayoutOp->getOperand(1);
     
     // Get shape and stride from complement
+    // We need to wait for complement to be lowered to make_layout first
     auto *complementLayoutOp = complementLayout.getResult().getDefiningOp();
-    if (!complementLayoutOp)
+    if (!complementLayoutOp) {
+      return failure();  // Complement op hasn't produced a result yet
+    }
+    
+    // Check if complement has been lowered to make_layout
+    if (complementLayoutOp->getName().getStringRef() != "rocir.make_layout") {
+      // Complement hasn't been lowered yet - return failure so greedy rewriter will retry
       return failure();
+    }
     
-    auto complementShapeOp = rewriter.create<GetShapeOp>(
-        loc, tilerShape.getType(), complementLayout.getResult());
-    auto complementStrideOp = rewriter.create<GetStrideOp>(
-        loc, tilerStride.getType(), complementLayout.getResult());
+    // Now we can safely extract shape and stride from the lowered complement
+    Value complementShape = complementLayoutOp->getOperand(0);
+    Value complementStride = complementLayoutOp->getOperand(1);
     
-    // Concatenate shapes and strides
+    // Get the shape/stride defining ops
     auto *tilerShapeOp = tilerShape.getDefiningOp();
     auto *tilerStrideOp = tilerStride.getDefiningOp();
-    auto *compShapeOp = complementShapeOp.getResult().getDefiningOp();
-    auto *compStrideOp = complementStrideOp.getResult().getDefiningOp();
+    auto *compShapeOp = complementShape.getDefiningOp();
+    auto *compStrideOp = complementStride.getDefiningOp();
     
     if (!tilerShapeOp || !tilerStrideOp || !compShapeOp || !compStrideOp)
       return failure();
