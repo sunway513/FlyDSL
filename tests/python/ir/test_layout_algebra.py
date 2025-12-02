@@ -101,6 +101,23 @@ def run_lowering_test(ctx, test_name, expected_val=None, expected_vals=None):
                 else:
                     actual = int(val_attr)
                 
+                if actual != expected:
+                    # Print all values for debugging
+                    all_actual = []
+                    for j, ret_op in enumerate(return_op.operands):
+                        defining_op = ret_op.owner
+                        if hasattr(defining_op, 'value'):
+                            val_attr = defining_op.value
+                            if isinstance(val_attr, IntegerAttr):
+                                all_actual.append(val_attr.value)
+                            elif hasattr(val_attr, "value"):
+                                all_actual.append(val_attr.value)
+                            else:
+                                all_actual.append(int(val_attr))
+                        else:
+                            all_actual.append('?')
+                    print(f"  ACTUAL values: {all_actual}")
+                    print(f"  EXPECTED values: {expected_vals}")
                 assert actual == expected, \
                     f"{test_name}: Value [{i}] mismatch. Expected {expected}, got {actual}"
             

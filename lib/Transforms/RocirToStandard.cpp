@@ -88,21 +88,26 @@ static LayoutNode deserializeLayoutNode(Operation* op) {
     }
     
     if (structure.empty()) {
-        // Assume flat structure (tuple of leaves)
+        // Assume flat structure - but values might be nested shapes/strides!
+        // Need to recursively deserialize nested values
         std::vector<LayoutNode> children;
-        for (auto v : values) children.push_back(LayoutNode(v));
+        for (auto v : values) {
+            // Check if this value is a nested shape/stride
+            if (auto *defOp = v.getDefiningOp()) {
+                auto opName = defOp->getName().getStringRef();
+                if (opName == "rocir.make_shape" || opName == "rocir.make_stride") {
+                    // Recursively deserialize nested structure
+                    children.push_back(deserializeLayoutNode(defOp));
+                    continue;
+                }
+            }
+            // Leaf value (index)
+            children.push_back(LayoutNode(v));
+        }
         if (children.empty()) {
              // Empty tuple
              return LayoutNode(std::vector<LayoutNode>{});
         }
-        // If purely flat and 1 element, usually treated as tuple of 1 element unless it's rank 0?
-        // Wait, rank 0 is empty tuple. Rank 1 is tuple of 1? Or scalar?
-        // In CuTe, Int<N> is scalar. Tuple<Int<N>> is tuple.
-        // Our ShapeType doesn't distinguish well between scalar and tuple-of-1-scalar without structure.
-        // But `MakeShapeOp` arguments are always leaves.
-        // If `values` has elements, it's a tuple of those elements.
-        // Unless values.size() == 1, then it could be a scalar?
-        // Let's treat as tuple of leaves for safety if structure is missing.
         return LayoutNode(children);
     }
     
@@ -115,8 +120,20 @@ static LayoutNode deserializeLayoutNode(Operation* op) {
         
         int32_t code = structure[structIdx++];
         if (code == -1) {
+            // Leaf - get next value
             if (valueIdx >= static_cast<int>(values.size())) return LayoutNode(Value());
-            return LayoutNode(values[valueIdx++]);
+            Value v = values[valueIdx++];
+            
+            // Check if this value is actually a nested shape/stride
+            if (auto *defOp = v.getDefiningOp()) {
+                auto opName = defOp->getName().getStringRef();
+                if (opName == "rocir.make_shape" || opName == "rocir.make_stride") {
+                    // Recursively deserialize nested structure
+                    return deserializeLayoutNode(defOp);
+                }
+            }
+            
+            return LayoutNode(v);
         } else {
             std::vector<LayoutNode> children;
             for (int i = 0; i < code; ++i) {
@@ -131,6 +148,82 @@ static LayoutNode deserializeLayoutNode(Operation* op) {
 
 // Forward declaration
 static void flatten_to_leaves(const LayoutNode& node, std::vector<LayoutNode>& leaves);
+
+// Serialize LayoutNode back to nested MakeShapeOp/MakeStrideOp operations
+// This preserves the nested structure instead of flattening
+static Value serializeLayoutNodeToShape(const LayoutNode& node, Location loc, 
+                                        PatternRewriter& rewriter, MLIRContext* ctx) {
+    if (node.isLeaf) {
+        // ERROR: should not call this on a leaf! 
+        // Leaves should be part of their parent tuple
+        llvm::errs() << "ERROR: serializeLayoutNodeToShape called on leaf!\n";
+        auto shapeType = ShapeType::get(ctx, 1);
+        return rewriter.create<MakeShapeOp>(loc, shapeType, ValueRange{node.value}).getResult();
+    }
+    
+    // Tuple - check if children are all leaves or if they're sub-tuples
+    bool allLeavesChildren = true;
+    for (const auto& child : node.children) {
+        if (!child.isLeaf) {
+            allLeavesChildren = false;
+            break;
+        }
+    }
+    
+    if (allLeavesChildren) {
+        // Children are all leaves - create flat shape with their values
+        SmallVector<Value> leafValues;
+        for (const auto& child : node.children) {
+            leafValues.push_back(child.value);
+        }
+        auto shapeType = ShapeType::get(ctx, leafValues.size());
+        return rewriter.create<MakeShapeOp>(loc, shapeType, leafValues).getResult();
+    } else {
+        // Children are sub-tuples - recursively serialize and create nested shape
+        SmallVector<Value> childShapes;
+        for (const auto& child : node.children) {
+            childShapes.push_back(serializeLayoutNodeToShape(child, loc, rewriter, ctx));
+        }
+        auto shapeType = ShapeType::get(ctx, childShapes.size());
+        return rewriter.create<MakeShapeOp>(loc, shapeType, childShapes).getResult();
+    }
+}
+
+static Value serializeLayoutNodeToStride(const LayoutNode& node, Location loc, 
+                                         PatternRewriter& rewriter, MLIRContext* ctx) {
+    if (node.isLeaf) {
+        llvm::errs() << "ERROR: serializeLayoutNodeToStride called on leaf!\n";
+        auto strideType = StrideType::get(ctx, 1);
+        return rewriter.create<MakeStrideOp>(loc, strideType, ValueRange{node.value}).getResult();
+    }
+    
+    // Check if children are all leaves
+    bool allLeavesChildren = true;
+    for (const auto& child : node.children) {
+        if (!child.isLeaf) {
+            allLeavesChildren = false;
+            break;
+        }
+    }
+    
+    if (allLeavesChildren) {
+        // Children are all leaves - create flat stride with their values
+        SmallVector<Value> leafValues;
+        for (const auto& child : node.children) {
+            leafValues.push_back(child.value);
+        }
+        auto strideType = StrideType::get(ctx, leafValues.size());
+        return rewriter.create<MakeStrideOp>(loc, strideType, leafValues).getResult();
+    } else {
+        // Children are sub-tuples - recursively serialize and create nested stride
+        SmallVector<Value> childStrides;
+        for (const auto& child : node.children) {
+            childStrides.push_back(serializeLayoutNodeToStride(child, loc, rewriter, ctx));
+        }
+        auto strideType = StrideType::get(ctx, childStrides.size());
+        return rewriter.create<MakeStrideOp>(loc, strideType, childStrides).getResult();
+    }
+}
 
 // Helper to aggressively fold binary arithmetic operations on constants
 static Value foldBinaryOp(Location loc, Value lhs, Value rhs, 
@@ -150,6 +243,191 @@ static Value foldBinaryOp(Location loc, Value lhs, Value rhs,
     }
     
     return createOp(loc, lhs, rhs, rewriter);
+}
+
+// Helper to compute complement inline (without creating ComplementOp)
+// Returns (complementShape, complementStride) as Values
+static std::pair<Value, Value> computeComplementInline(
+    Value tilerLayout, Value targetSize, Location loc, PatternRewriter& rewriter) {
+    
+    auto *tilerLayoutOp = tilerLayout.getDefiningOp();
+    if (!tilerLayoutOp || tilerLayoutOp->getName().getStringRef() != "rocir.make_layout")
+      return {nullptr, nullptr};
+    
+    auto tilerShape = tilerLayoutOp->getOperand(0);
+    auto tilerStride = tilerLayoutOp->getOperand(1);
+    
+    auto *shapeOp = tilerShape.getDefiningOp();
+    auto *strideOp = tilerStride.getDefiningOp();
+    
+    if (!shapeOp || !strideOp ||
+        shapeOp->getName().getStringRef() != "rocir.make_shape" ||
+        strideOp->getName().getStringRef() != "rocir.make_stride")
+      return {nullptr, nullptr};
+    
+    // Flatten to leaves
+    LayoutNode shapeNode = deserializeLayoutNode(shapeOp);
+    LayoutNode strideNode = deserializeLayoutNode(strideOp);
+    
+    std::vector<LayoutNode> shapeLeaves;
+    std::vector<LayoutNode> strideLeaves;
+    flatten_to_leaves(shapeNode, shapeLeaves);
+    flatten_to_leaves(strideNode, strideLeaves);
+    
+    SmallVector<Value> shapes;
+    SmallVector<Value> strides;
+    for (const auto& leaf : shapeLeaves) {
+      shapes.push_back(leaf.value);
+    }
+    for (const auto& leaf : strideLeaves) {
+      strides.push_back(leaf.value);
+    }
+    
+    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    
+    if (shapes.empty()) {
+      // Empty tiler means complement covers entire target
+      auto resultShapeType = ShapeType::get(rewriter.getContext(), 1);
+      auto resultStrideType = StrideType::get(rewriter.getContext(), 1);
+      auto complementShape = rewriter.create<MakeShapeOp>(loc, resultShapeType, ValueRange{targetSize});
+      auto complementStride = rewriter.create<MakeStrideOp>(loc, resultStrideType, ValueRange{one});
+      return {complementShape.getResult(), complementStride.getResult()};
+    }
+    
+    // Rank-1 case: implement CuTe's complement algorithm (lines 1212-1223)
+    // For rank-1: result_shape = (min_stride / last_result_stride, ceil_div(target, min_stride * shape))
+    //            result_stride = (last_result_stride, min_stride * shape)
+    if (shapes.size() == 1) {
+      auto minStride = strides[0];  // Only one mode
+      auto modeShape = shapes[0];
+      auto lastResultStride = one;  // Initial result stride is 1
+      
+      // new_shape = min_stride / last_result_stride
+      auto newShape = foldBinaryOp(loc, minStride, lastResultStride,
+          [](int64_t a, int64_t b) { return b != 0 ? a / b : a; },
+          [](Location l, Value a, Value b, PatternRewriter& r) {
+              return r.create<arith::DivUIOp>(l, a, b).getResult();
+          },
+          rewriter);
+      
+      // new_stride = min_stride * modeShape
+      auto newStride = foldBinaryOp(loc, minStride, modeShape,
+          [](int64_t a, int64_t b) { return a * b; },
+          [](Location l, Value a, Value b, PatternRewriter& r) {
+              return r.create<arith::MulIOp>(l, a, b).getResult();
+          },
+          rewriter);
+      
+      // rest_shape = ceil_div(target_size, new_stride)
+      auto restShape = foldBinaryOp(loc, targetSize, newStride,
+          [](int64_t a, int64_t b) { return b != 0 ? (a + b - 1) / b : a; },
+          [](Location l, Value a, Value b, PatternRewriter& r) {
+              return r.create<arith::CeilDivUIOp>(l, a, b).getResult();
+          },
+          rewriter);
+      
+      // Result: (new_shape, rest_shape):(last_result_stride, new_stride)
+      auto resultShapeType = ShapeType::get(rewriter.getContext(), 2);
+      auto resultStrideType = StrideType::get(rewriter.getContext(), 2);
+      auto complementShape = rewriter.create<MakeShapeOp>(loc, resultShapeType, 
+                                                          ValueRange{newShape, restShape});
+      auto complementStride = rewriter.create<MakeStrideOp>(loc, resultStrideType, 
+                                                            ValueRange{lastResultStride, newStride});
+      return {complementShape.getResult(), complementStride.getResult()};
+    }
+    
+    // Rank-2+ case: implement CuTe's fold algorithm (lines 1194-1223)
+    // Sort by stride, then fold to compute gap modes
+    struct Mode {
+        Value shape;
+        Value stride;
+        int64_t constStride;
+    };
+    std::vector<Mode> modes;
+    bool allStatic = true;
+    
+    for (size_t i = 0; i < shapes.size(); ++i) {
+        auto *strideDefOp = strides[i].getDefiningOp();
+        if (auto constOp = dyn_cast_or_null<arith::ConstantIndexOp>(strideDefOp)) {
+            modes.push_back({shapes[i], strides[i], constOp.value()});
+        } else {
+            allStatic = false;
+            modes.push_back({shapes[i], strides[i], 0});
+        }
+    }
+    
+    // Sort by stride (only if all static)
+    if (allStatic) {
+        std::sort(modes.begin(), modes.end(), [](const Mode& a, const Mode& b) {
+            return a.constStride < b.constStride;
+        });
+    }
+    
+    // Fold: build complement modes (CuTe lines 1194-1209)
+    SmallVector<Value> compShapeVals;
+    SmallVector<Value> compStrideVals;
+    Value currStride = one;  // result_stride starts with 1
+    
+    for (size_t i = 0; i + 1 < modes.size(); ++i) {  // R-1 iterations
+        Value minStride = modes[i].stride;
+        Value modeShape = modes[i].shape;
+        
+        // new_shape = min_stride / last_result_stride
+        auto newShape = foldBinaryOp(loc, minStride, currStride,
+            [](int64_t a, int64_t b) { return b != 0 ? a / b : a; },
+            [](Location l, Value a, Value b, PatternRewriter& r) {
+                return r.create<arith::DivUIOp>(l, a, b).getResult();
+            },
+            rewriter);
+        
+        compShapeVals.push_back(newShape);
+        compStrideVals.push_back(currStride);
+        
+        // new_stride = min_stride * modeShape (for next iteration)
+        currStride = foldBinaryOp(loc, minStride, modeShape,
+            [](int64_t a, int64_t b) { return a * b; },
+            [](Location l, Value a, Value b, PatternRewriter& r) {
+                return r.create<arith::MulIOp>(l, a, b).getResult();
+            },
+            rewriter);
+    }
+    
+    // After fold: append last mode (line 1212-1213)
+    Value lastMinStride = modes.back().stride;
+    Value lastModeShape = modes.back().shape;
+    auto lastNewShape = foldBinaryOp(loc, lastMinStride, currStride,
+        [](int64_t a, int64_t b) { return b != 0 ? a / b : a; },
+        [](Location l, Value a, Value b, PatternRewriter& r) {
+            return r.create<arith::DivUIOp>(l, a, b).getResult();
+        },
+        rewriter);
+    compShapeVals.push_back(lastNewShape);
+    compStrideVals.push_back(currStride);
+    
+    // Update currStride for rest computation
+    currStride = foldBinaryOp(loc, lastMinStride, lastModeShape,
+        [](int64_t a, int64_t b) { return a * b; },
+        [](Location l, Value a, Value b, PatternRewriter& r) {
+            return r.create<arith::MulIOp>(l, a, b).getResult();
+        },
+        rewriter);
+    
+    // Append rest mode (lines 1218-1222)
+    auto restShape = foldBinaryOp(loc, targetSize, currStride,
+        [](int64_t a, int64_t b) { return b != 0 ? (a + b - 1) / b : a; },
+        [](Location l, Value a, Value b, PatternRewriter& r) {
+            return r.create<arith::CeilDivUIOp>(l, a, b).getResult();
+        },
+        rewriter);
+    compShapeVals.push_back(restShape);
+    compStrideVals.push_back(currStride);
+    
+    // Create result
+    auto resultShapeType = ShapeType::get(rewriter.getContext(), compShapeVals.size());
+    auto resultStrideType = StrideType::get(rewriter.getContext(), compStrideVals.size());
+    auto complementShape = rewriter.create<MakeShapeOp>(loc, resultShapeType, compShapeVals);
+    auto complementStride = rewriter.create<MakeStrideOp>(loc, resultStrideType, compStrideVals);
+    return {complementShape.getResult(), complementStride.getResult()};
 }
 
 // Helper to coalesce a LayoutNode (combines consecutive modes where stride[i]*shape[i] == stride[i+1])
@@ -496,7 +774,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
     // 3. Otherwise: append (rest_shape, rest_stride * last_lhs_stride)
     
     if (resultShapeNodes.empty()) {
-        // Case 1: No modes were added - return rest as the only mode
+        // Case 1: No modes were added - return rest as the only mode (as leaf)
         Value lastLhsStride = lhsLeavesStride.empty() ? one : lhsLeavesStride.back().value;
         Value tailStride = foldBinaryOp(loc, restStride, lastLhsStride,
             [](int64_t a, int64_t b) { return a * b; },
@@ -868,19 +1146,27 @@ struct CosizeOpLowering : public RewritePattern {
         strideOp->getName().getStringRef() != "rocir.make_stride")
       return failure();
     
-    auto shapes = shapeOp->getOperands();
-    auto strides = strideOp->getOperands();
+    // Flatten shapes and strides to leaves to handle nested structures
+    LayoutNode shapeNode = deserializeLayoutNode(shapeOp);
+    LayoutNode strideNode = deserializeLayoutNode(strideOp);
     
-    if (shapes.size() != strides.size() || shapes.empty())
+    std::vector<LayoutNode> shapeLeaves;
+    std::vector<LayoutNode> strideLeaves;
+    flatten_to_leaves(shapeNode, shapeLeaves);
+    flatten_to_leaves(strideNode, strideLeaves);
+    
+    if (shapeLeaves.size() != strideLeaves.size() || shapeLeaves.empty())
       return failure();
     
     // Compute max((shape[i]-1) * stride[i]) + 1
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     Value maxSpan = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     
-    for (size_t i = 0; i < shapes.size(); ++i) {
-      auto shapeMinus1 = rewriter.create<arith::SubIOp>(loc, shapes[i], one);
-      auto span = rewriter.create<arith::MulIOp>(loc, shapeMinus1, strides[i]);
+    for (size_t i = 0; i < shapeLeaves.size(); ++i) {
+      Value shape = shapeLeaves[i].value;
+      Value stride = strideLeaves[i].value;
+      auto shapeMinus1 = rewriter.create<arith::SubIOp>(loc, shape, one);
+      auto span = rewriter.create<arith::MulIOp>(loc, shapeMinus1, stride);
       
       // max = (span > max) ? span : max
       auto cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sgt, 
@@ -918,11 +1204,34 @@ struct GetOpLowering : public RewritePattern {
     
     auto values = defOp->getOperands();
     
-    // If idx is constant, extract directly
+    // Flatten nested structures to leaves for indexing
+    // This allows get(shape, 2) to work on nested ((2,2),(2,3)) by flattening to [2,2,2,3]
+    SmallVector<Value> flatValues;
+    std::function<void(Value)> flattenValue = [&](Value v) {
+      // Check if this value is a shape/stride (nested)
+      if (auto *vDefOp = v.getDefiningOp()) {
+        auto vOpName = vDefOp->getName().getStringRef();
+        if (vOpName == "rocir.make_shape" || vOpName == "rocir.make_stride") {
+          // Recursively flatten
+          for (auto operand : vDefOp->getOperands()) {
+            flattenValue(operand);
+          }
+          return;
+        }
+      }
+      // Leaf value (index)
+      flatValues.push_back(v);
+    };
+    
+    for (auto v : values) {
+      flattenValue(v);
+    }
+    
+    // If idx is constant, extract from flattened values
     if (auto constOp = idx.getDefiningOp<arith::ConstantIndexOp>()) {
       int64_t idxVal = constOp.value();
-      if (idxVal >= 0 && idxVal < (int64_t)values.size()) {
-        rewriter.replaceOp(op, values[idxVal]);
+      if (idxVal >= 0 && idxVal < (int64_t)flatValues.size()) {
+        rewriter.replaceOp(op, flatValues[idxVal]);
         return success();
       }
     }
@@ -1269,31 +1578,33 @@ struct CompositionOpLowering : public OpRewritePattern<CompositionOp> {
     LayoutNode strideB = deserializeLayoutNode(strideBOp);
     
     // CuTe coalesces LHS before composition (layout.hpp line 1139)
-    auto [coalescedShapeA, coalescedStrideA] = coalesceLayoutNode(shapeA, strideA, loc, rewriter);
+    // But for tuple RHS, coalescing loses structure - skip for now
+    // TODO: implement proper coprofile-based coalescing
+    LayoutNode lhsShapeToUse = shapeA;
+    LayoutNode lhsStrideToUse = strideA;
+    
+    if (!shapeB.isTuple()) {
+        // Only coalesce for non-tuple RHS
+        auto [coalescedShapeA, coalescedStrideA] = coalesceLayoutNode(shapeA, strideA, loc, rewriter);
+        lhsShapeToUse = coalescedShapeA;
+        lhsStrideToUse = coalescedStrideA;
+    }
     
     // Compute composition recursively
     auto [resShapeNode, resStrideNode] = composition_impl(
-        coalescedShapeA, coalescedStrideA, shapeB, strideB, loc, rewriter);
+        lhsShapeToUse, lhsStrideToUse, shapeB, strideB, loc, rewriter);
     
-    // Reconstruct MakeShape/MakeStride ops
-    SmallVector<Value> resShapeVals;
-    SmallVector<int32_t> resShapeStruct;
-    resShapeNode.flatten(resShapeVals, resShapeStruct);
-    
-    SmallVector<Value> resStrideVals;
-    SmallVector<int32_t> resStrideStruct;
-    resStrideNode.flatten(resStrideVals, resStrideStruct);
-    
+    // Serialize back to nested MakeShape/MakeStride ops
+    // This preserves the nested structure from composition_impl
     auto ctx = rewriter.getContext();
-    auto shapeType = ShapeType::get(ctx, resShapeStruct);
-    auto strideType = StrideType::get(ctx, resStrideStruct);
+    Value makeShape = serializeLayoutNodeToShape(resShapeNode, loc, rewriter, ctx);
+    Value makeStride = serializeLayoutNodeToStride(resStrideNode, loc, rewriter, ctx);
     
-    auto makeShape = rewriter.create<MakeShapeOp>(loc, shapeType, resShapeVals);
-    auto makeStride = rewriter.create<MakeStrideOp>(loc, strideType, resStrideVals);
-    
-    auto layoutType = LayoutType::get(ctx, resShapeVals.size());
+    // Determine rank - if nested, use number of top-level children
+    int rank = resShapeNode.isLeaf ? 1 : resShapeNode.children.size();
+    auto layoutType = LayoutType::get(ctx, rank);
     auto makeLayout = rewriter.create<MakeLayoutOp>(
-        loc, layoutType, makeShape.getResult(), makeStride.getResult());
+        loc, layoutType, makeShape, makeStride);
     
     rewriter.replaceOp(op, makeLayout.getResult());
     return success();
@@ -1431,32 +1742,31 @@ struct LogicalDivideOpLowering : public OpRewritePattern<LogicalDivideOp> {
     // logical_divide(layout, tiler) as defined in CuTe (line 1562):
     // = composition(layout, make_layout(tiler, complement(tiler, shape(coalesce(layout)))))
     //
-    // Algorithm:
-    // 1. Coalesce the input layout
-    // 2. Compute size of coalesced layout
-    // 3. Compute complement(tiler, size)
-    // 4. Create a layout from [tiler, complement]
-    // 5. Compose input layout with this combined layout
+    // Algorithm (INLINE VERSION - no intermediate ops):
+    // 1. Compute size of input layout
+    // 2. Compute complement(tiler, size) INLINE
+    // 3. Create a tuple layout from [tiler, complement]
+    // 4. Compose input layout with this tuple layout
     
     auto loc = op->getLoc();
     Value inputLayout = op.getInput();
     Value tilerLayout = op.getTiler();
     
-    // Step 1: Coalesce input layout
-    auto coalescedLayout = rewriter.create<CoalesceOp>(
-        loc, inputLayout.getType(), inputLayout);
+    // Step 1: Compute size of input layout
+    auto inputSize = rewriter.create<SizeOp>(
+        loc, rewriter.getIndexType(), inputLayout);
     
-    // Step 2: Compute size of coalesced layout
-    auto coalescedSize = rewriter.create<SizeOp>(
-        loc, rewriter.getIndexType(), coalescedLayout.getResult());
+    // Step 2: Compute complement INLINE (no ComplementOp created)
+    auto [complementShape, complementStride] = computeComplementInline(
+        tilerLayout, inputSize.getResult(), loc, rewriter);
     
-    // Step 3: Compute complement(tiler, size)
-    auto complementLayoutType = tilerLayout.getType(); // Result type same as tiler
-    auto complementLayout = rewriter.create<ComplementOp>(
-        loc, complementLayoutType, tilerLayout, coalescedSize.getResult());
+    if (!complementShape || !complementStride)
+      return failure();  // Complement computation failed
     
-    // Step 4: Create combined layout [tiler, complement]
-    // Get shape and stride from tiler
+    // Step 3: Create combined layout (tiler, complement)
+    // Need to handle: tiler might be rank-1 (single value) or rank-n (nested)
+    // complement is always rank-2+ from our algorithm
+    
     auto *tilerLayoutOp = tilerLayout.getDefiningOp();
     if (!tilerLayoutOp || tilerLayoutOp->getName().getStringRef() != "rocir.make_layout")
       return failure();
@@ -1464,24 +1774,7 @@ struct LogicalDivideOpLowering : public OpRewritePattern<LogicalDivideOp> {
     Value tilerShape = tilerLayoutOp->getOperand(0);
     Value tilerStride = tilerLayoutOp->getOperand(1);
     
-    // Get shape and stride from complement
-    // We need to wait for complement to be lowered to make_layout first
-    auto *complementLayoutOp = complementLayout.getResult().getDefiningOp();
-    if (!complementLayoutOp) {
-      return failure();  // Complement op hasn't produced a result yet
-    }
-    
-    // Check if complement has been lowered to make_layout
-    if (complementLayoutOp->getName().getStringRef() != "rocir.make_layout") {
-      // Complement hasn't been lowered yet - return failure so greedy rewriter will retry
-      return failure();
-    }
-    
-    // Now we can safely extract shape and stride from the lowered complement
-    Value complementShape = complementLayoutOp->getOperand(0);
-    Value complementStride = complementLayoutOp->getOperand(1);
-    
-    // Get the shape/stride defining ops
+    // Get defining ops to check structure
     auto *tilerShapeOp = tilerShape.getDefiningOp();
     auto *tilerStrideOp = tilerStride.getDefiningOp();
     auto *compShapeOp = complementShape.getDefiningOp();
@@ -1490,33 +1783,79 @@ struct LogicalDivideOpLowering : public OpRewritePattern<LogicalDivideOp> {
     if (!tilerShapeOp || !tilerStrideOp || !compShapeOp || !compStrideOp)
       return failure();
     
-    SmallVector<Value> combinedShapes;
-    SmallVector<Value> combinedStrides;
+    // Check if tiler is rank-1 (single scalar value)
+    auto tilerShapeVals = tilerShapeOp->getOperands();
+    auto tilerStrideVals = tilerStrideOp->getOperands();
+    auto compShapeVals = compShapeOp->getOperands();
+    auto compStrideVals = compStrideOp->getOperands();
     
-    for (auto operand : tilerShapeOp->getOperands())
-      combinedShapes.push_back(operand);
-    for (auto operand : compShapeOp->getOperands())
-      combinedShapes.push_back(operand);
+    SmallVector<Value> combinedShapeVals;
+    SmallVector<Value> combinedStrideVals;
     
-    for (auto operand : tilerStrideOp->getOperands())
-      combinedStrides.push_back(operand);
-    for (auto operand : compStrideOp->getOperands())
-      combinedStrides.push_back(operand);
+    // Create tuple structure: (tiler, complement)
+    // Special case: if tiler is rank-1 scalar, extract its value instead of using the shape op
+    // This creates (tiler_val, (comp_vals...)) instead of ((tiler_val), (comp_vals...))
+    bool tilerIsRank1Scalar = (tilerShapeVals.size() == 1 && tilerShapeVals[0].getType().isIndex());
+    
+    if (tilerIsRank1Scalar) {
+        // Unwrap rank-1 scalar tiler: use value directly, not shape operation
+        combinedShapeVals = {tilerShapeVals[0], complementShape};
+        combinedStrideVals = {tilerStrideVals[0], complementStride};
+    } else {
+        // Tiler is nested or multi-rank: keep as shape operations
+        combinedShapeVals = {tilerShape, complementShape};
+        combinedStrideVals = {tilerStride, complementStride};
+    }
     
     auto ctx = rewriter.getContext();
-    int combinedRank = combinedShapes.size();
+    int combinedRank = combinedShapeVals.size();
     auto combinedShapeType = ShapeType::get(ctx, combinedRank);
     auto combinedStrideType = StrideType::get(ctx, combinedRank);
     auto combinedLayoutType = LayoutType::get(ctx, combinedRank);
     
-    auto makeCombinedShape = rewriter.create<MakeShapeOp>(loc, combinedShapeType, combinedShapes);
-    auto makeCombinedStride = rewriter.create<MakeStrideOp>(loc, combinedStrideType, combinedStrides);
+    auto makeCombinedShape = rewriter.create<MakeShapeOp>(loc, combinedShapeType, combinedShapeVals);
+    auto makeCombinedStride = rewriter.create<MakeStrideOp>(loc, combinedStrideType, combinedStrideVals);
     auto combinedLayout = rewriter.create<MakeLayoutOp>(
         loc, combinedLayoutType, makeCombinedShape.getResult(), makeCombinedStride.getResult());
     
-    // Step 5: Compose input layout with combined layout
-    auto resultLayout = rewriter.create<CompositionOp>(
-        loc, op.getResult().getType(), inputLayout, combinedLayout.getResult());
+    // Step 4: Compose input layout with combined layout INLINE
+    // Deserialize both layouts to LayoutNode
+    auto *inputLayoutOp = inputLayout.getDefiningOp();
+    if (!inputLayoutOp || inputLayoutOp->getName().getStringRef() != "rocir.make_layout")
+      return failure();
+    
+    Value inputShape = inputLayoutOp->getOperand(0);
+    Value inputStride = inputLayoutOp->getOperand(1);
+    
+    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp());
+    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp());
+    LayoutNode combinedShapeNode = deserializeLayoutNode(makeCombinedShape.getOperation());
+    LayoutNode combinedStrideNode = deserializeLayoutNode(makeCombinedStride.getOperation());
+    
+    // Perform composition using composition_impl
+    // Don't coalesce for nested RHS - it breaks structure
+    LayoutNode lhsShapeToUse = inputShapeNode;
+    LayoutNode lhsStrideToUse = inputStrideNode;
+    
+    if (!combinedShapeNode.isTuple()) {
+        // Only coalesce for non-tuple RHS
+        auto [coalescedShapeA, coalescedStrideA] = coalesceLayoutNode(inputShapeNode, inputStrideNode, loc, rewriter);
+        lhsShapeToUse = coalescedShapeA;
+        lhsStrideToUse = coalescedStrideA;
+    }
+    
+    // Compute composition recursively
+    auto [resShapeNode, resStrideNode] = composition_impl(
+        lhsShapeToUse, lhsStrideToUse, combinedShapeNode, combinedStrideNode, loc, rewriter);
+    
+    // Serialize back to nested MakeShape/MakeStride ops
+    Value resultShape = serializeLayoutNodeToShape(resShapeNode, loc, rewriter, ctx);
+    Value resultStride = serializeLayoutNodeToStride(resStrideNode, loc, rewriter, ctx);
+    
+    // Create result layout
+    auto resultLayoutType = op.getResult().getType();
+    auto resultLayout = rewriter.create<MakeLayoutOp>(
+        loc, resultLayoutType, resultShape, resultStride);
     
     rewriter.replaceOp(op, resultLayout.getResult());
     return success();

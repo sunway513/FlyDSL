@@ -22,23 +22,29 @@ def Rocir_CoordType : Type<CPred<"llvm::isa<::mlir::rocir::CoordType>($_self)">,
 //===----------------------------------------------------------------------===//
 
 def Rocir_MakeShapeOp : Rocir_Op<"make_shape", []> {
-  let summary = "Create a CUTE shape from index values";
+  let summary = "Create a CUTE shape from index values or nested shapes";
   let description = [{
-    Creates a shape value from runtime index values.
-    Example: cute.make_shape %i, %j : (index, index) -> !cute.shape<2>
+    Creates a shape value from runtime index values or nested shapes.
+    Supports both flat and nested (tuple) layouts.
+    Examples: 
+      - Flat: cute.make_shape %i, %j : (index, index) -> !cute.shape<2>
+      - Nested: cute.make_shape %s1, %s2 : (!cute.shape<2>, !cute.shape<3>) -> !cute.shape<2>
   }];
-  let arguments = (ins Variadic<Index>:$values);
+  let arguments = (ins Variadic<AnyTypeOf<[Index, Rocir_ShapeType]>>:$values);
   let results = (outs Rocir_ShapeType:$result);
   let assemblyFormat = "$values attr-dict `:` functional-type($values, $result)";
 }
 
 def Rocir_MakeStrideOp : Rocir_Op<"make_stride", []> {
-  let summary = "Create a CUTE stride from index values";
+  let summary = "Create a CUTE stride from index values or nested strides";
   let description = [{
-    Creates a stride value from runtime index values.
-    Example: cute.make_stride %i, %j : (index, index) -> !cute.stride<2>
+    Creates a stride value from runtime index values or nested strides.
+    Supports both flat and nested (tuple) layouts.
+    Examples:
+      - Flat: cute.make_stride %i, %j : (index, index) -> !cute.stride<2>
+      - Nested: cute.make_stride %s1, %s2 : (!cute.stride<2>, !cute.stride<3>) -> !cute.stride<2>
   }];
-  let arguments = (ins Variadic<Index>:$values);
+  let arguments = (ins Variadic<AnyTypeOf<[Index, Rocir_StrideType]>>:$values);
   let results = (outs Rocir_StrideType:$result);
   let assemblyFormat = "$values attr-dict `:` functional-type($values, $result)";
 }
