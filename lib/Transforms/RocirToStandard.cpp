@@ -129,6 +129,75 @@ static LayoutNode deserializeLayoutNode(Operation* op) {
     return parse();
 }
 
+// Forward declaration
+static void flatten_to_leaves(const LayoutNode& node, std::vector<LayoutNode>& leaves);
+
+// Helper to coalesce a LayoutNode (combines consecutive modes where stride[i]*shape[i] == stride[i+1])
+static std::pair<LayoutNode, LayoutNode> coalesceLayoutNode(
+    const LayoutNode& shapeNode, const LayoutNode& strideNode,
+    Location loc, PatternRewriter& rewriter) {
+  
+  // Flatten to leaves
+  std::vector<LayoutNode> shapeLeaves;
+  std::vector<LayoutNode> strideLeaves;
+  flatten_to_leaves(shapeNode, shapeLeaves);
+  flatten_to_leaves(strideNode, strideLeaves);
+  
+  if (shapeLeaves.size() != strideLeaves.size() || shapeLeaves.empty()) {
+    // Can't coalesce - return as-is
+    return {shapeNode, strideNode};
+  }
+  
+  // Coalesce logic: accumulate modes that are contiguous
+  std::vector<LayoutNode> coalescedShape;
+  std::vector<LayoutNode> coalescedStride;
+  
+  Value accumShape = shapeLeaves[0].value;
+  Value accumStride = strideLeaves[0].value;
+  
+  for (size_t i = 1; i < shapeLeaves.size(); ++i) {
+    // Compute accumStride * accumShape
+    auto accumSizeMul = rewriter.create<arith::MulIOp>(loc, accumStride, accumShape);
+    Value accumSize = accumSizeMul.getResult();
+    
+    // Check if contiguous: accumSize == strideLeaves[i].value
+    auto accumSizeConstOp = dyn_cast_or_null<arith::ConstantOp>(accumSize.getDefiningOp());
+    auto currStrideConstOp = dyn_cast_or_null<arith::ConstantOp>(strideLeaves[i].value.getDefiningOp());
+    
+    bool canCombine = false;
+    if (accumSizeConstOp && currStrideConstOp) {
+      auto accumSizeAttr = dyn_cast<IntegerAttr>(accumSizeConstOp.getValue());
+      auto currStrideAttr = dyn_cast<IntegerAttr>(currStrideConstOp.getValue());
+      if (accumSizeAttr && currStrideAttr) {
+        canCombine = (accumSizeAttr.getInt() == currStrideAttr.getInt());
+      }
+    }
+    
+    if (canCombine) {
+      // Combine modes
+      accumShape = rewriter.create<arith::MulIOp>(loc, accumShape, shapeLeaves[i].value);
+    } else {
+      // Emit accumulated mode
+      coalescedShape.push_back(LayoutNode(accumShape));
+      coalescedStride.push_back(LayoutNode(accumStride));
+      accumShape = shapeLeaves[i].value;
+      accumStride = strideLeaves[i].value;
+    }
+  }
+  
+  // Emit final accumulated mode
+  coalescedShape.push_back(LayoutNode(accumShape));
+  coalescedStride.push_back(LayoutNode(accumStride));
+  
+  // If we ended up with a single mode, return as leaf
+  if (coalescedShape.size() == 1) {
+    return {coalescedShape[0], coalescedStride[0]};
+  }
+  
+  // Return as tuple
+  return {LayoutNode(coalescedShape), LayoutNode(coalescedStride)};
+}
+
 // Helper to compute GCD
 static Value computeGCD(Location loc, Value a, Value b, PatternRewriter &rewriter) {
   // Try constant folding
@@ -1009,26 +1078,49 @@ struct CoalesceOpLowering : public OpRewritePattern<CoalesceOp> {
     SmallVector<Value> coalescedShape;
     SmallVector<Value> coalescedStride;
     
-    coalescedShape.push_back(shapeDims[0]);
-    coalescedStride.push_back(strideDims[0]);
+    // Start with first mode
+    Value accumShape = shapeDims[0];
+    Value accumStride = strideDims[0];
     
     for (size_t i = 1; i < shapeDims.size(); ++i) {
-      // Check if we can combine with previous mode
-      // prev_stride * prev_shape == curr_stride means contiguous
-      Value prevShape = coalescedShape.back();
-      Value prevStride = coalescedStride.back();
-      Value currStride = strideDims[i];
+      // Compute accum_stride * accum_shape
+      auto accumSizeMul = rewriter.create<arith::MulIOp>(loc, accumStride, accumShape);
+      Value accumSize = accumSizeMul.getResult();
       
-      // Compute prev_stride * prev_shape
-      auto prevSize = rewriter.create<arith::MulIOp>(loc, prevStride, prevShape);
+      // Check if we can combine: accumSize == strideDims[i]
+      // For dynamic values, we need to actually check. For now, always try to combine.
+      // A proper implementation would use scf.if to conditionally combine.
       
-      // Check if prevSize == currStride (need runtime comparison or constant folding)
-      // For now, combine them by multiplying shapes
-      // Combined shape = prev_shape * curr_shape, keep prev_stride
-      auto combinedShape = rewriter.create<arith::MulIOp>(loc, prevShape, shapeDims[i]);
-      coalescedShape.back() = combinedShape;
-      // Stride stays the same (the first/smallest stride)
+      // Try to get constant values to decide
+      auto accumSizeConstOp = dyn_cast_or_null<arith::ConstantOp>(accumSize.getDefiningOp());
+      auto currStrideConstOp = dyn_cast_or_null<arith::ConstantOp>(strideDims[i].getDefiningOp());
+      
+      bool canCombine = false;
+      if (accumSizeConstOp && currStrideConstOp) {
+        // Both are constants - check if equal
+        auto accumSizeAttr = dyn_cast<IntegerAttr>(accumSizeConstOp.getValue());
+        auto currStrideAttr = dyn_cast<IntegerAttr>(currStrideConstOp.getValue());
+        if (accumSizeAttr && currStrideAttr) {
+          canCombine = (accumSizeAttr.getInt() == currStrideAttr.getInt());
+        }
+      }
+      
+      if (canCombine) {
+        // Combine: multiply shapes, keep stride
+        accumShape = rewriter.create<arith::MulIOp>(loc, accumShape, shapeDims[i]);
+        // accumStride stays the same
+      } else {
+        // Cannot combine - emit accumulated mode and start new one
+        coalescedShape.push_back(accumShape);
+        coalescedStride.push_back(accumStride);
+        accumShape = shapeDims[i];
+        accumStride = strideDims[i];
+      }
     }
+    
+    // Don't forget the last accumulated mode
+    coalescedShape.push_back(accumShape);
+    coalescedStride.push_back(accumStride);
     
     // Create coalesced layout
     auto *ctx = rewriter.getContext();
@@ -1054,14 +1146,29 @@ struct CompositionOpLowering : public OpRewritePattern<CompositionOp> {
   LogicalResult matchAndRewrite(CompositionOp op,
                                 PatternRewriter &rewriter) const override {
     // Composition: R = A ◦ B means R(c) = A(B(c))
-    // Uses recursive LayoutNode structure to handle nested tuples.
+    // CuTe first coalesces A, then applies composition_impl.
+    // See layout.hpp line 1139: auto flat_lhs = detail::coalesce_x(lhs, coprofile(rhs));
     
     auto loc = op->getLoc();
     Value layoutA = op.getLayoutA();
     Value layoutB = op.getLayoutB();
     
-    auto *layoutAOp = layoutA.getDefiningOp();
+    // First, coalesce layout A (LHS)
+    auto layoutAType = layoutA.getType();
+    Value coalescedA = rewriter.create<CoalesceOp>(loc, layoutAType, layoutA);
+    
+    auto *coalescedAOp = coalescedA.getDefiningOp();
     auto *layoutBOp = layoutB.getDefiningOp();
+    
+    if (!coalescedAOp || !layoutBOp)
+      return failure();
+    
+    // We need to inline the coalesce operation to get the actual values
+    // For now, assume it will be lowered in a subsequent iteration
+    // Actually, we can directly work with the original layout if coalesce isn't lowered yet
+    
+    // Let's work with original A for now (coalesce will run separately)
+    auto *layoutAOp = layoutA.getDefiningOp();
     
     if (!layoutAOp || !layoutBOp)
       return failure();
@@ -1081,9 +1188,12 @@ struct CompositionOpLowering : public OpRewritePattern<CompositionOp> {
     LayoutNode shapeB = deserializeLayoutNode(shapeBOp);
     LayoutNode strideB = deserializeLayoutNode(strideBOp);
     
+    // CuTe coalesces LHS before composition (layout.hpp line 1139)
+    auto [coalescedShapeA, coalescedStrideA] = coalesceLayoutNode(shapeA, strideA, loc, rewriter);
+    
     // Compute composition recursively
     auto [resShapeNode, resStrideNode] = composition_impl(
-        shapeA, strideA, shapeB, strideB, loc, rewriter);
+        coalescedShapeA, coalescedStrideA, shapeB, strideB, loc, rewriter);
     
     // Reconstruct MakeShape/MakeStride ops
     SmallVector<Value> resShapeVals;
