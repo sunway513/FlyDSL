@@ -1,4 +1,4 @@
-"""Test basic CuTe operations: make_shape, make_stride, make_layout, size, rank, etc."""
+"""Test basic Rocir operations: make_shape, make_stride, make_layout, size, rank, etc."""
 
 import pytest
 import sys
@@ -38,7 +38,7 @@ def test_make_shape(ctx):
     ir = str(ctx.module)
     
     # Check lowered IR
-    # After lowering, cute ops should be converted to standard dialects
+    # After lowering, Rocir ops should be converted to standard dialects
 
 
 def test_make_layout(ctx):

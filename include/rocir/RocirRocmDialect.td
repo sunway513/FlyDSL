@@ -1,6 +1,6 @@
-//===- RocirRocmDialect.td - CuTe ROCm Dialect Definition ---*- tablegen -*-===//
+//===- RocirRocmDialect.td - Rocir ROCm Dialect Definition -*- tablegen -*-===//
 //
-// CuTe AMD GPU Hardware-Aware Dialect for GFX942
+// Rocir AMD GPU Hardware-Aware Dialect for GFX942
 // Extends rocdsl with AMD ROCm-specific types and operations
 //
 //===----------------------------------------------------------------------===//
@@ -19,10 +19,10 @@ include "mlir/IR/EnumAttr.td"
 def RocirRocm_Dialect : Dialect {
   let name = "cute_rocm";
   let cppNamespace = "::mlir::rocir::rocm";
-  let summary = "AMD GPU hardware-aware CuTe IR for GFX942";
+  let summary = "AMD GPU hardware-aware Rocir IR for GFX942";
   let description = [{
-    CuTe ROCm IR extends rocdsl with AMD GPU-specific types and operations.
-    It targets AMD GFX942 (MI300 series) matrix cores with CuTe Layout-aware interfaces.
+    Rocir ROCm IR extends rocdsl with AMD GPU-specific types and operations.
+    It targets AMD GFX942 (MI300 series) matrix cores with layout-aware interfaces.
     
     **Design Philosophy**: 
     - Accepts rocdsl::LayoutType/TileType as partition descriptors
@@ -30,7 +30,7 @@ def RocirRocm_Dialect : Dialect {
     - Generates architecture-specific code for GFX942
     
     **Lowering Chain**:
-    cute_rocm_ir → rocdl dialect → LLVM IR → AMDGCN
+    rocir_rocm_ir → rocdl dialect → LLVM IR → AMDGCN
     
     **Target Architecture**:
     - GFX942 (MI300A/MI300X)
@@ -242,7 +242,7 @@ def RocirRocm_LdsConfigAttr : RocirRocm_Attr<"LdsConfig", "lds_config"> {
 // Operation Base
 //===----------------------------------------------------------------------===//
 
-// Base class for all CuTe ROCm operations
+// Base class for all Rocir ROCm operations
 class RocirRocm_OpBase<string mnemonic, list<Trait> traits = []>
     : RocirRocm_Op<mnemonic, traits>;
 

@@ -1,4 +1,4 @@
-//===- bindings.cpp - pybind11 Bindings for CuTe Runtime --------*- C++ -*-===//
+//===- bindings.cpp - pybind11 Bindings for Runtime Utilities -*- C++ -*-===//
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -32,7 +32,7 @@ void numpy_to_device_buffer(DeviceBuffer<T>& buf, py::array_t<T> arr) {
 //===----------------------------------------------------------------------===//
 
 PYBIND11_MODULE(_cute_bindings, m) {
-    m.doc() = "CuTe Runtime C++ Bindings";
+    m.doc() = "Rocir runtime C++ bindings";
     
     //===------------------------------------------------------------------===//
     // Exceptions

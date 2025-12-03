@@ -1,4 +1,4 @@
-"""Tests for CuTe divide operations (partitioning)."""
+"""Tests for Rocir divide operations (partitioning)."""
 
 import pytest
 from mlir.ir import IndexType

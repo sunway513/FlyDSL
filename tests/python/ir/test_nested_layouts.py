@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Test nested layout support in Rocir, following CuTe layout algebra examples.
-Ref: examples/python/CuTeDSL/notebooks/cute_layout_algebra.ipynb
+Test nested layout support in Rocir, following the layout algebra notebook.
+Reference: layout algebra notebook in the CUTLASS examples tree.
 """
 
 import sys
@@ -28,7 +28,7 @@ def unwrap(val):
 
 
 def test_nested_shape_creation():
-    """Test creating nested shapes like CuTe: (9, (4, 8))"""
+    """Test creating nested shapes such as (9, (4, 8))."""
     print("\n" + "="*80)
     print("Test 1: Nested Shape Creation")
     print("="*80)
@@ -57,7 +57,7 @@ def test_nested_shape_creation():
 
 
 def test_nested_stride_creation():
-    """Test creating nested strides like CuTe: (59, (13, 1))"""
+    """Test creating nested strides such as (59, (13, 1))."""
     print("\n" + "="*80)
     print("Test 2: Nested Stride Creation")
     print("="*80)
@@ -84,7 +84,7 @@ def test_nested_stride_creation():
 
 
 def test_nested_layout_creation():
-    """Test creating nested layouts like CuTe: (9,(4,8)):(59,(13,1))"""
+    """Test creating nested layouts like (9,(4,8)):(59,(13,1))."""
     print("\n" + "="*80)
     print("Test 3: Nested Layout Creation")
     print("="*80)
@@ -136,7 +136,7 @@ def test_nested_layout_direct():
         c13 = Const.index(13)
         c1 = Const.index(1)
         
-        # Direct tuple syntax (CuTe-style)
+        # Direct tuple syntax mirroring the reference notebook
         layout = rocir.make_layout(
             (c9, (c4, c8)),
             stride=(c59, (c13, c1))
@@ -233,7 +233,7 @@ def test_logical_divide_2d_nested():
 if __name__ == "__main__":
     print("\n" + "="*80)
     print("Rocir Nested Layout Tests")
-    print("Following CuTe Layout Algebra Notebook")
+    print("Following the layout algebra notebook")
     print("="*80)
     
     all_pass = True

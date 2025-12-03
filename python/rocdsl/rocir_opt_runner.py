@@ -7,7 +7,7 @@ from pathlib import Path
 from mlir.ir import Module
 
 def convert_generic_to_pretty(ir_str: str) -> str:
-    """Convert MLIR generic format to pretty format for cute operations."""
+    """Convert MLIR generic format to a pretty layout-specific format."""
     def convert_op(match):
         prefix = match.group(1)
         op_name = match.group(2)
@@ -73,5 +73,5 @@ def run_cute_opt(module: Module, passes: str) -> Module:
         Path(input_file).unlink(missing_ok=True)
 
 def rocir_to_standard(module: Module) -> Module:
-    """Lower CuTe IR to standard dialects using rocir-opt."""
+    """Lower Rocir IR to standard dialects using rocir-opt."""
     return run_cute_opt(module, "rocir-to-standard")

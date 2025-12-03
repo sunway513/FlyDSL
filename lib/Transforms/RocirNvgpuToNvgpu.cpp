@@ -1,6 +1,6 @@
-//===- RocirNvgpuToNvgpu.cpp - Lower cute_nvgpu to nvgpu dialect ----------===//
+//===- RocirNvgpuToNvgpu.cpp - Lower Rocir NVGPU to nvgpu dialect ---------===//
 //
-// This pass converts cute_nvgpu operations to MLIR nvgpu operations
+// This pass converts Rocir NVGPU operations to MLIR nvgpu operations
 //
 //===----------------------------------------------------------------------===//
 

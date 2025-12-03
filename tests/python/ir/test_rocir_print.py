@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test rocir.print and rocir.printf functionality.
-Following CuTe print.ipynb example.
+Following the layout print notebook example.
 
 This test demonstrates the difference between static (compile-time) and
 dynamic (runtime) printing.
@@ -38,7 +38,6 @@ def test_print_basic():
     rocdsl.rocir.print(">>> Testing static print")
     rocdsl.rocir.print(">>> Value:", 42)
     print("✓ rocir.print works as Python's built-in print")
-    return True
 
 
 def test_printf_ir_generation():
@@ -52,8 +51,8 @@ def test_printf_ir_generation():
     @func.FuncOp.from_py_func()
     def test_printf_func():
         x = Const.index(42)
-            # Print a dynamic index value
-            rocdsl.rocir.printf(">?? {}", x)
+        # Print a dynamic index value
+        rocdsl.rocir.printf(">?? {}", x)
         return []
     
     # Verify the IR contains gpu.printf operation
@@ -62,7 +61,6 @@ def test_printf_ir_generation():
     print("Generated IR:")
     print(ir_str)
     print("✓ rocir.printf generates gpu.printf operation")
-    return True
 
 
 def test_printf_with_multiple_args():
@@ -77,8 +75,8 @@ def test_printf_with_multiple_args():
     def test_multi_printf():
         a = Const.index(10)
         b = Const.index(20)
-            # Print multiple values
-            rocdsl.rocir.printf("a: {}, b: {}", a, b)
+        # Print multiple values
+        rocdsl.rocir.printf("a: {}, b: {}", a, b)
         return []
     
     ir_str = str(ctx.module)
@@ -88,13 +86,12 @@ def test_printf_with_multiple_args():
     print("Generated IR:")
     print(ir_str)
     print("✓ Multiple argument printf works")
-    return True
 
 
 def test_print_vs_printf_concept():
     """Conceptual test showing the difference between print and printf.
     
-    This demonstrates the key difference (following CuTe):
+    This demonstrates the key difference highlighted in the reference notebook:
     - rocir.print: Shows static/compile-time values
     - rocir.printf: Shows dynamic/runtime values
     """
@@ -109,15 +106,15 @@ def test_print_vs_printf_concept():
         # Dynamic value
         a = Const.index(8)
         
-            # Static value
-            b = 2
-            
-            # Python's print: shows compile-time info
-            rocdsl.rocir.print(">>>", b)  # Will print: >>> 2
+        # Static value
+        b = 2
+        
+        # Python's print: shows compile-time info
+        rocdsl.rocir.print(">>>", b)  # Will print: >>> 2
         rocdsl.rocir.print(">>> a is dynamic:", a)  # Will print object representation
             
-            # rocir.printf: shows runtime values
-            rocdsl.rocir.printf(">?? {}", a)  # Will print actual value at runtime
+        # rocir.printf: shows runtime values
+        rocdsl.rocir.printf(">?? {}", a)  # Will print actual value at runtime
         
         c2 = Const.index(2)
         rocdsl.rocir.printf(">?? {}", c2)  # Will print 2 at runtime
@@ -130,7 +127,6 @@ def test_print_vs_printf_concept():
     print("Generated IR:")
     print(ir_str)
     print("✓ Print vs printf distinction demonstrated")
-    return True
 
 
 def test_printf_with_layout_types():
@@ -161,13 +157,12 @@ def test_printf_with_layout_types():
     print("Generated IR:")
     print(ir_str)
     print("✓ Printf with layout types works")
-    return True
 
 
 if __name__ == "__main__":
     print("\n" + "="*80)
     print("Rocir Print/Printf Tests")
-    print("Following CuTe print.ipynb")
+    print("Following the layout print notebook")
     print("="*80)
     
     all_pass = True

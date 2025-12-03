@@ -1,4 +1,4 @@
-"""RocDSL - ROCm Domain Specific Language for CuTe Layout Algebra"""
+"""RocDSL - ROCm Domain Specific Language for layout algebra"""
 
 __version__ = "0.1.0"
 
@@ -7,7 +7,7 @@ import sys
 import os
 import warnings
 
-def _register_cute_passes():
+def _register_rocir_passes():
     """Register Rocir passes by importing the extension module."""
     try:
         # Find the Python bindings directory
@@ -32,7 +32,7 @@ def _register_cute_passes():
         warnings.warn(f"Failed to register Rocir passes: {e}")
 
 # Register passes before importing other modules
-# _register_cute_passes()  # DISABLED: breaks MLIR context
+# _register_rocir_passes()  # DISABLED: breaks MLIR context
 
 # Lazy import dialects and passes to avoid requiring MLIR when only using runtime
 def __getattr__(name):

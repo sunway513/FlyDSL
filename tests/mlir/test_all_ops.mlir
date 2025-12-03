@@ -1,4 +1,4 @@
-// RUN: cute-opt %s --cute-to-standard | FileCheck %s
+// RUN: rocir-opt %s --rocir-to-standard | FileCheck %s
 
 // Comprehensive test covering all layout operations and lowering
 

@@ -1,6 +1,6 @@
-//===- RocirRocmOps.td - CuTe ROCm Operations Definition ----*- tablegen -*-===//
+//===- RocirRocmOps.td - Rocir ROCm Operations Definition --*- tablegen -*-===//
 //
-// CuTe AMD GPU operations for GFX942
+// Rocir AMD GPU operations for GFX942
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,11 +30,11 @@ def RocirRocm_MfmaOp : RocirRocm_OpBase<"mfma", [Pure]> {
     
     Example:
     ```mlir
-    %d = cute_rocm.mfma %a, %b, %c {
+    %d = rocir.rocm.mfma %a, %b, %c {
       shape = [32, 32, 8],
       arch = "gfx942"
-    } : (!cute.tensor<f16, layout_a>, !cute.tensor<f16, layout_b>, 
-         !cute.tensor<f32, layout_c>) -> !cute.tensor<f32, layout_d>
+    } : (!rocir.tensor<f16, layout_a>, !rocir.tensor<f16, layout_b>, 
+         !rocir.tensor<f32, layout_c>) -> !rocir.tensor<f32, layout_d>
     ```
   }];
   
@@ -62,11 +62,11 @@ def RocirRocm_TiledMfmaOp : RocirRocm_OpBase<"tiled_mfma", [Pure]> {
     
     Example:
     ```mlir
-    %d = cute_rocm.tiled_mfma %a, %b, %c {
-      atom = #cute_rocm.mfma_atom<[32, 32, 8], f16, f16, f32, gfx942>,
+    %d = rocir.rocm.tiled_mfma %a, %b, %c {
+      atom = #rocir_rocm.mfma_atom<[32, 32, 8], f16, f16, f32, gfx942>,
       tile_shape = [128, 128, 32]
-    } : (!cute.tensor<...>, !cute.tensor<...>, !cute.tensor<...>) 
-        -> !cute.tensor<...>
+    } : (!rocir.tensor<...>, !rocir.tensor<...>, !rocir.tensor<...>) 
+        -> !rocir.tensor<...>
     ```
   }];
   
@@ -100,11 +100,11 @@ def RocirRocm_LdsAllocOp : RocirRocm_OpBase<"lds_alloc"> {
     
     Example:
     ```mlir
-    %lds = cute_rocm.lds_alloc {
+    %lds = rocir.rocm.lds_alloc {
       element_type = f16,
-      layout = !cute.layout<...>,
+      layout = !rocir.layout<...>,
       size = 32768
-    } : !cute_rocm.lds_buffer<f16, ..., 32768>
+    } : !rocir.rocm.lds_buffer<f16, ..., 32768>
     ```
   }];
   
@@ -126,9 +126,9 @@ def RocirRocm_LdsLoadOp : RocirRocm_OpBase<"lds_load", [Pure]> {
     
     Example:
     ```mlir
-    %data = cute_rocm.lds_load %lds_buffer, %coord {
+    %data = rocir.rocm.lds_load %lds_buffer, %coord {
       vector_size = 4
-    } : (!cute_rocm.lds_buffer<f16, ...>, !cute.coord<2>) -> !cute.tensor<f16, ...>
+    } : (!rocir.rocm.lds_buffer<f16, ...>, !rocir.coord<2>) -> !rocir.tensor<f16, ...>
     ```
   }];
   
@@ -153,9 +153,9 @@ def RocirRocm_LdsStoreOp : RocirRocm_OpBase<"lds_store"> {
     
     Example:
     ```mlir
-    cute_rocm.lds_store %data, %lds_buffer, %coord {
+    rocir.rocm.lds_store %data, %lds_buffer, %coord {
       vector_size = 4
-    } : (!cute.tensor<f16, ...>, !cute_rocm.lds_buffer<f16, ...>, !cute.coord<2>)
+    } : (!rocir.tensor<f16, ...>, !rocir.rocm.lds_buffer<f16, ...>, !rocir.coord<2>)
     ```
   }];
   
@@ -190,10 +190,10 @@ def RocirRocm_CopyOp : RocirRocm_OpBase<"copy"> {
     
     Example:
     ```mlir
-    cute_rocm.copy %src, %dst {
+    rocir.rocm.copy %src, %dst {
       vector_size = 8,
       coalesced = true
-    } : (!cute.tensor<f16, layout_src>, !cute.tensor<f16, layout_dst>)
+    } : (!rocir.tensor<f16, layout_src>, !rocir.tensor<f16, layout_dst>)
     ```
   }];
   
@@ -217,10 +217,10 @@ def RocirRocm_AsyncCopyOp : RocirRocm_OpBase<"async_copy"> {
     
     Example:
     ```mlir
-    %token = cute_rocm.async_copy %src, %dst {
+    %token = rocir.rocm.async_copy %src, %dst {
       vector_size = 16
-    } : (!cute.tensor<f16, ...>, !cute_rocm.lds_buffer<f16, ...>) 
-        -> !cute_rocm.async_token
+    } : (!rocir.tensor<f16, ...>, !rocir.rocm.lds_buffer<f16, ...>) 
+        -> !rocir.rocm.async_token
     ```
   }];
   
@@ -246,7 +246,7 @@ def RocirRocm_CopyWaitOp : RocirRocm_OpBase<"copy_wait"> {
     
     Example:
     ```mlir
-    cute_rocm.copy_wait %token
+    rocir.rocm.copy_wait %token
     ```
   }];
   
@@ -267,7 +267,7 @@ def RocirRocm_BarrierOp : RocirRocm_OpBase<"barrier"> {
     
     Example:
     ```mlir
-    cute_rocm.barrier
+    rocir.rocm.barrier
     ```
   }];
   
@@ -282,7 +282,7 @@ def RocirRocm_WavefrontBarrierOp : RocirRocm_OpBase<"wavefront_barrier"> {
     
     Example:
     ```mlir
-    cute_rocm.wavefront_barrier
+    rocir.rocm.wavefront_barrier
     ```
   }];
   
@@ -300,8 +300,8 @@ def RocirRocm_ThreadIdOp : RocirRocm_OpBase<"thread_id", [Pure]> {
     
     Example:
     ```mlir
-    %tid_x = cute_rocm.thread_id { dim = 0 } : i32
-    %tid_y = cute_rocm.thread_id { dim = 1 } : i32
+    %tid_x = rocir.rocm.thread_id { dim = 0 } : i32
+    %tid_y = rocir.rocm.thread_id { dim = 1 } : i32
     ```
   }];
   
@@ -318,7 +318,7 @@ def RocirRocm_WavefrontIdOp : RocirRocm_OpBase<"wavefront_id", [Pure]> {
     
     Example:
     ```mlir
-    %wid = cute_rocm.wavefront_id : i32
+    %wid = rocir.rocm.wavefront_id : i32
     ```
   }];
   
@@ -334,7 +334,7 @@ def RocirRocm_LaneIdOp : RocirRocm_OpBase<"lane_id", [Pure]> {
     
     Example:
     ```mlir
-    %lane = cute_rocm.lane_id : i32
+    %lane = rocir.rocm.lane_id : i32
     ```
   }];
   

@@ -1,10 +1,10 @@
-"""Tests for basic CuTe operations: make_shape, make_stride, make_layout, size, rank."""
+"""Tests for core Rocir operations: make_shape, make_stride, make_layout, size, rank."""
 
 import pytest
 from mlir.ir import Context, Location, Module, InsertionPoint, IndexType
 from mlir.dialects import func, arith
 
-# Import our CuTe wrappers
+# Import Rocir wrappers
 import rocdsl.dialects.ext.rocir as rocir
 
 

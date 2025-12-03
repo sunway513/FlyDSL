@@ -1,6 +1,6 @@
-//===- CuteToRocm.cpp - Lower CuTe IR to ROCm Dialect --------------------===//
+//===- RocirToRocm.cpp - Lower Rocir IR to ROCm Dialect ------------------===//
 //
-// This pass converts rocdsl operations to cute_rocm dialect for GFX942
+// This pass converts rocdsl operations to the ROCm dialect for GFX942
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,19 +21,19 @@ namespace mlir {
 namespace rocir {
 
 //===----------------------------------------------------------------------===//
-// CuteToRocm Pass
+// RocirToRocm Pass
 //===----------------------------------------------------------------------===//
 
 namespace {
 
-/// Pass to lower CuTe IR to ROCm dialect for AMD GFX942
+/// Pass to lower Rocir IR to the ROCm dialect for AMD GFX942
 struct CuteToRocmPass : public PassWrapper<CuteToRocmPass, OperationPass<ModuleOp>> {
   
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CuteToRocmPass)
   
   StringRef getArgument() const final { return "cute-to-rocm"; }
-  StringRef getDescription() const final {
-    return "Lower CuTe IR to ROCm dialect for AMD GFX942";
+  StringRef getDescription() const final { 
+    return "Lower Rocir IR to ROCm dialect for AMD GFX942";
   }
   
   void runOnOperation() override {
@@ -49,7 +49,7 @@ struct CuteToRocmPass : public PassWrapper<CuteToRocmPass, OperationPass<ModuleO
     // ConversionTarget target(getContext());
     // RewritePatternSet patterns(&getContext());
     
-    // Mark cute_rocm as legal, cute as illegal
+    // Mark the ROCm dialect as legal, rocir layout as illegal
     // target.addLegalDialect<cute::rocm::RocirRocmDialect>();
     // target.addIllegalDialect<cute::RocirDialect>();
     

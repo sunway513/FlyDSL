@@ -151,7 +151,7 @@ def example_pass_with_options():
     result = pipeline.run(ctx.module)
     
     print(f"Pipeline with options: {pipeline}")
-    # Output: builtin.module(rocir-to-standard,cute-async-pipeline{pipeline_depth=3},cute-layout-analysis{print_analysis=1})
+    # Output: builtin.module(rocir-to-standard,<async-pipeline pass>,<layout-analysis pass>)
 
 
 # ============================================================================

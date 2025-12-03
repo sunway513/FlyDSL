@@ -1,7 +1,7 @@
 """Pass pipeline builder for RocDSL compiler transformations.
 
 This module provides a fluent API for constructing MLIR pass pipelines
-for CuTe/Rocir dialect lowering and optimization.
+for Rocir dialect lowering and optimization.
 """
 
 from typing import Optional, Union, List
@@ -82,7 +82,7 @@ class Pipeline:
         return self.nest("builtin.module", nested_pipeline)
     
     # ========================================================================
-    # Rocir/CuTe-specific passes
+    # Rocir-specific passes
     # ========================================================================
     
     def rocir_coord_lowering(self) -> "Pipeline":
@@ -94,11 +94,11 @@ class Pipeline:
         return self.add_pass("rocir-to-standard")
     
     def cute_to_rocm(self) -> "Pipeline":
-        """Lower CuTe dialect to ROCm dialect."""
+        """Lower Rocir layout dialect to the ROCm dialect."""
         return self.add_pass("cute-to-rocm")
     
     def cute_layout_canonicalize(self) -> "Pipeline":
-        """Canonicalize CuTe layout operations."""
+        """Canonicalize Rocir layout operations."""
         return self.add_pass("cute-layout-canonicalize")
     
     def cute_tensor_partition(self) -> "Pipeline":
@@ -175,7 +175,7 @@ class Pipeline:
         return self.add_pass("cute-layout-analysis")
     
     def cute_atom_validation(self) -> "Pipeline":
-        """Validate CuTe atoms."""
+        """Validate layout atom configurations."""
         return self.add_pass("cute-atom-validation")
     
     # ========================================================================

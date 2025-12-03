@@ -277,7 +277,7 @@ static std::pair<Value, Value> computeComplementInline(
       return {complementShape.getResult(), complementStride.getResult()};
     }
     
-    // Rank-1 case: implement CuTe's complement algorithm (lines 1212-1223)
+    // Rank-1 complement: split the target into the initial gap and remainder.
     // For rank-1: result_shape = (min_stride / last_result_stride, ceil_div(target, min_stride * shape))
     //            result_stride = (last_result_stride, min_stride * shape)
     if (shapes.size() == 1) {
@@ -350,8 +350,7 @@ static std::pair<Value, Value> computeComplementInline(
       return {complementShape.getResult(), complementStride.getResult()};
     }
     
-    // Rank-2+ case: implement CuTe's fold algorithm (lines 1194-1223)
-    // Sort by stride, then fold to compute gap modes
+    // Rank-2+ complement: sort by stride and fold to compute gap modes.
     struct Mode {
         Value shape;
         Value stride;
@@ -377,7 +376,7 @@ static std::pair<Value, Value> computeComplementInline(
         });
     }
     
-    // Fold: build complement modes (CuTe lines 1194-1209)
+    // Fold: build complement modes from stride-sorted entries.
     SmallVector<Value> compShapeVals;
     SmallVector<Value> compStrideVals;
     Value currStride = one;  // result_stride starts with 1
@@ -394,7 +393,7 @@ static std::pair<Value, Value> computeComplementInline(
             },
             rewriter);
         
-        // Filter size-1 modes from result (CuTe filter)
+        // Skip size-1 gap modes.
         bool isOne = false;
         if (auto constOp = newShape.getDefiningOp<arith::ConstantIndexOp>()) {
             isOne = (constOp.value() == 1);
@@ -418,7 +417,7 @@ static std::pair<Value, Value> computeComplementInline(
             rewriter);
     }
     
-    // After fold: append last mode (line 1212-1213)
+    // After fold: append last mode.
     Value lastMinStride = modes.back().stride;
     Value lastModeShape = modes.back().shape;
     auto lastNewShape = foldBinaryOp(loc, lastMinStride, currStride,
@@ -451,7 +450,7 @@ static std::pair<Value, Value> computeComplementInline(
         },
         rewriter);
     
-    // Append rest mode (lines 1218-1222)
+    // Append rest mode that extends to targetSize.
     auto restShape = foldBinaryOp(loc, targetSize, currStride,
         [](int64_t a, int64_t b) { return b != 0 ? (a + b - 1) / b : a; },
         [](Location l, Value a, Value b, PatternRewriter& r) {
@@ -610,7 +609,7 @@ static LayoutNode makeConstNode(int64_t val, Location loc, PatternRewriter& rewr
 }
 
 // ============================================================================
-// CuTe Algorithms Port
+// Layout Algorithm Helpers
 // ============================================================================
 
 // composition(LHS, RHS)
@@ -644,10 +643,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
         std::vector<LayoutNode> resShapeChildren;
         std::vector<LayoutNode> resStrideChildren;
         
-        // Handle cases where rhsStride is not a tuple (e.g. flat stride for tuple shape? illegal in CuTe)
-        // Or rhsStride is tuple but different structure?
-        // CuTe assumes strict structural match or broadcast.
-        // We assume structural match for now.
+        // Handle rhsStride that may not mirror rhsShape; assume structural match for now.
         
         size_t nChildren = rhsShape.children.size();
         for (size_t i = 0; i < nChildren; ++i) {
@@ -667,7 +663,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
     }
     
     // Case 2: RHS is a leaf (Integral) -> Fold LHS over RHS
-    // This implements `cute::fold` logic from `composition_impl`
+    // Implements the fold logic from composition_impl.
     
     if (!rhsShape.isLeaf || !rhsStride.isLeaf) {
         // Error: RHS should be leaf at this point
@@ -690,7 +686,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
     std::vector<LayoutNode> resultShapeNodes;
     std::vector<LayoutNode> resultStrideNodes;
     
-    // Flatten LHS to leaves for the fold (CuTe assumes LHS is flattened tuple of integers)
+    // Flatten LHS to leaves for the fold.
     std::vector<LayoutNode> lhsLeavesShape;
     std::vector<LayoutNode> lhsLeavesStride;
     flatten_to_leaves(lhsShape, lhsLeavesShape);
@@ -702,8 +698,8 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
         Value currShape = lhsLeavesShape[i].value;
         Value currStride = lhsLeavesStride[i].value;
         
-        // Logic from CuTe `composition_impl` fold (lines 1059+)
-        // next_shape = ceil_div(curr_shape, abs(rest_stride))  (line 1084)
+        // Fold logic derived from composition semantics.
+        // next_shape = ceil_div(curr_shape, abs(rest_stride))
         Value nextShape = foldBinaryOp(loc, currShape, restStride,
             [](int64_t a, int64_t b) { return b != 0 ? (a + b - 1) / b : a; },  // ceil_div
             [](Location l, Value a, Value b, PatternRewriter& r) { 
@@ -711,8 +707,8 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
             },
             rewriter);
         
-        // Update restStride BEFORE checking for early exit (line 1086 & 1110)
-        // This is critical: CuTe returns next_stride even when breaking early (line 1092)
+        // Update restStride before checking for early exit.
+        // Important: the fold returns next_stride even when breaking early.
         Value nextStride = foldBinaryOp(loc, restStride, currShape,
             [](int64_t a, int64_t b) { return b != 0 ? (a + b - 1) / b : a; },
             [](Location l, Value a, Value b, PatternRewriter& r) {
@@ -738,7 +734,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
         
         // If rest_shape is 1, we are done (nothing more to distribute)
         if (restIsOne) {
-             // CuTe returns next_stride when breaking, so update before breaking
+             // Update before breaking because next_stride captures the state we need.
              restStride = nextStride;
              break;
         }
@@ -754,7 +750,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
              continue;
         }
         
-        // new_shape = min(next_shape, rest_shape)  (line 1094)
+        // new_shape = min(next_shape, rest_shape)
         Value newShape = foldBinaryOp(loc, nextShape, restShape,
             [](int64_t a, int64_t b) { return std::min(a, b); },
             [](Location l, Value a, Value b, PatternRewriter& r) {
@@ -762,7 +758,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
             },
             rewriter);
         
-        // new_stride = currStride * restStride  (line 1108)
+        // new_stride = currStride * restStride
         Value newStride = foldBinaryOp(loc, currStride, restStride,
             [](int64_t a, int64_t b) { return a * b; },
             [](Location l, Value a, Value b, PatternRewriter& r) {
@@ -774,7 +770,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
         resultShapeNodes.push_back(LayoutNode(newShape));
         resultStrideNodes.push_back(LayoutNode(newStride));
         
-        // Update restShape = restShape / newShape  (line 1109) - WITH AGGRESSIVE FOLDING
+        // Update restShape = restShape / newShape with aggressive folding.
         restShape = foldBinaryOp(loc, restShape, newShape,
             [](int64_t a, int64_t b) { return b != 0 ? a / b : a; },
             [](Location l, Value a, Value b, PatternRewriter& r) {
@@ -786,7 +782,7 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
         restStride = nextStride;
     }
     
-    // Handle remainder of RHS according to CuTe logic (lines 1116-1124)
+    // Handle remainder of RHS after the fold.
     // Three cases:
     // 1. If result is empty: return (rest_shape, rest_stride * last_lhs_stride)
     // 2. If rest_shape == 1: don't append (early return)
@@ -830,30 +826,19 @@ static std::pair<LayoutNode, LayoutNode> composition_impl(
 }
 
 // complement(shape, stride, cosize_hi)
-// Based on CuTe `detail::complement` (lines 1177+)
 // Returns a layout that complements the input within `cosize_hi`.
 static std::pair<LayoutNode, LayoutNode> complement_impl(
     const LayoutNode& shape, const LayoutNode& stride, Value cosizeHi,
     Location loc, PatternRewriter& rewriter) {
     
-    // 1. Filter (already assumed done or we work on leaves)
-    // CuTe filters out size-1 modes. We should probably do that or just handle them.
-    // We'll work on leaves.
+    // 1. Work on flattened leaves so filtering can happen deterministically.
     
     std::vector<LayoutNode> leavesShape;
     std::vector<LayoutNode> leavesStride;
     flatten_to_leaves(shape, leavesShape);
     flatten_to_leaves(stride, leavesStride);
     
-    // 2. Sort by strides
-    // Since Values are dynamic, we can't sort easily at runtime without extensive SCF/Select logic.
-    // However, CuTe requires static strides for general case, or rank-1 dynamic.
-    // "Dynamic-stride complement only for rank-1 layouts" (line 1189).
-    
-    // If rank > 1 and dynamic, we can't implement full complement easily.
-    // But we can assume the user provided a sorted layout (e.g. coalesced).
-    // Or we assume standard layouts (stride-ordered).
-    // Let's assume inputs are "nice" for now, or just sort if we can get constant values.
+    // 2. Sort by stride when all strides are static; otherwise rely on the provided order.
     
     // Pack into struct for sorting
     struct Mode {
@@ -881,8 +866,7 @@ static std::pair<LayoutNode, LayoutNode> complement_impl(
     }
     // If not all static, we proceed in given order (risky but best effort).
     
-    // 3. Fold logic (lines 1193+)
-    // init = (result_shape, result_stride) = ((), (1))
+    // 3. Fold logic: accumulate gaps before each stride milestone.
     std::vector<Value> resShape;
     std::vector<Value> resStride;
     Value currStride = rewriter.create<arith::ConstantIndexOp>(loc, 1); // starts at 1
@@ -890,79 +874,20 @@ static std::pair<LayoutNode, LayoutNode> complement_impl(
     
     // Iterate through sorted modes
     for (const auto& mode : modes) {
-        // min_stride = mode.stride (since sorted)
         Value minStride = mode.stride;
         Value modeShape = mode.shape;
         
-        // new_shape = min_stride / last_result_stride
-        // "last_result_stride" is `currStride`
+        // Gap before the current mode.
         Value newShape = rewriter.create<arith::DivUIOp>(loc, minStride, currStride);
         
-        // new_stride = min_stride * mode_shape
-        // Wait, CuTe says: `new_stride = min_stride * get<min_idx>(shape)`
-        // This `new_stride` is the accumulation for the *next* step?
-        // No, `append(result_stride, new_stride)`
-        
         resShape.push_back(newShape);
-        // The stride for this new shape mode is `currStride`.
-        // Wait, CuTe result accumulates shapes and strides.
-        // The logic:
-        // gap = min_stride / curr_stride. If gap > 1, we found a hole.
-        // hole shape = gap. hole stride = curr_stride.
-        
-        // CuTe's `fold` builds `result_shape` and `result_stride`.
-        // init stride is `(1)`.
-        
-        // In loop:
-        // new_shape = min_stride / get<i>(result_stride)  <-- uses the *last added stride*?
-        // No, `get<i>` where i comes from `make_seq<R-1>`.
-        // init has tuple sizes: result_shape: 0, result_stride: 1.
-        // Loop runs R-1 times?
-        // Actually, complement is computing the "rest" modes.
-        
-        // Let's follow the logic:
-        // We want to find "missing" modes.
-        // Between `currStride` and `mode.stride`, there might be a gap.
-        // The gap size is `mode.stride / currStride`.
-        
-        // If gap > 1, we add a mode (gap, currStride).
-        // Then we advance `currStride` to `mode.stride * mode.shape`.
-        
         Value nextStride = rewriter.create<arith::MulIOp>(loc, minStride, modeShape);
         
-        // But wait, we need to accumulate *all* gaps?
-        // CuTe produces a list of gaps.
-        
-        // Actually, let's look at the result of complement.
-        // It returns the *complement* layout.
-        // The complement layout fills the gaps.
-        
-        // Current accumulated stride coverage ends at `currStride`.
-        // The next existing mode starts at `minStride`.
-        // If `minStride > currStride`, we have a gap of size `minStride / currStride`.
-        // We add this gap to our complement.
-        
-        // new_shape = minStride / currStride
-        // We add (new_shape, currStride) to complement.
-        
-        // Then we update `currStride` to cover the existing mode as well.
-        // `currStride` becomes `minStride * modeShape`.
-        
+        // Advance coverage to include this mode.
         currStride = nextStride;
     }
     
-    // 4. Append last shape mode (to fill up to cosizeHi)
-    // new_shape = cosizeHi / currStride
-    // But wait, `complement` arg `cotarget` (cosizeHi) might be larger than the span.
-    // CuTe line 1212: `get<0>(stride_) / get<R-1>(result_stride)` ??
-    // `stride_` is the remaining stride tuple from the fold (empty?).
-    // Actually line 1218: `rest_shape = coalesce(ceil_div(cotarget, new_stride))`
-    
-    // Our loop above processed all modes.
-    // `currStride` is now the total size covered by the sorted layout (plus gaps).
-    // We need to cover up to `cosizeHi`.
-    
-    // rest_shape = ceil_div(cosizeHi, currStride)
+    // 4. Append the final mode that stretches coverage to cosizeHi.
     Value restShape = ceilDiv(loc, cosizeHi, currStride, rewriter);
     resShape.push_back(restShape);
     // Stride is currStride
@@ -983,8 +908,7 @@ static std::pair<LayoutNode, LayoutNode> complement_impl(
         // Gap
         Value gap = rewriter.create<arith::DivUIOp>(loc, minStride, currStride);
         
-        // We add this gap mode to complement
-        // But only if gap > 1? CuTe filters 1s later. We can keep it.
+        // Record this gap mode even if it is size 1; later passes can coalesce it.
         compShapeNodes.push_back(LayoutNode(gap));
         compStrideNodes.push_back(LayoutNode(currStride));
         
@@ -1008,19 +932,10 @@ static std::pair<LayoutNode, LayoutNode> logical_divide_impl(
     const LayoutNode& tilerShape, const LayoutNode& tilerStride,
     Location loc, PatternRewriter& rewriter) {
     
-    // CuTe: composition(layout, make_layout(tiler, complement(tiler, shape(coalesce(layout)))))
-    
-    // 1. Coalesce layout (flatten) - we can just flatten to leaves
-    // But `complement` needs the "size" of the layout or cosize?
-    // `shape(coalesce(layout))` is just the shape of the layout.
-    // `complement(tiler, size_of_layout)`?
-    // CuTe line 1562: `complement(tiler, shape(coalesce(layout)))`.
-    // `complement` with 2 args: `complement(layout, cotarget)`.
-    // Here `layout` is `tiler`. `cotarget` is `shape(coalesce(layout))`.
-    // Wait, `shape(layout)` returns the shape.
-    // So it's `complement(tiler, input_shape)`.
-    // `complement` uses `size(cotarget)` (lines 1237, 1246).
-    // So we need `size(layout)`.
+    // Compute logical_divide(layout, tiler) by composing layout with
+    // make_layout(tiler, complement(tiler, size(layout))).
+    //
+    // 1. Flatten layout to determine its total size.
     
     // Calculate size of input layout
     std::vector<LayoutNode> layoutLeaves;
@@ -1088,7 +1003,7 @@ static Value computeRecursiveSize(Location loc, Value val, PatternRewriter &rewr
   return rewriter.create<SizeOp>(loc, rewriter.getIndexType(), val).getResult();
 }
 
-// Lower cute.size to product of shape elements
+// Lower size op to the product of shape elements.
 struct SizeOpLowering : public RewritePattern {
   SizeOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.size", 1, ctx) {}
@@ -1141,7 +1056,7 @@ struct SizeOpLowering : public RewritePattern {
   }
 };
 
-// Lower cute.cosize to max(coord[i] * stride[i]) + 1
+// Lower cosize to max(coord[i] * stride[i]) + 1.
 struct CosizeOpLowering : public RewritePattern {
   CosizeOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.cosize", 1, ctx) {}
@@ -1198,7 +1113,7 @@ struct CosizeOpLowering : public RewritePattern {
   }
 };
 
-// Lower cute.get to extract element at index
+// Lower get to extract an element at the requested index.
 struct GetOpLowering : public RewritePattern {
   GetOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.get", 1, ctx) {}
@@ -1260,7 +1175,7 @@ struct GetOpLowering : public RewritePattern {
   }
 };
 
-// Lower cute.rank to constant
+// Lower rank to a constant.
 struct RankOpLowering : public RewritePattern {
   RankOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.rank", 1, ctx) {}
@@ -1280,7 +1195,7 @@ struct RankOpLowering : public RewritePattern {
   }
 };
 
-// Lower cute.crd2idx to arithmetic: sum(coord[i] * stride[i])
+// Lower crd2idx to arithmetic: sum(coord[i] * stride[i]).
 struct Crd2IdxOpLowering : public RewritePattern {
   Crd2IdxOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.crd2idx", 1, ctx) {}
@@ -1340,7 +1255,7 @@ struct Crd2IdxOpLowering : public RewritePattern {
   }
 };
 
-// Lower cute.idx2crd to compute multi-dim coordinate from linear index
+// Lower idx2crd to compute the multi-dim coordinate from a linear index.
 struct Idx2CrdOpLowering : public RewritePattern {
   Idx2CrdOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.idx2crd", 1, ctx) {}
@@ -1397,7 +1312,7 @@ struct Idx2CrdOpLowering : public RewritePattern {
   }
 };
 
-// Lower cute.get_shape to extract shape from layout
+// Lower get_shape to extract the shape from a layout.
 struct GetShapeOpLowering : public RewritePattern {
   GetShapeOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.get_shape", 1, ctx) {}
@@ -1416,7 +1331,7 @@ struct GetShapeOpLowering : public RewritePattern {
   }
 };
 
-// Lower cute.get_stride to extract stride from layout  
+// Lower get_stride to extract the stride from a layout.
 struct GetStrideOpLowering : public RewritePattern {
   GetStrideOpLowering(MLIRContext *ctx)
       : RewritePattern("rocir.get_stride", 1, ctx) {}
@@ -1552,9 +1467,8 @@ struct CompositionOpLowering : public OpRewritePattern<CompositionOp> {
 
   LogicalResult matchAndRewrite(CompositionOp op,
                                 PatternRewriter &rewriter) const override {
-    // Composition: R = A ◦ B means R(c) = A(B(c))
-    // CuTe first coalesces A, then applies composition_impl.
-    // See layout.hpp line 1139: auto flat_lhs = detail::coalesce_x(lhs, coprofile(rhs));
+    // Composition: R = A ◦ B means R(c) = A(B(c)).
+    // Coalesce A before invoking composition_impl so the fold sees flat modes.
     
     auto loc = op->getLoc();
     Value layoutA = op.getLayoutA();
@@ -1595,9 +1509,8 @@ struct CompositionOpLowering : public OpRewritePattern<CompositionOp> {
     LayoutNode shapeB = deserializeLayoutNode(shapeBOp);
     LayoutNode strideB = deserializeLayoutNode(strideBOp);
     
-    // CuTe coalesces LHS before composition (layout.hpp line 1139)
-    // But for tuple RHS, coalescing loses structure - skip for now
-    // TODO: implement proper coprofile-based coalescing
+    // Coalesce the LHS before composition when it is safe; tuple RHS would lose structure.
+    // TODO: implement proper coprofile-based coalescing.
     LayoutNode lhsShapeToUse = shapeA;
     LayoutNode lhsStrideToUse = strideA;
     
@@ -1766,7 +1679,7 @@ static Value computeSizeFromNode(const LayoutNode& node, Location loc, PatternRe
 }
 
 // Helper to determine if a LayoutNode represents a "Tuple of Layouts" or a "Layout of Tuples" (Atomic Layout).
-// Matches CuTe is_tuple<T> trait logic for Layout vs Tuple.
+// Mirrors the is_tuple<T> trait logic for Layout vs Tuple.
 static bool isTuple(const LayoutNode& node) {
     if (node.isLeaf) return false;
     // In Rocir, "Tuple of Layouts" is a Node whose children are Nodes (Shapes).
@@ -1783,9 +1696,9 @@ static Value lowerLogicalDivide(
     Location loc, PatternRewriter &rewriter, MLIRContext* ctx,
     bool zipResults) 
 {
-    // CuTe logical_divide logic:
-    // if is_tuple<Tiler>: distribute (transform_layout)
-    // else: atomic (composition(..., complement(...)))
+    // Logical divide behavior:
+    // if tiler is a tuple: distribute (transform_layout)
+    // else: atomic (composition(..., complement(...))).
     
     bool tilerIsTuple = isTuple(tilerShape);
     bool inputIsTuple = isTuple(inputShape); // For safety, ensure input matches structure
@@ -2232,8 +2145,8 @@ struct ComplementOpLowering : public OpRewritePattern<ComplementOp> {
 
   LogicalResult matchAndRewrite(ComplementOp op,
                                 PatternRewriter &rewriter) const override {
-    // complement(tiler, target_size) computes the "rest" modes not covered by tiler
-    // Algorithm from CuTe layout.hpp lines 1176-1227:
+    // complement(tiler, target_size) computes the "rest" modes not covered by tiler.
+    // Algorithm outline:
     // 1. Filter tiler (remove stride-0, size-1 modes) 
     // 2. Sort by stride
     // 3. Fold: at each step, remove min-stride mode, compute new_shape = min_stride / last_stride
@@ -2289,7 +2202,7 @@ struct ComplementOpLowering : public OpRewritePattern<ComplementOp> {
       auto isOneShape = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, shapes[i], one);
       // Skip if stride is 0 OR shape is 1
       // For simplicity, we'll keep all for now (dynamic filtering is complex)
-      // In practice, CuTe does this at compile time with static assertions
+      // In practice this filtering is often resolved statically.
       filteredShapes.push_back(shapes[i]);
       filteredStrides.push_back(strides[i]);
     }

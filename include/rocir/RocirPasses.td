@@ -1,6 +1,6 @@
-//===- RocirPasses.td - CuTe IR Lowering Passes ------------*- tablegen -*-===//
+//===- RocirPasses.td - Layout IR Lowering Passes ----------*- tablegen -*-===//
 //
-// Lowering passes for CuTe IR dialects
+// Lowering passes for Rocir IR dialects
 // Transformation chain: rocdsl → gpu/scf → nvgpu → nvvm → LLVM IR
 //
 //===----------------------------------------------------------------------===//
@@ -15,7 +15,7 @@ include "mlir/Pass/PassBase.td"
 //===----------------------------------------------------------------------===//
 
 def RocirToStandardPass : Pass<"rocir-to-standard", "::mlir::func::FuncOp"> {
-  let summary = "Lower CuTe IR to standard MLIR dialects";
+  let summary = "Lower Rocir IR to standard MLIR dialects";
   let description = [{
     Converts rocdsl operations to combinations of:
     - scf.for for iteration over layouts
@@ -23,16 +23,16 @@ def RocirToStandardPass : Pass<"rocir-to-standard", "::mlir::func::FuncOp"> {
     - memref for tensor data access
     
     Lowering Strategy:
-    - cute.make_shape/stride/layout → Compile-time constants
-    - cute.crd2idx → arith.muli + arith.addi chain
-    - cute.local_partition → scf.for with stride calculations
-    - cute.copy → memref.load + memref.store loops
+    - rocir.make_shape/stride/layout → Compile-time constants
+    - rocir.crd2idx → arith.muli + arith.addi chain
+    - rocir.local_partition → scf.for with stride calculations
+    - rocir.copy → memref.load + memref.store loops
     
     Example:
     ```mlir
     // Before:
-    %layout = cute.make_layout %shape, %stride
-    %idx = cute.crd2idx %coord, %layout
+    %layout = rocir.make_layout %shape, %stride
+    %idx = rocir.crd2idx %coord, %layout
     
     // After:
     %idx = arith.muli %coord_0, %stride_0
@@ -93,7 +93,7 @@ def CuteLayoutCanonicalizePass : Pass<"cute-layout-canonicalize", "::mlir::func:
     Example:
     ```mlir
     // Before:
-    %layout2 = cute.composition %layout1, %identity_layout
+    %layout2 = rocir.composition %layout1, %identity_layout
     
     // After:
     // (replaced with %layout1)
@@ -107,9 +107,9 @@ def CuteTensorPartitionPass : Pass<"cute-tensor-partition", "::mlir::func::FuncO
   let summary = "Materialize tensor partitioning into explicit indexing";
   let description = [{
     Converts high-level partition operations into explicit loops:
-    - cute.local_partition → Thread-local index calculations
-    - cute.local_tile → Tile extraction with boundary checks
-    - cute.slice → Dimension reduction
+    - rocir.local_partition → Thread-local index calculations
+    - rocir.local_tile → Tile extraction with boundary checks
+    - rocir.slice → Dimension reduction
     
     Generates optimized code for common patterns like:
     - Thread-block partitioning (blockIdx, threadIdx)
@@ -125,38 +125,38 @@ def CuteTensorPartitionPass : Pass<"cute-tensor-partition", "::mlir::func::FuncO
 }
 
 //===----------------------------------------------------------------------===//
-// cute_nvgpu_ir → nvgpu dialect
+// Rocir NVGPU IR → nvgpu dialect
 //===----------------------------------------------------------------------===//
 
 def RocirNvgpuToNvgpuPass : Pass<"cute-nvgpu-to-nvgpu", "::mlir::gpu::GPUModuleOp"> {
-  let summary = "Lower cute_nvgpu_ir to MLIR nvgpu dialect";
+  let summary = "Lower Rocir NVGPU IR to MLIR nvgpu dialect";
   let description = [{
-    Converts CuTe GPU-aware operations to standard MLIR nvgpu operations.
+    Converts Rocir GPU-aware operations to standard MLIR nvgpu operations.
     
     Key Transformations:
     
     **MMA Operations**:
-    - cute_nvgpu.warpgroup_mma → nvgpu.warpgroup.mma.sync
-    - cute_nvgpu.warp_mma_f16bf16 → nvgpu.mma.sync
+    - rocir.nvgpu.warpgroup_mma → nvgpu.warpgroup.mma.sync
+    - rocir.nvgpu.warp_mma_f16bf16 → nvgpu.mma.sync
     - Extracts shape/type metadata from MmaAtom
     - Generates proper fragment layouts
     
     **Copy Operations**:
-    - cute_nvgpu.ldmatrix → nvgpu.ldmatrix
-    - cute_nvgpu.cpasync_g2s → nvgpu.device_async_copy
+    - rocir.nvgpu.ldmatrix → nvgpu.ldmatrix
+    - rocir.nvgpu.cpasync_g2s → nvgpu.device_async_copy
     - Handles synchronization (cpasync.commit/wait)
     
     **TMA Operations (SM90+)**:
-    - cute_nvgpu.tma_load_execute → nvgpu.tma.async.load
-    - cute_nvgpu.tma_store_execute → nvgpu.tma.async.store
+    - rocir.nvgpu.tma_load_execute → nvgpu.tma.async.load
+    - rocir.nvgpu.tma_store_execute → nvgpu.tma.async.store
     - Materializes TMA descriptor creation
     - Integrates mbarrier synchronization
     
     Example:
     ```mlir
-    // Before (cute_nvgpu_ir):
-    %atom = cute_nvgpu.make_mma_atom !f16, !f16, !f32, [64,128,16], "SM90"
-    %result = cute_nvgpu.warpgroup_mma %fragA, %fragB, %fragC, %atom
+    // Before (rocir.nvgpu IR):
+    %atom = rocir.nvgpu.make_mma_atom !f16, !f16, !f32, [64,128,16], "SM90"
+    %result = rocir.nvgpu.warpgroup_mma %fragA, %fragB, %fragC, %atom
     
     // After (nvgpu):
     %result = nvgpu.warpgroup.mma.sync 
@@ -251,7 +251,7 @@ def RocirNvgpuTMAMaterializationPass : Pass<"cute-nvgpu-tma-materialize", "::mli
     
     // Device:
     __shared__ CUtensorMap* tma_desc = kernel_param_tma_desc;
-    cute_nvgpu.atom_set_value %tma_load, "tma_descriptor", %tma_desc
+    rocir.nvgpu.atom_set_value %tma_load, "tma_descriptor", %tma_desc
     ```
   }];
   
@@ -313,7 +313,7 @@ def CuteMemoryCoalescingPass : Pass<"cute-memory-coalescing", "::mlir::gpu::GPUM
     - Suggests layout transformations (blocked_product, raked_product)
     - Applies automatic padding for bank conflict avoidance
     
-    Works with cute.blocked_product to ensure:
+    Works with rocir.blocked_product to ensure:
     - Adjacent threads access adjacent memory
     - Full cache line utilization (128 bytes)
   }];
@@ -333,7 +333,7 @@ def CuteSMEMSwizzlingPass : Pass<"cute-smem-swizzling", "::mlir::gpu::GPUModuleO
     - Column-major access in row-major layout
     - Power-of-2 strides causing same-bank access
     
-    Generates swizzled layouts using cute.composition with swizzle strides.
+    Generates swizzled layouts using rocir.composition with swizzle strides.
   }];
   
   let constructor = "mlir::rocir::createCuteSMEMSwizzlingPass()";
@@ -410,12 +410,12 @@ def CuteWarpSpecializationPass : Pass<"cute-warp-specialization", "::mlir::gpu::
     %warp_id = gpu.thread_id y
     scf.if (%warp_id < %num_producer_warps) {
       // Producer logic
-      cute_nvgpu.tma_load_execute ...
-      cute_nvgpu.mbarrier_arrive ...
+      rocir.nvgpu.tma_load_execute ...
+      rocir.nvgpu.mbarrier_arrive ...
     } else {
       // Consumer logic
-      cute_nvgpu.mbarrier_wait ...
-      cute_nvgpu.warpgroup_mma ...
+      rocir.nvgpu.mbarrier_wait ...
+      rocir.nvgpu.warpgroup_mma ...
     }
     ```
   }];
@@ -476,9 +476,9 @@ def CuteAtomValidationPass : Pass<"cute-atom-validation", "::mlir::ModuleOp"> {
 //===----------------------------------------------------------------------===//
 
 def CuteToRocmPass : Pass<"cute-to-rocm", "::mlir::ModuleOp"> {
-  let summary = "Lower CuTe IR to ROCm-specific dialects";
+  let summary = "Lower Rocir IR to ROCm-specific dialects";
   let description = [{
-    Converts rocdsl operations to cute_rocm_ir operations for AMD GFX942.
+    Converts rocdsl operations to Rocir ROCm IR operations for AMD GFX942.
   }];
   let constructor = "mlir::rocir::createCuteToRocmPass()";
   let dependentDialects = [

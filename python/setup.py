@@ -19,7 +19,7 @@ def load_requirements():
 setup(
     name="rocdsl",
     version="0.1.0",
-    description="Python bindings for RocDSL - ROCm Domain Specific Language for CuTe Layout Algebra",
+    description="Python bindings for RocDSL - ROCm Domain Specific Language for layout algebra",
     long_description=open("../README.md").read() if os.path.exists("../README.md") else "",
     long_description_content_type="text/markdown",
     author="RocDSL Contributors",
@@ -39,7 +39,7 @@ setup(
         "Topic :: Software Development :: Compilers",
         "Topic :: Scientific/Engineering",
     ],
-    keywords="mlir cuda rocm gpu compiler cute layout",
+    keywords="mlir cuda rocm gpu compiler layout",
     project_urls={
         "Source": "https://github.com/yourusername/rocdsl",
     },

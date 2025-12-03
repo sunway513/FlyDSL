@@ -1,4 +1,4 @@
-// Comprehensive test of all working CuTe operations
+// Comprehensive test of all working Rocir operations
 
 // Test 1: size - Product of shape dimensions
 func.func @test_size() -> index {

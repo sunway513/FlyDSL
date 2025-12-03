@@ -78,7 +78,7 @@ def test_nested_pipelines():
 
 def test_pipeline_recipes():
     """Test pre-built pipeline recipes."""
-    # CuTe to Standard recipe
+    # Rocir to Standard recipe
     p1 = Pipeline().lower_rocir_to_standard()
     s1 = str(p1)
     assert "rocir-to-standard" in s1
@@ -144,7 +144,7 @@ def test_run_pipeline_with_string():
 
 
 def test_rocir_pass_methods():
-    """Test all CuTe-specific pass methods are callable."""
+    """Test all Rocir-specific pass methods are callable."""
     pipeline = Pipeline()
     
     # Lowering passes
@@ -233,7 +233,7 @@ def test_complex_pipeline():
     """Test building a complex realistic pipeline."""
     pipeline = (
         Pipeline()
-        # Initial CuTe lowering
+        # Initial Rocir lowering
         .rocir_to_standard()
         
         # Function-level optimizations

@@ -1,4 +1,4 @@
-# Generate Python bindings for CuTe dialect
+# Generate Python bindings for the Rocir dialect family
 
 add_custom_target(RocirPythonModules)
 
@@ -14,7 +14,7 @@ mlir_tablegen(_rocir_ops_gen.py -gen-python-op-bindings -bind-dialect=rocir)
 add_public_tablegen_target(RocirPythonOpsIncGen)
 add_dependencies(RocirPythonModules RocirPythonOpsIncGen)
 
-# Generate Python bindings for cute_rocm dialect
+# Generate Python bindings for the ROCm dialect extension
 mlir_tablegen(_rocir_rocm_ops_gen.py -gen-python-op-bindings -bind-dialect=cute_rocm)
 add_public_tablegen_target(RocirRocmPythonOpsIncGen)
 add_dependencies(RocirPythonModules RocirRocmPythonOpsIncGen)
@@ -77,9 +77,9 @@ if(pybind11_FOUND)
   
   add_dependencies(RocirPythonModules _rocirPassesExt)
   
-  message(STATUS "CuTe passes Python extension module will be built")
+  message(STATUS "Rocir passes Python extension module will be built")
 else()
-  message(WARNING "pybind11 not found - CuTe passes will not be available in Python")
+  message(WARNING "pybind11 not found - Rocir passes will not be available in Python")
 endif()
 
 # Fix TableGen-generated relative imports for standalone usage
@@ -96,7 +96,7 @@ add_custom_command(
     TARGET RocirRocmPythonOpsIncGen POST_BUILD
     COMMAND sed -i 's/from \._ods_common/from mlir.dialects._ods_common/g' 
         ${CMAKE_CURRENT_BINARY_DIR}/_rocir_rocm_ops_gen.py
-    COMMENT "Fixing imports in generated Python bindings for cute_rocm"
+    COMMENT "Fixing imports in generated Python bindings for the ROCm dialect"
 )
 
 # Copy Python wrapper files to build directory at configure time

@@ -1,22 +1,22 @@
 """
-CuTe Runtime Python API
-========================
+Rocir Runtime Python API
+=========================
 
-High-level Python interface for compiling and executing CuTe kernels.
+High-level Python interface for compiling and executing Rocir kernels.
 
 Example usage:
-    >>> import rocir_runtime as cute
+    >>> import rocir_runtime as rt
     >>> import numpy as np
     
     >>> # Create GEMM executor
-    >>> gemm = cute.Gemm(M=1024, N=1024, K=1024, arch='sm90')
+    >>> gemm = rt.Gemm(M=1024, N=1024, K=1024, arch='sm90')
     
     >>> # Compile from MLIR
     >>> mlir_code = '''
     ... func.func @cute_gemm(%A: memref<1024x1024xf16>, 
     ...                       %B: memref<1024x1024xf16>,
     ...                       %C: memref<1024x1024xf32>) {
-    ...   // CuTe IR kernel implementation
+    ...   // Rocir IR kernel implementation
     ... }
     ... '''
     >>> gemm.compile(mlir_code)
@@ -36,7 +36,7 @@ try:
     from . import _cute_bindings as _cpp
 except ImportError:
     raise ImportError(
-        "CuTe runtime C++ bindings not found. "
+        "Runtime C++ bindings not found. "
         "Please build the extension with: python setup.py install"
     )
 

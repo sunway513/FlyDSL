@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Complete tests for Rocir layout algebra operations.
-Exactly following layout algebra notebook examples.
-Ref: examples/python/CuTeDSL/notebooks/cute_layout_algebra.ipynb
+Exactly following the layout algebra notebook examples from the CUTLASS tree.
 
 Each test corresponds to a specific cell in the notebook.
 """

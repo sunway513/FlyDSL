@@ -1,4 +1,4 @@
-"""Tests for CuTe product operations (tiling)."""
+"""Tests for Rocir product operations (tiling)."""
 
 import pytest
 from mlir.ir import IndexType

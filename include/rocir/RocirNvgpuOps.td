@@ -1,4 +1,4 @@
-//===- RocirNvgpuOps.td - CuTe NVGPU Operations -------------*- tablegen -*-===//
+//===- RocirNvgpuOps.td - Rocir NVGPU Operations -----------*- tablegen -*-===//
 //
 // GPU Hardware-Specific Operations
 // Architecture: SM80 (Ampere), SM90 (Hopper), SM100 (Blackwell)
@@ -22,7 +22,7 @@ def RocirNvgpu_MakeMmaAtomOp : RocirNvgpu_Op<"make_mma_atom", [Pure]> {
     
     Example:
     ```mlir
-    %atom = cute_nvgpu.make_mma_atom !f16, !f16, !f32, [16, 8, 16], "SM80"
+    %atom = rocir.nvgpu.make_mma_atom !f16, !f16, !f32, [16, 8, 16], "SM80"
       : !cute_nvgpu.mma_atom<!f16, !f16, !f32, [16, 8, 16], SM80>
     ```
   }];
@@ -116,7 +116,7 @@ def RocirNvgpu_AtomGetValueOp : RocirNvgpu_Op<"atom_get_value"> {
     
     Example:
     ```mlir
-    %tma_desc = cute_nvgpu.atom_get_value %tma_atom, "tma_descriptor"
+    %tma_desc = rocir.nvgpu.atom_get_value %tma_atom, "tma_descriptor"
       : (!cute_nvgpu.tma_load<...>) -> !llvm.ptr
     ```
   }];

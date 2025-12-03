@@ -1,4 +1,4 @@
-//===- RocirDialect.td - Cute dialect definition -----------*- tablegen -*-===//
+//===- RocirDialect.td - Rocir dialect definition ---------*- tablegen -*-===//
 
 #ifndef ROCIR_DIALECT
 #define ROCIR_DIALECT
@@ -9,9 +9,9 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def Rocir_Dialect : Dialect {
   let name = "rocir";
-  let summary = "A MLIR dialect for CUTE tensor operations";
+  let summary = "A MLIR dialect for Rocir tensor operations";
   let description = [{
-    The Cute dialect provides types and operations for CUTE-style 
+    The Rocir dialect provides types and operations for hierarchical 
     hierarchical tensor layout manipulation.
   }];
   let cppNamespace = "::mlir::rocir";

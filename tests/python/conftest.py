@@ -5,11 +5,11 @@ from mlir.ir import Context, Location, Module, InsertionPoint
 import ctypes
 import os
 
-# Register CuTe passes by loading the shared library
+# Register Rocir passes by loading the shared library
 def register_cute_passes():
-    """Register CuTe passes with MLIR."""
+    """Register Rocir passes with MLIR."""
     try:
-        # Try to find and load the CuTe dialect library
+        # Try to find and load the Rocir dialect library
         lib_paths = [
             '/mnt/raid0/felix/rocDSL/build/lib/Dialect/Rocir/libRocirDialect.so',
             '/mnt/raid0/felix/rocDSL/build/lib/libRocirDialect.so',
@@ -33,7 +33,7 @@ def register_cute_passes():
                 
     except Exception as e:
         import warnings
-        warnings.warn(f"Could not load CuTe libraries: {e}")
+        warnings.warn(f"Could not load Rocir libraries: {e}")
 
 # Register passes at module import time
 register_cute_passes()
@@ -43,7 +43,7 @@ register_cute_passes()
 def ctx():
     """Provide a fresh MLIR context for each test."""
     with Context() as context:
-        # Allow unregistered dialects (for external dialects like cute)
+        # Allow unregistered dialects (for external Rocir extensions)
         context.allow_unregistered_dialects = True
         
         # Load required dialects

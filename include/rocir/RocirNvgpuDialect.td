@@ -1,6 +1,6 @@
-//===- RocirNvgpuDialect.td - CuTe NVGPU Dialect Definition --*- tablegen -*-===//
+//===- RocirNvgpuDialect.td - Rocir NVGPU Dialect Definition -*- tablegen -*-===//
 //
-// CuTe GPU Hardware-Aware Dialect
+// Rocir GPU Hardware-Aware Dialect
 // Extends rocdsl with GPU-specific types that wrap MLIR nvgpu operations
 //
 //===----------------------------------------------------------------------===//
@@ -19,10 +19,10 @@ include "mlir/IR/EnumAttr.td"
 def RocirNvgpu_Dialect : Dialect {
   let name = "cute_nvgpu";
   let cppNamespace = "::mlir::rocir::nvgpu";
-  let summary = "GPU hardware-aware CuTe IR";
+  let summary = "GPU hardware-aware Rocir IR";
   let description = [{
-    CuTe NVGPU IR extends rocdsl with GPU-specific types and operations.
-    It wraps MLIR nvgpu operations with CuTe Layout-aware interfaces.
+    Rocir NVGPU IR extends rocdsl with GPU-specific types and operations.
+    It wraps MLIR nvgpu operations with layout-aware interfaces.
     
     **Design Philosophy**: 
     - Accepts rocdsl::LayoutType/TileType as partition descriptors
@@ -30,7 +30,7 @@ def RocirNvgpu_Dialect : Dialect {
     - Generates architecture-specific code (SM80/SM90/SM100)
     
     **Lowering Chain**:
-    cute_nvgpu_ir → gpu/nvgpu dialect → nvvm → LLVM IR → PTX
+    rocir_nvgpu_ir → gpu/nvgpu dialect → nvvm → LLVM IR → PTX
   }];
   
   let useDefaultTypePrinterParser = 1;

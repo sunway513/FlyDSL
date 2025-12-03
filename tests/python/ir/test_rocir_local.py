@@ -1,4 +1,4 @@
-"""Tests for CuTe local operations (thread/block partitioning)."""
+"""Tests for Rocir local operations (thread/block partitioning)."""
 
 import pytest
 from mlir.ir import IndexType

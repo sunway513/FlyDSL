@@ -153,7 +153,7 @@ def make_shape(*dims, loc: Optional[Location] = None, ip: Optional[InsertionPoin
         >>> c16 = arith.constant(16, index=True)
         >>> shape = rocir.make_shape(c8, c16)  # Creates shape<2>
         >>> 
-        >>> # Nested shape like CuTe: (9, (4, 8))
+        >>> # Nested shape example: (9, (4, 8))
         >>> c9 = arith.constant(9, index=True)
         >>> c4 = arith.constant(4, index=True)
         >>> shape = rocir.make_shape(c9, (c4, c8))  # Creates nested shape
@@ -191,7 +191,7 @@ def make_stride(*strides, loc: Optional[Location] = None, ip: Optional[Insertion
         >>> c8 = arith.constant(8, index=True)
         >>> stride = rocir.make_stride(c1, c8)  # Creates stride<2>
         >>> 
-        >>> # Nested stride like CuTe: (59, (13, 1))
+        >>> # Nested stride example: (59, (13, 1))
         >>> c59 = arith.constant(59, index=True)
         >>> c13 = arith.constant(13, index=True)
         >>> stride = rocir.make_stride(c59, (c13, c1))  # Creates nested stride
@@ -231,7 +231,7 @@ def make_layout(shape, stride=None, loc: Optional[Location] = None, ip: Optional
         >>> stride = rocir.make_stride(c1, c8)
         >>> layout = rocir.make_layout(shape, stride)
         >>> 
-        >>> # Using tuples directly (CuTe-style)
+        >>> # Using tuples directly in nested form
         >>> layout = rocir.make_layout((c9, (c4, c8)), stride=(c59, (c13, c1)))
         >>> 
         >>> # Using single value
@@ -773,7 +773,7 @@ def local_tile(layout: Value, tiler: Value, coord: Value, loc: Optional[Location
 # Printing operations
 
 # Use Python's built-in print for static compile-time values
-# This is consistent with CuTeDSL where print shows compile-time information
+# This mirrors the behavior where print shows compile-time information
 print = print  # Re-export Python's built-in print
 
 

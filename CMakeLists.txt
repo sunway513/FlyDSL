@@ -81,7 +81,7 @@ install(DIRECTORY docs
 
 # Summary
 message(STATUS "")
-message(STATUS "CuTe IR Configuration Summary")
+message(STATUS "Rocir Configuration Summary")
 message(STATUS "==============================")
 message(STATUS "  Version:           ${PROJECT_VERSION}")
 message(STATUS "  Build Runtime:     ${BUILD_RUNTIME}")
