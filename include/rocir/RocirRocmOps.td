@@ -43,7 +43,7 @@ def RocirRocm_MfmaOp : RocirRocm_OpBase<"mfma", [Pure]> {
     AnyType:$b,                          // B operand (RHS)
     AnyType:$c,                          // C operand (accumulator)
     ArrayAttr:$shape,                    // [M, N, K] shape
-    GfxArchEnum:$arch                    // Target architecture
+    StrAttr:$arch                        // Target architecture (gfx942, etc.)
   );
   
   let results = (outs AnyType:$result);

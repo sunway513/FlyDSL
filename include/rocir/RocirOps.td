@@ -348,52 +348,10 @@ def Rocir_TiledDivideOp : Rocir_Op<"tiled_divide", []> {
 // Advanced Layout Operations
 //===----------------------------------------------------------------------===//
 
-// Placeholder operations - full implementation pending
-// These are currently implemented as pass-through/identity operations
-
-def Rocir_ProductEachOp : Rocir_Op<"product_each"> {
-  let summary = "Compute element-wise product of shape dimensions [STUB]";
-  let description = [{
-    Computes the product of each mode in a shape.
-    For nested shapes, computes product at each level.
-    
-    NOTE: This is currently a stub operation that passes through the input.
-    Full implementation requires runtime shape computation logic.
-  }];
-  let arguments = (ins Rocir_ShapeType:$shape);
-  let results = (outs Rocir_ShapeType:$result);
-  let assemblyFormat = "$shape attr-dict `:` type($shape) `->` type($result)";
-}
-
-def Rocir_MakeLayoutTVOp : Rocir_Op<"make_layout_tv"> {
-  let summary = "Create thread-value layout from thread and value layouts [STUB]";
-  let description = [{
-    Creates a thread-value layout by composing thread and value layouts.
-    
-    Returns (tiler_mn, layout_tv) where:
-    - tiler_mn: Tile size compatible with zipped_divide
-    - layout_tv: Maps (thread_idx, value_idx) -> (M, N)
-    
-    NOTE: This is currently a stub operation. Full implementation requires
-    runtime computation of raked_product, right_inverse, and composition.
-  }];
-  let arguments = (ins
-    Rocir_LayoutType:$thr_layout,
-    Rocir_LayoutType:$val_layout
-  );
-  let results = (outs
-    Rocir_ShapeType:$tiler_mn,
-    Rocir_LayoutType:$layout_tv
-  );
-  let assemblyFormat = [{
-    $thr_layout `,` $val_layout attr-dict `:`
-    `(` type($thr_layout) `,` type($val_layout) `)` `->` 
-    `(` type($tiler_mn) `,` type($layout_tv) `)`
-  }];
-}
-
-// Note: MakeLayoutTVOp currently requires manual handling for properties
-// This is a limitation of the current MLIR operation code generation
+// NOTE: product_each and make_layout_tv are implemented at the Python level
+// using existing low-level operations (raked_product, get_shape, size, composition, etc.)
+// They don't need dedicated MLIR IR operations since they can be computed
+// using combinations of existing operations.
 
 def Rocir_FlatDivideOp : Rocir_Op<"flat_divide", []> {
   let summary = "Divide a layout by a tiler with flat semantics";

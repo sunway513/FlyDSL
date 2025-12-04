@@ -27,9 +27,10 @@ def ensure_rocir_python_extensions(context: ir.Context):
     """Ensure Rocir passes and dialect are registered for the given context."""
     global _PASSES_MODULE
     _ensure_bindings_path_on_sys_path()
-    if _PASSES_MODULE is None:
-        _PASSES_MODULE = importlib.import_module("_rocirPassesExt")
-    _PASSES_MODULE.register_dialect(context)
+    # DISABLED: _rocirPassesExt has symbol issues
+    # if _PASSES_MODULE is None:
+    #     _PASSES_MODULE = importlib.import_module("_rocirPassesExt")
+    # _PASSES_MODULE.register_dialect(context)
 
 
 @dataclass

@@ -46,86 +46,8 @@ public:
 
 namespace {
 
-/// Lower rocir.product_each to a sequence of shape manipulations
-struct ProductEachOpLowering : public OpConversionPattern<ProductEachOp> {
-  using OpConversionPattern::OpConversionPattern>
-  
-  LogicalResult matchAndRewrite(ProductEachOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto shape = adaptor.getShape();
-    
-    // For now, product_each is a metadata operation that gets constant-folded
-    // during canonicalization. In a full implementation, we would:
-    // 1. Extract the shape structure
-    // 2. Compute products at each hierarchical level
-    // 3. Reconstruct a new shape with computed products
-    
-    // Keep the operation as-is for now - it will be lowered in a later pass
-    // or constant-folded if the shape is static
-    rewriter.replaceOp(op, shape);
-    return success();
-  }
-};
-
-/// Lower rocir.make_layout_tv to rocir_rocm operations
-struct MakeLayoutTVOpLowering : public OpConversionPattern<MakeLayoutTVOp> {
-  using OpConversionPattern::OpConversionPattern;
-  
-  LogicalResult matchAndRewrite(MakeLayoutTVOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    
-    // Algorithm:
-    // 1. layout_mn = raked_product(thr_layout, val_layout)
-    auto layoutMN = rewriter.create<RakedProductOp>(
-        loc, adaptor.getThrLayout(), adaptor.getValLayout());
-    
-    // 2. Get shape from layout_mn
-    auto shapeType = ShapeType::get(rewriter.getContext(), 2);
-    auto shape = rewriter.create<GetShapeOp>(loc, shapeType, layoutMN.getResult());
-    
-    // 3. tiler_mn = product_each(shape)
-    auto tilerMN = rewriter.create<ProductEachOp>(loc, shapeType, shape.getResult());
-    
-    // 4. Compute layout_tv
-    // Full implementation would compute:
-    // layout_tv = composition(right_inverse(layout_mn), make_layout((thr_size, val_size)))
-    
-    // For now, use a simplified approach:
-    // Get thr_size and val_size
-    auto thrSize = rewriter.create<SizeOp>(
-        loc, rewriter.getIndexType(), adaptor.getThrLayout());
-    auto valSize = rewriter.create<SizeOp>(
-        loc, rewriter.getIndexType(), adaptor.getValLayout());
-    
-    // Create a shape for (thr_size, val_size)
-    auto tvShapeType = ShapeType::get(rewriter.getContext(), 2);
-    SmallVector<Value> tvShapeValues = {thrSize.getResult(), valSize.getResult()};
-    auto tvShape = rewriter.create<MakeShapeOp>(loc, tvShapeType, tvShapeValues);
-    
-    // Compute right inverse of layout_mn
-    auto layoutType = LayoutType::get(rewriter.getContext(), 2);
-    auto layoutMNInv = rewriter.create<RightInverseOp>(
-        loc, layoutType, layoutMN.getResult());
-    
-    // Create a layout from tv_shape
-    // For simplicity, use a default stride (column-major)
-    auto strideType = StrideType::get(rewriter.getContext(), 2);
-    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    SmallVector<Value> strideValues = {one.getResult(), thrSize.getResult()};
-    auto tvStride = rewriter.create<MakeStrideOp>(loc, strideType, strideValues);
-    auto tvLayout = rewriter.create<MakeLayoutOp>(
-        loc, layoutType, tvShape.getResult(), tvStride.getResult());
-    
-    // Compose to get final layout_tv
-    auto layoutTV = rewriter.create<CompositionOp>(
-        loc, layoutType, layoutMNInv.getResult(), tvLayout.getResult());
-    
-    rewriter.replaceOp(op, {tilerMN.getResult(), layoutTV.getResult()});
-    return success();
-  }
-};
+// NOTE: product_each and make_layout_tv patterns removed
+// These are now implemented at Python level using existing operations
 
 } // namespace
 
@@ -166,20 +88,14 @@ struct RocirToRocmPass : public PassWrapper<RocirToRocmPass, OperationPass<Modul
                            memref::MemRefDialect,
                            rocir_rocm::RocirRocmDialect>();
     
-    // Mark specific Rocir ops as illegal (to be lowered)
-    target.addIllegalOp<MakeLayoutTVOp>();
-    
     // Most Rocir ops remain legal (they're lowered in later passes)
     target.addLegalDialect<RocirDialect>();
     
-    // Populate patterns
+    // Populate patterns (currently empty - patterns will be added as needed)
     RewritePatternSet patterns(context);
-    patterns.add<MakeLayoutTVOpLowering>(typeConverter, context);
     
-    // Apply conversion (partial - not all ops need lowering at this stage)
-    if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
-      signalPassFailure();
-    }
+    // For now, this pass just marks the module with target attributes
+    // Actual lowering patterns will be added in future iterations
   }
 };
 

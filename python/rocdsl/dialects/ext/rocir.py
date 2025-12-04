@@ -23,7 +23,7 @@ _build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.
 if _build_dir not in sys.path:
     sys.path.insert(0, _build_dir)
 import rocir as rocir_ops
-import _rocirPassesExt  # Auto-register passes
+# import _rocirPassesExt  # Auto-register passes  # DISABLED: has symbol issues
 
 
 
