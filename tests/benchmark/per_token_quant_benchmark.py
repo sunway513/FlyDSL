@@ -439,5 +439,15 @@ def benchmark_per_token_quant():
     return output_diff <= 1.0
 
 
+# Pytest test function
+def test_benchmark_per_token_quant():
+    """Pytest wrapper for per-token quantization benchmark."""
+    print("\n" + "=" * 80)
+    print("ROCm GPU Benchmark - Per-Token Quantization")
+    print(f"GPU: {get_hip_arch()}")
+    print("=" * 80)
+    assert benchmark_per_token_quant(), "Per-token quantization benchmark failed correctness check"
+
+
 if __name__ == "__main__":
-    benchmark_per_token_quant()
+    test_benchmark_per_token_quant()
