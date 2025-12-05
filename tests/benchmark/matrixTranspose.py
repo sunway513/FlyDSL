@@ -24,6 +24,7 @@ import ctypes
 
 # Import benchmark utilities from shared tests/utils.py
 from utils import BenchmarkResults, perftest, compile_to_hsaco
+from rocdsl.utils import SmemAllocator
     
 
 def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
@@ -62,22 +63,23 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
     # Compile kernel
     ctx = RAIIMLIRContextModule(allow_unregistered_dialects=True)
     gpu.set_container_module(ctx.module)
+    gpu_arch = get_hip_arch()
+    allocator = SmemAllocator(ctx, arch=gpu_arch)
+    f32_type = ir.F32Type.get()
+    tile_smem_decl = allocator.allocate_array(f32_type, SMEM_SIZE)
     
     @gpu.module("transpose_kernels", ["#rocdl.target<abi = \"500\">"])
     def gpu_mod():
-        pass
+        allocator.finalize()
     
     ip = ir.InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
     ip.__enter__()
     
-    # Shared memory: 1D layout for vectorized access
-    smem_type = T.memref(SMEM_SIZE, T.f32(), memory_space=gpu.lds_space())
-    memref.global_(sym_name="tile_smem", type_=smem_type, alignment=16)
-    
     # Use flat 1D memrefs as kernel parameters
     @gpu.func(emit=True)
     def matrixTranspose(A: T.memref(M * N, T.f32()), B: T.memref(N * M, T.f32())):
-        smem = memref.get_global(smem_type, "tile_smem")
+        base_ptr = allocator.get_base()
+        smem = tile_smem_decl(base_ptr).get()
         
         bx = gpu.block_id("x")
         by = gpu.block_id("y")

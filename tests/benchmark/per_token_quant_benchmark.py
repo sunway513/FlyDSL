@@ -43,8 +43,7 @@ from mlir.dialects import (
 )
 import mlir.extras.types as T
 from utils import perftest, compile_to_hsaco
-
-from rocdsl.dialects.ext.gpu import lds_space
+from rocdsl.utils import SmemAllocator
 
 def benchmark_per_token_quant():
     print("\n" + "=" * 80)
@@ -103,17 +102,16 @@ def benchmark_per_token_quant():
     # Prepare context and module
     ctx = RAIIMLIRContextModule(allow_unregistered_dialects=True)
     gpu.set_container_module(ctx.module)  # Important for RocDSL context
+    allocator = SmemAllocator(ctx, arch=gpu_arch)
+    f32_type = ir.F32Type.get()
+    red_buffer_decl = allocator.allocate_array(f32_type, 64)
 
     @gpu.module("quant_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">'])
     def gpu_mod():
-        pass
+        allocator.finalize()
 
     ip = ir.InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
     ip.__enter__()
-
-    # Shared memory for reduction (enough for max warps)
-    red_type = T.memref(64, T.f32(), memory_space=lds_space())
-    memref.global_(sym_name="red_buffer", type_=red_type, alignment=16)
 
     def unwrap(v):
         return v._value if hasattr(v, "_value") else v
@@ -162,14 +160,8 @@ def benchmark_per_token_quant():
         c_vec_width = arith.index(VEC_WIDTH)._value
 
         # Shared Memory Access
-        red_buf = memref.get_global(red_type, "red_buffer")
-        
-        if hasattr(red_buf, "result"):
-            red_val = red_buf.result
-        elif hasattr(red_buf, "results"):
-            red_val = red_buf.results[0]
-        else:
-            red_val = red_buf
+        base_ptr = allocator.get_base()
+        red_val = red_buffer_decl(base_ptr).get()
 
         # -----------------------------------------------------------
         # Pass 1: Compute Max (Row Reduction) & Cache to Registers
