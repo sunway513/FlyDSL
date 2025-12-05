@@ -12,6 +12,7 @@ from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.runtime.fp8_util import to_byte
+from rocdsl.utils import SmemAllocator
 from utils import compile_to_hsaco
 import numpy as np
 from mlir import ir
@@ -59,24 +60,17 @@ def test_mfma_fp8_rocir():
     size_a = M * K
     size_b = N * K  # Transposed B (NxK)
     
-    # LDS Globals (Tile size 32x128)
-    lds_mem_type = ir.MemRefType.get([4096], f8, memory_space=ir.Attribute.parse("3"))
+    # 1. Initialize Allocator
+    allocator = SmemAllocator(ctx, arch=gpu_arch)
+
+    # 2. Allocate Arrays (Tile size 32x128)
+    lds_a_decl = allocator.allocate_array(f8, 4096)
+    lds_b_decl = allocator.allocate_array(f8, 4096)
     
     @gpu.module("mfma_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500", features = "+sramecc,+xnack">'])
     def gpu_mod():
-        # Create LDS globals inside the GPU module
-        lds_a_global = memref.GlobalOp(
-            sym_name="lds_a",
-            type_=lds_mem_type,
-            initial_value=ir.UnitAttr.get(),
-            sym_visibility=ir.StringAttr.get("private")
-        )
-        lds_b_global = memref.GlobalOp(
-            sym_name="lds_b",
-            type_=lds_mem_type,
-            initial_value=ir.UnitAttr.get(),
-            sym_visibility=ir.StringAttr.get("private")
-        )
+        # 3. Finalize: Automatically create underlying memref.GlobalOp
+        allocator.finalize()
         
         @gpu.func(emit=True)
         def kernel(
@@ -115,8 +109,10 @@ def test_mfma_fp8_rocir():
             bx = gpu.block_id("x")
             by = gpu.block_id("y")
             
-            lds_a = memref.GetGlobalOp(lds_mem_type, ir.FlatSymbolRefAttr.get("lds_a")).result
-            lds_b = memref.GetGlobalOp(lds_mem_type, ir.FlatSymbolRefAttr.get("lds_b")).result
+            # 4. Get Shared Memory Pointers
+            base_ptr = allocator.get_base()
+            lds_a = lds_a_decl(base_ptr).get()
+            lds_b = lds_b_decl(base_ptr).get()
             
             # Accumulator Init
             vec4_f32 = ir.VectorType.get([4], f32)
