@@ -355,37 +355,10 @@ class SmemAllocator:
 
 SMEM_CAPACITY_MAP = {
     # ===================== AMD CDNA Architectures (Data Center Compute Cards) =====================
-    # CDNA 1 (MI100 Series) - 64KB LDS per CU
-    "gfx908": 65536,   # MI100 / MI100X: 64KB LDS per Compute Unit (CU)
-    # CDNA 2 (MI200 Series) - 64KB LDS per CU
-    "gfx90a": 65536,   # MI250 / MI250X / MI210: 64KB LDS per CU (some modes allow expansion, standard is 64K)
     # CDNA 3 (MI300 Series) - 64KB LDS per CU
-    "gfx940": 65536,   # MI300 Base Model: 64KB LDS per CU
-    "gfx941": 65536,   # MI300 Derivative Models: 64KB LDS per CU
     "gfx942": 65536,   # MI300A / MI300X: 64KB LDS per CU
-    "gfx950": 65536,   # MI300C / MI300X Enhanced Models: 64KB LDS per CU
     # CDNA 4 (MI350 Series) - 160KB LDS per CU (key upgrade for CDNA4)
-    "gfx960": 163840,  # MI350X: 160KB LDS per CU (163840 bytes)
-    "gfx961": 163840,  # MI350A: 160KB LDS per CU (163840 bytes)
-
-    # ===================== AMD RDNA Architectures (Consumer Graphics Cards) =====================
-    # RDNA 1 (Navi 10/12/14) - 64KB LDS per CU
-    "gfx1010": 65536,  # Navi 10 (RX 5700/5700 XT): 64KB LDS per CU
-    "gfx1011": 65536,  # Navi 12 (Professional/Workstation Cards): 64KB LDS per CU
-    "gfx1012": 65536,  # Navi 14 (RX 5500/5500 XT): 64KB LDS per CU
-    # RDNA 2 (Navi 21/22/23/24) - 64KB LDS per CU
-    "gfx1030": 65536,  # Navi 21 (RX 6800/6900 XT/6950 XT): 64KB LDS per CU
-    "gfx1031": 65536,  # Navi 22 (RX 6700 XT): 64KB LDS per CU
-    "gfx1032": 65536,  # Navi 23 (RX 6600/6600 XT/6650 XT): 64KB LDS per CU
-    "gfx1033": 65536,  # Navi 24 (RX 6400/6500 XT): 64KB LDS per CU
-    # RDNA 3 (Navi 31/32/33) - 64KB LDS per CU
-    "gfx1100": 65536,  # Navi 31 (RX 7900 XT/XTX): 64KB LDS per CU
-    "gfx1101": 65536,  # Navi 32 (RX 7800 XT): 64KB LDS per CU
-    "gfx1102": 65536,  # Navi 33 (RX 7700 XT/7600): 64KB LDS per CU
-    # RDNA 4 (Navi 41/42/43) - 64KB LDS per CU (public specs as of 2025)
-    "gfx1200": 65536,  # Navi 41 (RX 8900 XT/XTX): 64KB LDS per CU
-    "gfx1201": 65536,  # Navi 42 (RX 8800 XT): 64KB LDS per CU
-    "gfx1202": 65536,  # Navi 43 (RX 8700 XT/8600 XT): 64KB LDS per CU
+    "gfx950": 65536,   # MI300C / MI300X Enhanced Models: 64KB LDS per CU
 }
 
 def check_smem_capacity(allocated_bytes: int, arch: str = None):
