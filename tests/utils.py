@@ -93,35 +93,31 @@ def compile_to_hsaco(mlir_module, kernel_name="kernel"):
     )
     dump_stage(with_target, "05_with_target")
     
-    # Stage 4: Convert SCF to CF before GPU lowering (structured control flow to control flow)
-    cf_converted = run_pipeline(
-        with_target,
-        Pipeline().convert_scf_to_cf()
-    )
-    dump_stage(cf_converted, "06_scf_to_cf")
-    
-    # Stage 5: Convert GPU to ROCDL
+    # Stage 4: Convert GPU to ROCDL (with SCF to CF inside GPU module)
     rocdl_converted = run_pipeline(
-        cf_converted,
-        Pipeline().Gpu(Pipeline().convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP"))
+        with_target,
+        Pipeline().Gpu(Pipeline()
+                      .convert_scf_to_cf()  # Lower SCF loops first inside GPU module
+                      .convert_gpu_to_rocdl(use_bare_ptr_memref_call_conv=True, runtime="HIP")
+                      .reconcile_unrealized_casts())  # Clean up inside GPU module
     )
-    dump_stage(rocdl_converted, "07_rocdl")
+    dump_stage(rocdl_converted, "06_rocdl")
     
-    # Stage 6: GPU to LLVM  
+    # Stage 5: GPU to LLVM  
     llvm_converted = run_pipeline(
         rocdl_converted,
-        Pipeline().gpu_to_llvm()
+        Pipeline().gpu_to_llvm().reconcile_unrealized_casts()  # Clean up type conversions
     )
-    dump_stage(llvm_converted, "08_llvm_gpu")
+    dump_stage(llvm_converted, "07_llvm_gpu")
     
-    # Stage 7: Lower to LLVM (includes CF to LLVM conversion)
+    # Stage 6: Lower to LLVM (includes CF to LLVM conversion)
     llvm_lowered = run_pipeline(
         llvm_converted,
-        Pipeline().lower_to_llvm()
+        Pipeline().lower_to_llvm().reconcile_unrealized_casts()  # Clean up again after lowering
     )
-    dump_stage(llvm_lowered, "09_llvm_final")
+    dump_stage(llvm_lowered, "08_llvm_final")
     
-    # Stage 8: Generate binary (ISA/assembly)
+    # Stage 7: Generate binary (ISA/assembly)
     # For assembly dump, we need to use a different format first
     if dump_ir:
         try:
@@ -132,7 +128,7 @@ def compile_to_hsaco(mlir_module, kernel_name="kernel"):
             )
             from rocdsl.dialects.ext.gpu import get_compile_object_bytes
             asm_bytes = get_compile_object_bytes(asm_module)
-            asm_filename = os.path.join(dump_dir, f"{kernel_name}_10_assembly.s")
+            asm_filename = os.path.join(dump_dir, f"{kernel_name}_09_assembly.s")
             with open(asm_filename, 'wb') as f:
                 f.write(asm_bytes)
             print(f"  Dumped assembly: {asm_filename}")
@@ -144,14 +140,14 @@ def compile_to_hsaco(mlir_module, kernel_name="kernel"):
         llvm_lowered,
         Pipeline().gpu_module_to_binary(format="bin")
     )
-    dump_stage(lowered, "11_binary_module")
+    dump_stage(lowered, "10_binary_module")
     
     from rocdsl.dialects.ext.gpu import get_compile_object_bytes
     hsaco_bytes = get_compile_object_bytes(lowered)
     
     # Save HSACO binary if dumping
     if dump_ir:
-        hsaco_filename = os.path.join(dump_dir, f"{kernel_name}_12_final.hsaco")
+        hsaco_filename = os.path.join(dump_dir, f"{kernel_name}_11_final.hsaco")
         with open(hsaco_filename, 'wb') as f:
             f.write(hsaco_bytes)
         print(f"  Dumped HSACO binary: {hsaco_filename}")

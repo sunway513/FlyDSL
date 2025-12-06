@@ -378,6 +378,7 @@ def benchmark_per_token_quant():
     @perftest
     def run_benchmark():
         return {
+            "bench_iters": 20,
             "launch": hip_kernel_launch,
             "size": total_elements,
             "total_bytes": total_bytes_rw,
@@ -444,7 +445,7 @@ def benchmark_per_token_quant():
         print(f"  Running benchmark iterations...")
         import time
         times_ms = []
-        for _ in range(100):
+        for _ in range(20):
             torch.cuda.synchronize()
             start = time.perf_counter()
             output_torch, scale_torch = per_token_quant_hip(input_torch)

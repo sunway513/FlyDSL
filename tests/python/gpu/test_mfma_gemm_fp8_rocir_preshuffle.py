@@ -13,8 +13,7 @@ from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.utils import SmemAllocator
-# from tests.utils import compile_to_hsaco
-from utils import compile_to_hsaco
+from tests.utils import compile_to_hsaco
 from rocdsl.runtime.fp8_util import to_byte
 import numpy as np
 from mlir import ir
