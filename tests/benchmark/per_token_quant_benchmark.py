@@ -35,6 +35,7 @@ from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.dialects.ext import arith, gpu, rocir
 from rocdsl.dialects.ext.gpu import lds_space
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
+from rocdsl.utils import SmemAllocator
 from mlir import ir
 from mlir.dialects import (
     arith as _arith_mlir,
@@ -88,10 +89,13 @@ def benchmark_per_token_quant(M=4096, N=8192):
 
     ctx = RAIIMLIRContextModule(allow_unregistered_dialects=True)
     gpu.set_container_module(ctx.module)
+    allocator = SmemAllocator(ctx, arch=gpu_arch)
+    f32_type = ir.F32Type.get()
+    red_buffer_decl = allocator.allocate_array(f32_type, 64)
 
     @gpu.module("quant_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">'])
     def gpu_mod():
-        pass
+        allocator.finalize()
 
     ip = ir.InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
     ip.__enter__()
@@ -134,7 +138,8 @@ def benchmark_per_token_quant(M=4096, N=8192):
 
         c_vec_width = arith.index(VEC_WIDTH)._value
 
-        red_val = memref.get_global(red_type, "red_buffer")
+        base_ptr = allocator.get_base()
+        red_val = red_buffer_decl(base_ptr).get()
 
         local_max = f_0
         cached_vecs = []
