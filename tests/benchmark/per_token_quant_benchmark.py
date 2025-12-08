@@ -91,7 +91,7 @@ def benchmark_per_token_quant(M=4096, N=8192):
 
     @gpu.module("quant_mod", [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">'])
     def gpu_mod():
-        allocator.finalize()
+        pass
 
     ip = ir.InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
     ip.__enter__()
@@ -328,6 +328,22 @@ def benchmark_per_token_quant(M=4096, N=8192):
         *[ctypes.addressof(p) for p in arg_ptrs]
     )
 
+    def hip_kernel_launch():
+        hip.hipModuleLaunchKernel(
+            kernel_func,
+            M,
+            1,
+            1,
+            BLOCK_SIZE,
+            1,
+            1,
+            sharedMemBytes=0,
+            stream=None,
+            kernelParams=args_array,
+            extra=None,
+        )
+        hip.hipDeviceSynchronize()
+
     @perftest
     def run_benchmark():
         return {
@@ -387,14 +403,16 @@ def benchmark_per_token_quant(M=4096, N=8192):
 
         @perftest
         def run_aiter_benchmark():
-            return (
-                per_token_quant_hip,
-                (input_torch,),
-                (M, 1, 1),
-                (BLOCK_SIZE, 1, 1),
-                total_elements,
-                total_bytes_rw,
-            )
+            def launch():
+                per_token_quant_hip(input_torch)
+                torch.cuda.synchronize()
+
+            return {
+                "bench_iters": 20,
+                "launch": launch,
+                "size": total_elements,
+                "total_bytes": total_bytes_rw,
+            }
 
         aiter_results = run_aiter_benchmark()
 
@@ -414,7 +432,7 @@ def benchmark_per_token_quant(M=4096, N=8192):
         print(f"  Max Output Diff: {output_diff_ref:.2e}")
 
         rocdsl_time = results.avg_ms
-        aiter_time = avg_time
+        aiter_time = aiter_results.avg_ms
         speedup = aiter_time / rocdsl_time
 
         print(f"\n" + "=" * 80)
