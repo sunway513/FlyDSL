@@ -13,9 +13,11 @@ from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.utils import SmemAllocator
-from tests.utils import compile_to_hsaco, perftest
+from tests.utils import compile_to_hsaco, perftest, check_allclose
 from rocdsl.runtime.fp8_util import to_byte
 import numpy as np
+import torch
+import pytest
 from mlir import ir
 from mlir.dialects import vector, memref, builtin, llvm
 from rocdsl.dialects.ext import arith, scf, gpu, buffer_ops
@@ -74,15 +76,13 @@ def unwrap(v):
         elif hasattr(v, "value"):
             v = v.value
     return v
-
-def test_mfma_fp8_rocir_preshuffle():
+@pytest.mark.parametrize("M, N, K", [(16, 4096, 2048)])
+def test_mfma_fp8_rocir_preshuffle(M, N, K):
     print("="*80)
     print("MFMA FP8 GEMM Test (B preshuffle 16x16 layout)")
     print("="*80)
     gpu_arch = get_hip_arch()
     print(f"Detected HIP Arch: {gpu_arch}")
-    M, N = 32, 4096
-    K = 4096
     ctx = RAIIMLIRContextModule()
     try:
         import _rocirPassesExt
@@ -158,9 +158,14 @@ def test_mfma_fp8_rocir_preshuffle():
             # Index arithmetic using operator overloading (ArithValue)
             tx_16 = tx * 16
             
-            # Map threads to 16 rows (repeat every 128 threads) and 128 cols span
-            row_a_local = (tx % 128) / 8  # 0..15 repeated
-            col_a_local = tx_16 % 128
+            wave_id = tx / 64
+            lane_id = tx % 64
+            lane_mod_16 = lane_id % 16
+            lane_div_16 = lane_id / 16
+            
+            # Map threads to rows/cols for A: reuse original 8-stripe column tiling, mod 16 rows
+            row_a_local = (tx // 8) % 16           # 0..15
+            col_a_local = (tx % 8) * 16            # 0,16,...,112
             
             bx_16 = bx * 16
             row_a_global = bx_16 + row_a_local
@@ -172,14 +177,8 @@ def test_mfma_fp8_rocir_preshuffle():
             
             vec16_f8 = ir.VectorType.get([16], f8)
             
-            wave_id = tx / 64
-            lane_id = tx % 64
-            
-            wave_row = (tx - tx)  # force 0
-            wave_col = wave_id % 2
-            
-            lane_mod_16 = lane_id % 16
-            lane_div_16 = lane_id / 16
+            wave_row = 0  # all warps share the same 16-row stripe
+            wave_col = 0  # do not spread rows by warp; N tiling handled explicitly
             
             row_a_lds_base = wave_row * 0
             row_a_lds = row_a_lds_base + lane_mod_16
@@ -189,42 +188,42 @@ def test_mfma_fp8_rocir_preshuffle():
             row_b_lds_base = wave_col * 16
             row_b_lds = row_b_lds_base + lane_mod_16
             
-            # Process N tile in 32-column chunks to cover 16x128 per block
-            for n_tile in range(0, 128, 32):
-                current_acc = acc_init
-                for k in range(0, c_k, 128):
-                    col_a_global_k = col_a_local + k
-                    coord_a = rocir.make_coord(unwrap(row_a_global), unwrap(col_a_global_k))
-                    idx_a = rocir.crd2idx(coord_a, layout_a)
+            # Each warp handles a 32-column slice: n_tile_base = warp_id * 32
+            n_tile_base = (wave_id % 4) * 32
+            acc_tiles = [acc_init, acc_init]  # 2x16 columns = 32 columns
+            for k in range(0, c_k, 128):
+                col_a_global_k = col_a_local + k
+                coord_a = rocir.make_coord(unwrap(row_a_global), unwrap(col_a_global_k))
+                idx_a = rocir.crd2idx(coord_a, layout_a)
+                
+                # Global A load: keep 128-bit for efficiency then spill to LDS
+                idx_a_div4 = idx_a // 4
+                v_i32 = buffer_ops.buffer_load(a_rsrc, idx_a_div4, vec_width=4, dtype=i32_type)
+                vec_a = vector.BitCastOp(vec16_f8, v_i32).result
+                vector.StoreOp(vec_a, lds_a, [unwrap(lds_write_idx)])
+                
+                gpu.barrier()
+
+                for ki in range(0, 128, 32):
+                    col_lds = col_offset_base + ki
                     
-                    # Global A load: keep 128-bit for efficiency then spill to LDS
-                    idx_a_div4 = idx_a // 4
-                    v_i32 = buffer_ops.buffer_load(a_rsrc, idx_a_div4, vec_width=4, dtype=i32_type)
-                    vec_a = vector.BitCastOp(vec16_f8, v_i32).result
-                    vector.StoreOp(vec_a, lds_a, [unwrap(lds_write_idx)])
+                    coord_a_lds = rocir.make_coord(unwrap(row_a_lds), unwrap(col_lds))
+                    idx_a_mfma = rocir.crd2idx(coord_a_lds, layout_lds)
+                    idx_a_idx = _arith_mlir.IndexCastOp(index_type, unwrap(idx_a_mfma)).result
                     
-                    gpu.barrier()
-                    acc = current_acc
-                    for ki in range(0, 128, 32):
-                        col_lds = col_offset_base + ki
-                        
-                        coord_a_lds = rocir.make_coord(unwrap(row_a_lds), unwrap(col_lds))
-                        idx_a_mfma = rocir.crd2idx(coord_a_lds, layout_lds)
-                        idx_a_idx = _arith_mlir.IndexCastOp(index_type, unwrap(idx_a_mfma)).result
-                        
-                        # LDS load: use 64-bit (vector<8xf8>) to avoid complex alignment logic
-                        loaded_a = vector.LoadOp(vec8_f8, lds_a, [unwrap(idx_a_idx)]).result
-                        
-                        # Global B load: use buffer_load dwordx2 (64-bit)
-                        global_n_mfma = by_128 + n_tile + row_b_lds
-                        global_k_mfma = k + col_lds
-                        
+                    loaded_a = vector.LoadOp(vec8_f8, lds_a, [unwrap(idx_a_idx)]).result
+                    
+                    global_k_mfma = k + col_lds
+                    k_intra = global_k_mfma % 16
+                    k_rem = global_k_mfma // 16
+                    k_pack = k_rem % 2
+                    k_blk = k_rem // 2
+
+                    # Unroll 2 x 16-column subtiles per warp
+                    for idx_n, n_off in enumerate((0, 16)):
+                        global_n_mfma = by_128 + n_tile_base + n_off + row_b_lds
                         n_intra = global_n_mfma % 16
                         n_blk = global_n_mfma // 16
-                        k_intra = global_k_mfma % 16
-                        k_rem = global_k_mfma // 16
-                        k_pack = k_rem % 2
-                        k_blk = k_rem // 2
                         
                         coord_b_mfma = rocir.make_coord(n_intra, n_blk, k_intra, k_pack, k_blk)
                         idx_b_global = rocir.crd2idx(coord_b_mfma, layout_b)
@@ -238,23 +237,19 @@ def test_mfma_fp8_rocir_preshuffle():
                         a_pack = vector.ExtractOp(a_vec64, static_position=[0], dynamic_position=[]).result
                         b_pack = vector.ExtractOp(b_vec64, static_position=[0], dynamic_position=[]).result
                         
-                        acc = rocdl.mfma_f32_16x16x32_fp8_fp8(
-                            vec4_f32, [unwrap(a_pack), unwrap(b_pack), unwrap(acc), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
+                        acc_tiles[idx_n] = rocdl.mfma_f32_16x16x32_fp8_fp8(
+                            vec4_f32, [unwrap(a_pack), unwrap(b_pack), unwrap(acc_tiles[idx_n]), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
                         ).result
-                    
-                    gpu.barrier()
-                    current_acc = acc
-                
-                final_acc = current_acc
-                
-                row_wave_base = wave_row * 16
-                col_wave_base = wave_col * 16
-                
-                row_base_g = bx_16 + row_wave_base
-                col_base_g = by_128 + n_tile + col_wave_base
-                
+
+                gpu.barrier()
+
+            # Stores for this warp's 32-column slice after accumulating all k
+            row_wave_base = wave_row * 16
+            row_base_g = bx_16 + row_wave_base
+            base_cols = (by_128 + n_tile_base, by_128 + n_tile_base + 16)
+            for acc_val, col_base in zip(acc_tiles, base_cols):
                 for i in range(4):
-                    val = vector.ExtractOp(final_acc, [], [i]).result
+                    val = vector.ExtractOp(acc_val, [], [i]).result
                     
                     row_offset_base = lane_div_16 * 4
                     row_offset = row_offset_base + i
@@ -262,7 +257,7 @@ def test_mfma_fp8_rocir_preshuffle():
                     col_offset = lane_mod_16
                     
                     row_g = row_base_g + row_offset
-                    col_g = col_base_g + col_offset
+                    col_g = col_base + col_offset
                     
                     coord_c = rocir.make_coord(unwrap(row_g), unwrap(col_g))
                     idx = rocir.crd2idx(coord_c, layout_c)
@@ -321,39 +316,21 @@ def test_mfma_fp8_rocir_preshuffle():
     hip_check(hip.hipMemcpy(c_host.ctypes.data, d_c, size_c * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
     c_host_matrix = c_host.reshape(M, N)
 
-    # Check raw integer GEMM result using Bias 8 decoder
-    a_decoded = np.array([e4m3fn_to_float(int(b)) for b in a_bytes], dtype=np.float32).reshape(M, K)
-    b_decoded_shuffle = np.array([e4m3fn_to_float(int(b)) for b in b_bytes], dtype=np.float32).reshape(N, K)
-    b_decoded = unshuffle_weight_np(b_decoded_shuffle, layout=(16, 16))
-    
-    expected_int_matrix = np.matmul(a_decoded, b_decoded.T)
-    diff_int = np.abs(c_host_matrix - expected_int_matrix)
-    max_diff_int = np.nanmax(diff_int)
-    print(f"Max Absolute Difference (Integer GEMM): {max_diff_int}")
-    if np.allclose(c_host_matrix, expected_int_matrix, atol=1.0):
-         print(f"✓ Raw Integer GEMM matches")
-    else:
-         print(f"✗ Raw Integer GEMM mismatch")
+    print("Computing expected result with torch.matmul (fp32 baseline)...")
+    # Torch baseline on GPU (align with aiter style)
+    device = torch.device("cuda")
+    a_decoded = torch.tensor([e4m3fn_to_float(int(b)) for b in a_bytes], device=device, dtype=torch.float32).reshape(M, K)
+    b_decoded_shuffle = torch.tensor([e4m3fn_to_float(int(b)) for b in b_bytes], device=device, dtype=torch.float32).reshape(N, K)
+    b_decoded = torch.tensor(unshuffle_weight_np(b_decoded_shuffle.cpu().numpy(), layout=(16, 16)), device=device, dtype=torch.float32)
 
-    print("Computing expected result with np.matmul...")
-    a_dequant = a_decoded * scale_a[:, None]
-    b_dequant = b_decoded * scale_b[:, None]
-    expected_matrix = np.matmul(a_dequant, b_dequant.T)
-    c_dequant = c_host_matrix * scale_a[:, None] * scale_b[None, :]
-    print(f"c_host stats: finite={np.isfinite(c_host_matrix).sum()}/{c_host_matrix.size}, min={np.min(c_host_matrix)}, max={np.max(c_host_matrix)}")
-    diff = np.abs(c_dequant - expected_matrix)
-    max_diff = np.nanmax(diff)
-    print(f"Max Absolute Difference: {max_diff}")
-    
-    # Check relative error
-    rel_error = diff / (np.abs(expected_matrix) + 1e-6)
-    max_rel_error = np.nanmax(rel_error)
-    print(f"Max Relative Error: {max_rel_error}")
+    a_dequant = a_decoded * torch.tensor(scale_a, device=device).unsqueeze(1)
+    b_dequant = b_decoded * torch.tensor(scale_b, device=device).unsqueeze(1)
+    torch_out = torch.matmul(a_dequant, b_dequant.T)
 
-    if np.allclose(c_dequant, expected_matrix, rtol=1e-2, atol=1e-2):
-        print(f"✓ Kernel executed correctly (Matches np.matmul)")
-    else:
-        print(f"✗ Unexpected result")
+    c_dequant = torch.tensor(c_host_matrix, device=device, dtype=torch.float32)
+    c_dequant = c_dequant * torch.tensor(scale_a, device=device).unsqueeze(1) * torch.tensor(scale_b, device=device).unsqueeze(0)
+
+    check_allclose(c_dequant, torch_out, rtol=1e-2, atol=1e-2, msg="Kernel vs torch")
 
     # Benchmark using shared perftest helper
     warmup = int(os.environ.get("BENCH_WARMUP", "5"))
@@ -379,4 +356,4 @@ def test_mfma_fp8_rocir_preshuffle():
     print(f"Throughput: avg={gflops_avg:.2f} GFLOPS (min-based {gflops_min:.2f}), bandwidth={results.bandwidth_gbs:.2f} GB/s (bytes: {bytes_moved})")
 
 if __name__ == "__main__":
-    test_mfma_fp8_rocir_preshuffle()
+    test_mfma_fp8_rocir_preshuffle(16, 4096, 2048)

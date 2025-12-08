@@ -9,7 +9,7 @@ from functools import wraps
 import os
 import tempfile
 from typing import Dict, Any, Callable
-
+import torch
 
 def compile_to_hsaco(mlir_module, kernel_name="kernel"):
     """
@@ -276,3 +276,17 @@ def perftest(func):
     
     return wrapper
 
+
+def check_allclose(a: torch.Tensor, b: torch.Tensor, rtol=1e-2, atol=1e-2, msg=""):
+    """Lightweight torch-based allclose check (inspired by aiter.test_common.checkAllclose)."""
+    is_close = torch.isclose(a, b, rtol=rtol, atol=atol)
+    if bool(is_close.all()):
+        if msg:
+            print(f"{msg} ✓ checkAllclose passed (atol={atol}, rtol={rtol})")
+        return True
+    mask = ~is_close
+    num_bad = mask.sum().item()
+    percent = num_bad / a.numel()
+    delta = (a[mask] - b[mask]).abs()
+    print(f"{msg} ✗ checkAllclose failed: {percent:.1%} ({num_bad}/{a.numel()}) elements differ; max delta {delta.max().item()}")
+    return False
