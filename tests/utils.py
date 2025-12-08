@@ -10,6 +10,7 @@ import os
 import tempfile
 from typing import Dict, Any, Callable
 import torch
+import logging
 
 def compile_to_hsaco(mlir_module, kernel_name="kernel"):
     """
@@ -276,17 +277,51 @@ def perftest(func):
     
     return wrapper
 
-
-def check_allclose(a: torch.Tensor, b: torch.Tensor, rtol=1e-2, atol=1e-2, msg=""):
-    """Lightweight torch-based allclose check (inspired by aiter.test_common.checkAllclose)."""
-    is_close = torch.isclose(a, b, rtol=rtol, atol=atol)
-    if bool(is_close.all()):
-        if msg:
-            print(f"{msg} ✓ checkAllclose passed (atol={atol}, rtol={rtol})")
-        return True
-    mask = ~is_close
-    num_bad = mask.sum().item()
-    percent = num_bad / a.numel()
-    delta = (a[mask] - b[mask]).abs()
-    print(f"{msg} ✗ checkAllclose failed: {percent:.1%} ({num_bad}/{a.numel()}) elements differ; max delta {delta.max().item()}")
-    return False
+def checkAllclose(
+    a, b, rtol=1e-2, atol=1e-2, tol_err_ratio=0.05, msg="", printNum=8, printLog=True
+):
+    logging.basicConfig(level=logging.INFO)
+    isClose = torch.isclose(a, b, rtol=rtol, atol=atol)
+    if isClose.all():
+        if printLog:
+            logging.info(f"{msg}[checkAllclose {atol=} {rtol=} \033[32mpassed~\033[0m]")
+        return 0
+    else:
+        try:
+            mask = ~isClose
+            num = mask.sum()
+            printNum = min(printNum, num)
+            percent = (num / a.numel()).item()
+            if not printLog:
+                return percent
+            a_msked = a[mask]
+            b_msked = b[mask]
+            delta = (a_msked - b_msked).abs()
+        except RuntimeError as e:
+            mask = ~isClose.to("cpu")
+            num = mask.sum()
+            printNum = min(printNum, num)
+            percent = (num / a.numel()).item()
+            if not printLog:
+                return percent
+            a_msked = a[mask]
+            b_msked = b[mask]
+            delta = (a_msked - b_msked).abs()
+        if percent > tol_err_ratio:
+            logging.info(
+                f"""{msg}[checkAllclose {atol=} {rtol=} \033[31mfailed!\033[0m]
+    a    : {a.shape}
+           {a_msked[:printNum]}
+    b    : {b.shape}
+           {b_msked[:printNum]}
+    delta:
+           {delta[:printNum]}"""
+            )
+        else:
+            logging.info(
+                f"""{msg}[checkAllclose {atol=} {rtol=} \033[33mwarning!\033[0m] a and b results are not all close"""
+            )
+        logging.info(
+            f"-->max abs delta:{delta.max()}, delta details: {percent:.1%} ({num} of {a.numel()}) elements"
+        )
+        return percent
