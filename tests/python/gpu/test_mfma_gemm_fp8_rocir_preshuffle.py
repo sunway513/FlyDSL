@@ -196,7 +196,7 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
             
             global_n_mfma0 = by_n + n_tile_base + n_off0 + row_b_lds
             global_n_mfma1 = by_n + n_tile_base + n_off1 + row_b_lds
-            
+                    
             n_intra0 = global_n_mfma0 % c16
             n_blk0 = global_n_mfma0 // c16
             n_intra1 = global_n_mfma1 % c16
@@ -285,10 +285,10 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
                         idx_b1 = _arith_mlir.DivUIOp(unwrap(idx_b_base1), unwrap(c4)).result
                         loaded_b1 = buffer_ops.buffer_load(b_rsrc, idx_b1, vec_width=2, dtype=i32_type)
                         b_pack1 = vector.ExtractOp(vector.BitCastOp(vec1_i64, loaded_b1).result, static_position=[0], dynamic_position=[]).result
-                        
+                    
                         new_acc1 = rocdl.mfma_f32_16x16x32_fp8_fp8(
                             vec4_f32, [unwrap(a_pack), unwrap(b_pack1), unwrap(curr_acc1), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
-                        ).result
+                    ).result
                         current_accs_list[acc_idx1] = new_acc1
                         
                 gpu.barrier()
@@ -333,7 +333,8 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
 
     print("Compiling...")
     hsaco = compile_to_hsaco(ctx.module)
-    print("✓ Compiled")    
+    print(f"✓ Compiled ({len(hsaco)} bytes)")
+    print(f"DEBUG: HSACO header: {hsaco[:16]}")    
     
     grid_x = M // tile_m
     grid_y = N // tile_n
