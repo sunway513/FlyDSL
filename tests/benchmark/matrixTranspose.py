@@ -23,7 +23,7 @@ import numpy as np
 import ctypes
 
 # Import benchmark utilities from shared tests/utils.py
-from utils import BenchmarkResults, perftest, compile_to_hsaco
+from utils import compile_to_hsaco
 from rocdsl.utils import SmemAllocator
     
 
@@ -206,16 +206,9 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
         ))
         hip_check(hip.hipDeviceSynchronize())
     
-    @perftest
-    def run_benchmark():
-        return {
-            "launch": launch_kernel,
-            "size": M * N,
-            "total_bytes": 2 * M * N * 4,  # Read + Write
-        }
-    
     # Run benchmark
-    results = run_benchmark()
+    from tests.test_common import run_perftest
+    _, avg_us = run_perftest(launch_kernel, num_iters=20, num_warmup=2)
     
     # Verify correctness
     hip_check(hip.hipMemcpy(b_host.ctypes.data, d_b, M * N * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
@@ -226,7 +219,22 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
     print(f"\n  Correctness Check:")
     print(f"  Max error: {error:.2e}")
     
-    print(f"\n{results}")
+    # Calculate metrics
+    total_bytes = 2 * M * N * 4  # Read + Write
+    bandwidth_gbs = total_bytes / (avg_us / 1e6) / 1e9
+    avg_ms = avg_us / 1000
+    
+    results = {
+        "avg_ms": avg_ms,
+        "avg_us": avg_us,
+        "bandwidth_gbs": bandwidth_gbs,
+        "size": M * N,
+        "total_bytes": total_bytes,
+    }
+    
+    print(f"\n  Performance:")
+    print(f"  Average Time: {avg_ms:.3f} ms")
+    print(f"  Bandwidth: {bandwidth_gbs:.2f} GB/s")
     
     hip_check(hip.hipFree(d_a))
     hip_check(hip.hipFree(d_b))
@@ -237,6 +245,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
 
 def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
     """Benchmark matrix transpose using Buffer Load (AMD CDNA3 optimized)."""
+    from tests.test_common import run_perftest as _run_perftest_import
     VEC_WIDTH = 4
     if TILE_SIZE % VEC_WIDTH != 0:
         TILE_SIZE = ((TILE_SIZE + VEC_WIDTH - 1) // VEC_WIDTH) * VEC_WIDTH
@@ -410,15 +419,8 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
         ))
         hip_check(hip.hipDeviceSynchronize())
     
-    @perftest
-    def run_benchmark():
-        return {
-            "launch": launch_kernel,
-            "size": M * N,
-            "total_bytes": 2 * M * N * 4,
-        }
-    
-    results = run_benchmark()
+    # Run benchmark
+    _, avg_us = _run_perftest_import(launch_kernel, num_iters=20, num_warmup=2)
     
     hip_check(hip.hipMemcpy(b_host.ctypes.data, d_b, M * N * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
     b_result_2d = b_host.reshape(N, M, order='C')
@@ -428,7 +430,22 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
     print(f"\n  Correctness Check:")
     print(f"  Max error: {error:.2e}")
     
-    print(f"\n{results}")
+    # Calculate metrics
+    total_bytes = 2 * M * N * 4
+    bandwidth_gbs = total_bytes / (avg_us / 1e6) / 1e9
+    avg_ms = avg_us / 1000
+    
+    results = {
+        "avg_ms": avg_ms,
+        "avg_us": avg_us,
+        "bandwidth_gbs": bandwidth_gbs,
+        "size": M * N,
+        "total_bytes": total_bytes,
+    }
+    
+    print(f"\n  Performance:")
+    print(f"  Average Time: {avg_ms:.3f} ms")
+    print(f"  Bandwidth: {bandwidth_gbs:.2f} GB/s")
     
     hip_check(hip.hipFree(d_a))
     hip_check(hip.hipFree(d_b))
@@ -439,6 +456,7 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
 
 def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
     """Benchmark matrix transpose using Rocir Layout Algebra."""
+    from tests.test_common import run_perftest as _rocir_run_perftest
     VEC_WIDTH = 4  # vec4 for float32
     if TILE_SIZE % VEC_WIDTH != 0:
         TILE_SIZE = ((TILE_SIZE + VEC_WIDTH - 1) // VEC_WIDTH) * VEC_WIDTH
@@ -605,15 +623,8 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
         ))
         hip_check(hip.hipDeviceSynchronize())
     
-    @perftest
-    def run_benchmark():
-        return {
-            "launch": launch_kernel,
-            "size": M * N,
-            "total_bytes": 2 * M * N * 4,
-        }
-    
-    results = run_benchmark()
+    # Run benchmark
+    _, avg_us = _rocir_run_perftest(launch_kernel, num_iters=20, num_warmup=2)
     
     hip_check(hip.hipMemcpy(b_host.ctypes.data, d_b, M * N * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
     b_result_2d = b_host.reshape(N, M, order='C')
@@ -623,7 +634,22 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
     print(f"\n  Correctness Check:")
     print(f"  Max error: {error:.2e}")
     
-    print(f"\n{results}")
+    # Calculate metrics
+    total_bytes = 2 * M * N * 4
+    bandwidth_gbs = total_bytes / (avg_us / 1e6) / 1e9
+    avg_ms = avg_us / 1000
+    
+    results = {
+        "avg_ms": avg_ms,
+        "avg_us": avg_us,
+        "bandwidth_gbs": bandwidth_gbs,
+        "size": M * N,
+        "total_bytes": total_bytes,
+    }
+    
+    print(f"\n  Performance:")
+    print(f"  Average Time: {avg_ms:.3f} ms")
+    print(f"  Bandwidth: {bandwidth_gbs:.2f} GB/s")
     
     hip_check(hip.hipFree(d_a))
     hip_check(hip.hipFree(d_b))

@@ -46,7 +46,8 @@ from mlir.dialects import (
     gpu as mlir_gpu,
 )
 import mlir.extras.types as T
-from utils import perftest, compile_to_hsaco
+from utils import compile_to_hsaco
+from tests.test_common import run_perftest
 
 
 def benchmark_per_token_quant(M=4096, N=8192):
@@ -349,17 +350,20 @@ def benchmark_per_token_quant(M=4096, N=8192):
         )
         hip.hipDeviceSynchronize()
 
-    @perftest
-    def run_benchmark():
-        return {
-            "bench_iters": 20,
-            "launch": hip_kernel_launch,
-            "size": total_elements,
-            "total_bytes": total_bytes_rw,
-        }
-
     print("Running benchmark...")
-    results = run_benchmark()
+    _, avg_us = run_perftest(hip_kernel_launch, num_iters=20, num_warmup=2)
+    
+    # Calculate metrics
+    bandwidth_gbs = total_bytes_rw / (avg_us / 1e6) / 1e9
+    avg_ms = avg_us / 1000
+    
+    results = {
+        "avg_ms": avg_ms,
+        "avg_us": avg_us,
+        "bandwidth_gbs": bandwidth_gbs,
+        "size": total_elements,
+        "total_bytes": total_bytes_rw,
+    }
 
     output_host = np.zeros((M, N), dtype=np.int8)
     scales_host = np.zeros(M, dtype=np.float32)
@@ -406,20 +410,22 @@ def benchmark_per_token_quant(M=4096, N=8192):
 
         input_torch = torch.from_numpy(input_data_fp16).cuda()
 
-        @perftest
-        def run_aiter_benchmark():
-            def launch():
-                per_token_quant_hip(input_torch)
-                torch.cuda.synchronize()
+        def launch_aiter():
+            per_token_quant_hip(input_torch)
+            torch.cuda.synchronize()
 
-            return {
-                "bench_iters": 20,
-                "launch": launch,
-                "size": total_elements,
-                "total_bytes": total_bytes_rw,
-            }
-
-        aiter_results = run_aiter_benchmark()
+        _, aiter_avg_us = run_perftest(launch_aiter, num_iters=20, num_warmup=2)
+        
+        aiter_bandwidth_gbs = total_bytes_rw / (aiter_avg_us / 1e6) / 1e9
+        aiter_avg_ms = aiter_avg_us / 1000
+        
+        aiter_results = {
+            "avg_ms": aiter_avg_ms,
+            "avg_us": aiter_avg_us,
+            "bandwidth_gbs": aiter_bandwidth_gbs,
+            "size": total_elements,
+            "total_bytes": total_bytes_rw,
+        }
 
         output_torch, scale_torch = per_token_quant_hip(input_torch)
         torch.cuda.synchronize()
@@ -436,17 +442,17 @@ def benchmark_per_token_quant(M=4096, N=8192):
         print(f"  Max Scale Diff:  {scale_diff_ref:.2e}")
         print(f"  Max Output Diff: {output_diff_ref:.2e}")
 
-        rocdsl_time = results.avg_ms
-        aiter_time = aiter_results.avg_ms
+        rocdsl_time = results["avg_ms"]
+        aiter_time = aiter_results["avg_ms"]
         speedup = aiter_time / rocdsl_time
 
         print(f"\n" + "=" * 80)
         print(f"Performance Comparison:")
         print(
-            f"  RocDSL:     {rocdsl_time:7.3f} ms  ({results.bandwidth_gbs:8.2f} GB/s)"
+            f"  RocDSL:     {rocdsl_time:7.3f} ms  ({results['bandwidth_gbs']:8.2f} GB/s)"
         )
         print(
-            f"  Reference:  {aiter_time:7.3f} ms  ({aiter_results.bandwidth_gbs:8.2f} GB/s)"
+            f"  Reference:  {aiter_time:7.3f} ms  ({aiter_results['bandwidth_gbs']:8.2f} GB/s)"
         )
         print(f"  Speedup:    {speedup:7.2f}x")
         print("=" * 80)

@@ -20,7 +20,8 @@ from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.utils import SmemAllocator
-from tests.utils import compile_to_hsaco, perftest, pertoken_quant, verify_output
+from tests.utils import compile_to_hsaco, pertoken_quant, verify_output
+from tests.test_common import run_perftest
 import torch
 import torch.nn.functional as F
 import pytest
@@ -479,22 +480,21 @@ def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n
     
     flops = 2 * M * N * K
 
-    @perftest
-    def bench():
-        return {
-            "launch": launch_kernel,
-            "size": size_c,  
-            "warmup_iters": warmup,
-            "bench_iters": runs,
-            "total_bytes": bytes_moved,
-        }
-
-    results = bench()
-    gflops = flops / (results.avg_ms / 1e3) / 1e9
+    # Benchmark using run_perftest
+    _, avg_us = run_perftest(
+        launch_kernel,
+        num_iters=runs,
+        num_warmup=warmup,
+    )
+    
+    avg_ms = avg_us / 1000
+    gflops = flops / (avg_us / 1e6) / 1e9
+    bandwidth_gbs = bytes_moved / (avg_us / 1e6) / 1e9
+    
     print(f"\n{'='*80}")
     print(f"Throughput: {gflops:.2f} GFLOPS")
-    print(f"Bandwidth: {results.bandwidth_gbs:.2f} GB/s")
-    print(f"Average Time: {results.avg_ms:.3f} ms")
+    print(f"Bandwidth: {bandwidth_gbs:.2f} GB/s")
+    print(f"Average Time: {avg_ms:.3f} ms")
     print(f"{'='*80}\n")
 
 if __name__ == "__main__":
