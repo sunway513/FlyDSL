@@ -20,7 +20,8 @@ from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.utils import SmemAllocator
-from tests.utils import compile_to_hsaco, perftest, pertoken_quant, verify_output
+from tests.utils import compile_to_hsaco, pertoken_quant, verify_output
+from tests.test_common import run_perftest
 import torch
 import torch.nn.functional as F
 import pytest
@@ -58,26 +59,24 @@ def unwrap(v):
 
 
 @pytest.mark.parametrize("dtype_config", [DType.FP8, DType.FP16])
-def test_mfma_gemm_rocir(dtype_config):
+def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n=32, tile_k=128):
     """Test MFMA GEMM with configurable dtype (FP8 or FP16)."""
     
     # Configure based on dtype (non-MLIR parameters)
     if dtype_config == DType.FP8:
         print("="*80)
-        print("MFMA FP8 GEMM Test (mfma_16x16x32) - 1024x1024x1280")
+        print(f"MFMA FP8 GEMM Test (mfma_16x16x32) - {M}x{N}x{K}")
         print("="*80)
         mfma_k = 32  # FP8 MFMA processes 32 K elements
-        tile_k = 128  # Must be multiple of mfma_k
         torch_dtype = torch.float8_e4m3fnuz
         use_scales = True
         vec_load_size = 16  # Load 16 FP8 elements (16 bytes)
         dtype_name = "fp8"
     else:  # FP16
         print("="*80)
-        print("MFMA FP16 GEMM Test (mfma_16x16x16) - 1024x1024x1280")
+        print(f"MFMA FP16 GEMM Test (mfma_16x16x16) - {M}x{N}x{K}")
         print("="*80)
         mfma_k = 16  # FP16 MFMA processes 16 K elements
-        tile_k = 128  # Must be multiple of mfma_k
         torch_dtype = torch.float16
         use_scales = False
         vec_load_size = 16  # Load 16 FP16 elements (32 bytes)
@@ -86,10 +85,6 @@ def test_mfma_gemm_rocir(dtype_config):
     gpu_arch = get_hip_arch()
     print(f"Detected HIP Arch: {gpu_arch}")
     print(f"MFMA K dimension: {mfma_k}, Tile K: {tile_k}")
-
-    # Constants
-    M, N, K = 1024, 1024, 1280
-    tile_m, tile_n = 32, 32
     
     ctx = RAIIMLIRContextModule()
     
@@ -117,8 +112,10 @@ def test_mfma_gemm_rocir(dtype_config):
     allocator = SmemAllocator(ctx, arch=gpu_arch)
 
     # 2. Allocate Arrays (Tile size: tile_m x tile_k)
-    lds_size_a = tile_m * tile_k
-    lds_size_b = tile_n * tile_k
+    pad_k = 8
+    lds_stride = tile_k + pad_k
+    lds_size_a = tile_m * lds_stride
+    lds_size_b = tile_n * lds_stride
     lds_a_decl = allocator.allocate_array(mlir_dtype, lds_size_a)
     lds_b_decl = allocator.allocate_array(mlir_dtype, lds_size_b)
     
@@ -135,11 +132,14 @@ def test_mfma_gemm_rocir(dtype_config):
             arg_a: T.memref(size_a, mlir_dtype),
             arg_b: T.memref(size_b, mlir_dtype),
             arg_scale_a: T.memref(M, T.f32()),
-            arg_scale_b: T.memref(N, T.f32())
+            arg_scale_b: T.memref(N, T.f32()),
+            m_in: T.index(),
+            n_in: T.index(),
+            k_in: T.index()
         ):
             c0, c1 = 0, 1
-            c_m, c_n, c_k = M, N, K
-            c_tile_k = tile_k
+            c_m, c_n, c_k = m_in, n_in, k_in
+            c_tile_k = arith.constant(tile_k, index=True)
             c_mfma_k = mfma_k
             c128, c32, c16, c8, c4, c2, c64 = 128, 32, 16, 8, 4, 2, 64
             c0_i32 = arith.i32(0)
@@ -165,8 +165,9 @@ def test_mfma_gemm_rocir(dtype_config):
             layout_c = rocir.make_layout(shape_c, stride_c)
             
             # LDS Layout: tile_m x tile_k (Row Major)
+            c_lds_stride = arith.constant(lds_stride, index=True)
             shape_lds = rocir.make_shape(c_tile_m, c_tile_k)
-            stride_lds = rocir.make_stride(c_tile_k, c1)
+            stride_lds = rocir.make_stride(c_lds_stride, c1)
             layout_lds = rocir.make_layout(shape_lds, stride_lds)
 
             tx = gpu.thread_id("x")
@@ -200,8 +201,8 @@ def test_mfma_gemm_rocir(dtype_config):
             by_tile = by * c_tile_n
             row_b_global = by_tile + row_b_local
             
-            # LDS Write Index
-            lds_write_idx = tx_vec
+            # LDS Write Index (Row-Major mapping with padding)
+            lds_write_idx = (row_a_local * c_lds_stride) + col_a_local
             
             vec_type = ir.VectorType.get([vec_load_size], mlir_dtype)
             pad_val = _arith_mlir.ConstantOp(mlir_dtype, ir.FloatAttr.get(mlir_dtype, 0.0)).result
@@ -219,40 +220,37 @@ def test_mfma_gemm_rocir(dtype_config):
             row_a_lds_base = wave_row * c16
             row_a_lds = row_a_lds_base + lane_mod_16
             
-            col_offset_base = lane_div_16 * c8
+            if dtype_config == DType.FP8:
+                col_offset_base = lane_div_16 * c8
+            else:
+                col_offset_base = lane_div_16 * c4
             
             row_b_lds_base = wave_col * c16
             row_b_lds = row_b_lds_base + lane_mod_16
             
-            # Main Loop K
-            current_acc = acc_init
-            for k in range(0, c_k, tile_k):
-                
-                # Load A using Rocir
-                col_a_global_k = k + col_a_local
+            # --- HELPER: Load A/B from Global ---
+            def load_global(k_val):
+                # Load A
+                col_a_global_k = k_val + col_a_local
                 coord_a = rocir.make_coord(row_a_global, col_a_global_k)
                 idx_a = rocir.crd2idx(coord_a, layout_a)
-                
                 vec_a = vector.TransferReadOp(vec_type, arg_a, [unwrap(idx_a)], identity_map, unwrap(pad_val), [True]).result
-                vector.StoreOp(vec_a, lds_a, [unwrap(lds_write_idx)])
                 
-                # Load B (Transposed) using Rocir
-                col_b_global_k = k + col_b_local
+                # Load B
+                col_b_global_k = k_val + col_b_local
                 coord_b = rocir.make_coord(row_b_global, col_b_global_k)
                 idx_b = rocir.crd2idx(coord_b, layout_b)
-                
                 vec_b = vector.TransferReadOp(vec_type, arg_b, [unwrap(idx_b)], identity_map, unwrap(pad_val), [True]).result
-                vector.StoreOp(vec_b, lds_b, [unwrap(lds_write_idx)])
                 
-                gpu.barrier()
-                
-                # Inner Loop (iterate over tile_k with mfma_k steps)
-                acc = current_acc
+                return vec_a, vec_b
+
+            # --- HELPER: Compute Tile ---
+            def compute_tile(acc_in):
+                acc_curr = acc_in
                 for ki in range(0, tile_k, mfma_k):
-                    # Calculate LDS indices using Rocir
                     col_lds = ki + col_offset_base
                     
-                    # A LDS Index
+                    # A LDS Index (uses layout_lds which has stride padding)
                     coord_a_lds = rocir.make_coord(row_a_lds, col_lds)
                     idx_a_mfma = rocir.crd2idx(coord_a_lds, layout_lds)
                     
@@ -261,7 +259,6 @@ def test_mfma_gemm_rocir(dtype_config):
                     idx_b_mfma = rocir.crd2idx(coord_b_lds, layout_lds)
                     
                     if dtype_config == DType.FP8:
-                        # FP8: Load 8 elements, pack to i64, use mfma_16x16x32
                         vec8_elem = ir.VectorType.get([8], mlir_dtype)
                         vec8_i8 = ir.VectorType.get([8], ir.IntegerType.get_signless(8))
                         vec1_i64 = ir.VectorType.get([1], ir.IntegerType.get_signless(64))
@@ -278,26 +275,64 @@ def test_mfma_gemm_rocir(dtype_config):
                         a_pack = vector.ExtractOp(a_vec64, static_position=[0], dynamic_position=[]).result
                         b_pack = vector.ExtractOp(b_vec64, static_position=[0], dynamic_position=[]).result
                         
-                        acc = rocdl.mfma_f32_16x16x32_fp8_fp8(
-                            vec4_f32, [unwrap(a_pack), unwrap(b_pack), unwrap(acc), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
+                        acc_curr = rocdl.mfma_f32_16x16x32_fp8_fp8(
+                            vec4_f32, [unwrap(a_pack), unwrap(b_pack), unwrap(acc_curr), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
                         ).result
                     else:  # FP16
-                        # FP16: Load 4 FP16 elements (v4f16) which is 8 bytes.
-                        # The intrinsic expects v4f16.
                         vec4_f16 = ir.VectorType.get([4], mlir_dtype)
-                        
                         vec_a_load = vector.LoadOp(vec4_f16, lds_a, [unwrap(idx_a_mfma)]).result
                         vec_b_load = vector.LoadOp(vec4_f16, lds_b, [unwrap(idx_b_mfma)]).result
                         
-                        # Use raw v4f16 directly
-                        acc = rocdl.mfma_f32_16x16x16f16(
-                            vec4_f32, [unwrap(vec_a_load), unwrap(vec_b_load), unwrap(acc), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
+                        acc_curr = rocdl.mfma_f32_16x16x16f16(
+                            vec4_f32, [unwrap(vec_a_load), unwrap(vec_b_load), unwrap(acc_curr), unwrap(c0_i32), unwrap(c0_i32), unwrap(c0_i32)]
                         ).result
-                    
-                gpu.barrier()
-                current_acc = acc
+                return acc_curr
 
-            final_acc = current_acc
+            # Prologue: Load first tile
+            c_k_idx = arith.constant(0, index=True)
+            vec_a_init, vec_b_init = load_global(c_k_idx)
+            
+            # Main Loop: 0 to K-tile_k
+            # c_k_main = c_k - c_tile_k_idx
+            c_k_main = _arith_mlir.SubIOp(unwrap(c_k), unwrap(c_tile_k)).result
+            
+            iter_args = [acc_init, vec_a_init, vec_b_init]
+            
+            for_op = scf.ForOp(c_k_idx, c_k_main, c_tile_k, iter_args)
+            with ir.InsertionPoint(for_op.body):
+                k_curr = for_op.induction_variable
+                acc_iter = for_op.inner_iter_args[0]
+                vec_a_curr = for_op.inner_iter_args[1]
+                vec_b_curr = for_op.inner_iter_args[2]
+                
+                # 1. Store current to LDS
+                vector.StoreOp(vec_a_curr, lds_a, [unwrap(lds_write_idx)])
+                vector.StoreOp(vec_b_curr, lds_b, [unwrap(lds_write_idx)])
+                
+                # 2. Prefetch Next
+                # k_next = k_curr + c_tile_k_idx
+                k_next = _arith_mlir.AddIOp(unwrap(k_curr), unwrap(c_tile_k)).result
+                vec_a_next, vec_b_next = load_global(k_next)
+                
+                gpu.barrier()
+                
+                # 3. Compute
+                acc_new = compute_tile(acc_iter)
+                
+                gpu.barrier()
+                
+                scf.yield_([acc_new, vec_a_next, vec_b_next])
+            
+            # Epilogue: Last Tile
+            final_acc = for_op.results[0]
+            last_vec_a = for_op.results[1]
+            last_vec_b = for_op.results[2]
+            
+            vector.StoreOp(last_vec_a, lds_a, [unwrap(lds_write_idx)])
+            vector.StoreOp(last_vec_b, lds_b, [unwrap(lds_write_idx)])
+            
+            gpu.barrier()
+            final_acc = compute_tile(final_acc)
             
             # Store Result using Rocir
             lane_div_16 = lane_id // c16
@@ -409,6 +444,9 @@ def test_mfma_gemm_rocir(dtype_config):
         ctypes.c_void_p(b_q.data_ptr()),
         ctypes.c_void_p(scale_a.data_ptr()),
         ctypes.c_void_p(scale_b.data_ptr()),
+        ctypes.c_long(M),
+        ctypes.c_long(N),
+        ctypes.c_long(K)
     ]
     
     args_array = (ctypes.c_void_p * len(arg_ptrs))(*[ctypes.addressof(p) for p in arg_ptrs])
@@ -442,22 +480,21 @@ def test_mfma_gemm_rocir(dtype_config):
     
     flops = 2 * M * N * K
 
-    @perftest
-    def bench():
-        return {
-            "launch": launch_kernel,
-            "size": size_c,  
-            "warmup_iters": warmup,
-            "bench_iters": runs,
-            "total_bytes": bytes_moved,
-        }
-
-    results = bench()
-    gflops = flops / (results.avg_ms / 1e3) / 1e9
+    # Benchmark using run_perftest
+    _, avg_us = run_perftest(
+        launch_kernel,
+        num_iters=runs,
+        num_warmup=warmup,
+    )
+    
+    avg_ms = avg_us / 1000
+    gflops = flops / (avg_us / 1e6) / 1e9
+    bandwidth_gbs = bytes_moved / (avg_us / 1e6) / 1e9
+    
     print(f"\n{'='*80}")
     print(f"Throughput: {gflops:.2f} GFLOPS")
-    print(f"Bandwidth: {results.bandwidth_gbs:.2f} GB/s")
-    print(f"Average Time: {results.avg_ms:.3f} ms")
+    print(f"Bandwidth: {bandwidth_gbs:.2f} GB/s")
+    print(f"Average Time: {avg_ms:.3f} ms")
     print(f"{'='*80}\n")
 
 if __name__ == "__main__":

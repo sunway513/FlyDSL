@@ -25,7 +25,8 @@ except ImportError:
     torch = None
 
 # Import benchmark utilities from shared tests/utils.py
-from utils import perftest, compile_to_hsaco
+from utils import compile_to_hsaco
+from tests.test_common import run_perftest
 
 
 def create_vecadd_kernel(
@@ -172,16 +173,21 @@ def benchmark_pytorch_add(size: int):
         torch.cuda.synchronize()
         return start.elapsed_time(stop)
 
-    @perftest
-    def run_torch():
-        return {
-            "launch": torch_launch,
-            "size": size,
-            "total_bytes": 3 * size * a.element_size(),
-            "bench_iters": 20,
-        }
-
-    return run_torch()
+    _, avg_us = run_perftest(torch_launch, num_iters=20, num_warmup=2)
+    
+    total_bytes = 3 * size * a.element_size()
+    bandwidth_gbs = total_bytes / (avg_us / 1e6) / 1e9
+    avg_ms = avg_us / 1000
+    
+    results = {
+        "avg_ms": avg_ms,
+        "avg_us": avg_us,
+        "bandwidth_gbs": bandwidth_gbs,
+        "size": size,
+        "total_bytes": total_bytes,
+    }
+    
+    return results
     
 def benchmark_vector_add(tile_size: int = 4):
     """Benchmark vector addition kernel performance."""
@@ -256,17 +262,20 @@ def benchmark_vector_add(tile_size: int = 4):
         )
         hip.hipDeviceSynchronize()
 
-    @perftest
-    def run_benchmark():
-        return {
-            "launch": hip_kernel_launch,
-            "size": SIZE,
-            "total_bytes": 3 * SIZE * 4,
-            "bench_iters": 20,
-        }
-    
     # Run benchmark
-    results = run_benchmark()
+    _, avg_us = run_perftest(hip_kernel_launch, num_iters=20, num_warmup=2)
+    
+    total_bytes = 3 * SIZE * 4
+    bandwidth_gbs = total_bytes / (avg_us / 1e6) / 1e9
+    avg_ms = avg_us / 1000
+    
+    results = {
+        "avg_ms": avg_ms,
+        "avg_us": avg_us,
+        "bandwidth_gbs": bandwidth_gbs,
+        "size": SIZE,
+        "total_bytes": total_bytes,
+    }
     
     # Verify correctness
     hip_check(hip.hipMemcpy(c_host.ctypes.data, d_c, SIZE * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
@@ -283,7 +292,7 @@ def benchmark_vector_add(tile_size: int = 4):
     if torch_results:
         print("\nPyTorch torch.add baseline:")
         print(torch_results)
-        bw_ratio = results.bandwidth_gbs / torch_results.bandwidth_gbs
+        bw_ratio = results["bandwidth_gbs"] / torch_results["bandwidth_gbs"]
         print(f"  Bandwidth ratio (RocDSL / PyTorch): {bw_ratio:.2f}x")
     
     # Cleanup

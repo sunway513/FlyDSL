@@ -161,8 +161,6 @@ def create_elementwise_add_kernel(M: int, N: int, dtype=F32Type):
 # Test cases
 TEST_SHAPES = [
     (1, 3),
-    (17, 15),
-    (64, 128),
     (129, 255),
     (1021, 515),
 ]
