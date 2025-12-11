@@ -38,7 +38,6 @@ from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from rocdsl.utils import SmemAllocator
 from mlir import ir
 from mlir.dialects import (
-    arith as _arith_mlir,
     math as _math_mlir,
     scf,
     vector,
@@ -113,67 +112,48 @@ def benchmark_per_token_quant(M=4096, N=8192):
         output: T.memref(M * N, T.i8()),
         scales: T.memref(M, T.f32()),
     ):
-        c_m = arith.index(M)._value
-        c_n = arith.index(N)._value
-        c_1 = arith.index(1)._value
-
-        shape_global = rocir.make_shape(c_m, c_n)
-        stride_global = rocir.make_stride(c_n, c_1)
-        layout_global = rocir.make_layout(shape_global, stride_global)
-
-        m_idx = gpu.block_id("x")._value
-        tid = gpu.thread_id("x")._value
-        block_dim = gpu.block_dim("x")._value
-
-        vec_type_f16 = T.vector(VEC_WIDTH, T.f16())
-        vec_type_f32 = T.vector(VEC_WIDTH, T.f32())
-
-        f32_type = T.f32()
-        f_0 = _arith_mlir.ConstantOp(f32_type, ir.FloatAttr.get(f32_type, 0.0)).result
-        f_1 = _arith_mlir.ConstantOp(T.f32(), ir.FloatAttr.get(T.f32(), 1.0)).result
-        f_127 = _arith_mlir.ConstantOp(T.f32(), ir.FloatAttr.get(T.f32(), 127.0)).result
-        index_type = ir.IndexType.get()
-        c_0 = _arith_mlir.ConstantOp(
-            index_type, ir.IntegerAttr.get(index_type, 0)
-        ).result
-
-        c_vec_width = arith.index(VEC_WIDTH)._value
+        tid_x = rocir.thread_idx("x")
+        bid_x = rocir.block_idx("x")
+        tid_linear = tid_x
 
         base_ptr = allocator.get_base()
         red_val = red_buffer_decl(base_ptr).get()
 
+        f_0 = arith.f32(0.0)
+        f_1 = arith.f32(1.0)
+        f_127 = arith.f32(127.0)
+        c_0 = arith.index(0)
+
         local_max = f_0
         cached_vecs = []
 
+        vec_type_f16 = T.vector(VEC_WIDTH, T.f16())
+        vec_type_f32 = T.vector(VEC_WIDTH, T.f32())
+
+        # Load phase: 使用 rocir 坐标计算
+        c_m = arith.index(M)
+        c_n = arith.index(N)
+        c_1 = arith.index(1)
+
         for i in range(ITERS):
-            c_chunk_offset = arith.index(i * ELEMS_PER_BLOCK_ITER)._value
-            thread_offset = _arith_mlir.MulIOp(unwrap(tid), unwrap(c_vec_width)).result
-            col_idx = _arith_mlir.AddIOp(
-                unwrap(c_chunk_offset), unwrap(thread_offset)
-            ).result
+            c_chunk_offset = arith.index(i * ELEMS_PER_BLOCK_ITER)
+            c_vec_width = arith.index(VEC_WIDTH)
+            thread_offset = tid_linear * c_vec_width
+            col_base = c_chunk_offset + thread_offset
 
-            is_valid = _arith_mlir.CmpIOp(
-                _arith_mlir.CmpIPredicate.slt, unwrap(col_idx), unwrap(c_n)
-            ).result
+            is_valid = col_base < c_n
 
-            if_load = scf.IfOp(unwrap(is_valid), [vec_type_f16], hasElse=True)
+            if_load = scf.IfOp(is_valid.value, [vec_type_f16], hasElse=True)
             with ir.InsertionPoint(if_load.then_block):
-                coord = rocir.make_coord(m_idx, col_idx)
+                coord = rocir.make_coord(bid_x, col_base)
+                layout_global = rocir.make_layout((c_m, c_n), stride=(c_n, c_1))
                 linear_idx = rocir.crd2idx(coord, layout_global)
-                idx_val = (
-                    linear_idx.value if hasattr(linear_idx, "value") else linear_idx
-                )
 
-                vec_val = vector.load(vec_type_f16, input, [idx_val])
+                vec_val = vector.load(vec_type_f16, input, [linear_idx.value])
                 scf.YieldOp([vec_val])
 
             with ir.InsertionPoint(if_load.else_block):
-                zero_vec = _arith_mlir.ConstantOp(
-                    vec_type_f16,
-                    ir.DenseElementsAttr.get_splat(
-                        vec_type_f16, ir.FloatAttr.get(T.f16(), 0.0)
-                    ),
-                ).result
+                zero_vec = arith.constant_vector(0.0, vec_type_f16).value
                 scf.YieldOp([zero_vec])
 
             vec_val_f16 = if_load.results[0]
@@ -181,122 +161,95 @@ def benchmark_per_token_quant(M=4096, N=8192):
 
         for i in range(ITERS):
             vec_val_f16 = cached_vecs[i]
-            vec_val = _arith_mlir.extf(vec_type_f32, vec_val_f16)
+            vec_val = arith.extf(vec_type_f32, vec_val_f16).value
             vec_abs = _math_mlir.absf(vec_val)
             chunk_max = vector.ReductionOp(
                 T.f32(), vector.CombiningKind.MAXIMUMF, vec_abs
             ).result
-            local_max = _arith_mlir.MaximumFOp(
-                unwrap(local_max), unwrap(chunk_max)
-            ).result
+            local_max = arith.maximum(local_max, chunk_max).value
 
-        current_val = local_max
+        current_val = arith.ArithValue(local_max)
         for s in [32, 16, 8, 4, 2, 1]:
-            offset = _arith_mlir.ConstantOp(
-                T.i32(), ir.IntegerAttr.get(T.i32(), s)
-            ).result
-            width = _arith_mlir.ConstantOp(
-                T.i32(), ir.IntegerAttr.get(T.i32(), 64)
-            ).result
+            offset = arith.i32(s)
+            width = arith.i32(64)
 
             shuffled_op = mlir_gpu.ShuffleOp(
-                unwrap(current_val),
-                unwrap(offset),
-                unwrap(width),
+                current_val.value,
+                offset.value,
+                width.value,
                 mode=mlir_gpu.ShuffleMode.XOR,
             )
             shuffled_val = shuffled_op.results[0]
+            current_val = arith.maximum(current_val, shuffled_val)
 
-            current_val = _arith_mlir.MaximumFOp(
-                unwrap(current_val), unwrap(shuffled_val)
-            ).result
+        c_64 = arith.index(64)
+        c_0_idx = arith.index(0)
+        warp_id = tid_linear / c_64
+        lane_id = tid_linear % c_64
 
-        c_64 = arith.index(64)._value
-        warp_id = _arith_mlir.DivUIOp(unwrap(tid), unwrap(c_64)).result
-        lane_id = _arith_mlir.RemUIOp(unwrap(tid), unwrap(c_64)).result
+        is_lane_0 = lane_id == c_0_idx
 
-        is_lane_0 = _arith_mlir.CmpIOp(
-            _arith_mlir.CmpIPredicate.eq, unwrap(lane_id), unwrap(c_0)
-        ).result
-
-        if_warp_store = scf.IfOp(unwrap(is_lane_0))
+        if_warp_store = scf.IfOp(is_lane_0.value)
         with ir.InsertionPoint(if_warp_store.then_block):
-            memref.store(unwrap(current_val), unwrap(red_val), [unwrap(warp_id)])
+            memref.store(current_val.value, red_val, [warp_id.value])
             scf.YieldOp([])
 
         mlir_gpu.BarrierOp()
 
-        is_thread_0 = _arith_mlir.CmpIOp(
-            _arith_mlir.CmpIPredicate.eq, unwrap(tid), unwrap(c_0)
-        ).result
+        is_thread_0 = (tid_linear == c_0_idx)
 
-        if_block_reduce = scf.IfOp(unwrap(is_thread_0))
+        if_block_reduce = scf.IfOp(is_thread_0.value)
         with ir.InsertionPoint(if_block_reduce.then_block):
-            final_max_val = f_0
+            final_max_val = arith.ArithValue(f_0)
             for w in range(NUM_WARPS):
-                c_w = arith.index(w)._value
-                val = memref.load(unwrap(red_val), [unwrap(c_w)])
-                final_max_val = _arith_mlir.MaximumFOp(
-                    unwrap(final_max_val), unwrap(val)
-                ).result
+                c_w = arith.index(w).value
+                val = memref.load(red_val, [c_w])
+                final_max_val = arith.maximum(final_max_val, val)
 
-            memref.store(unwrap(final_max_val), unwrap(red_val), [unwrap(c_0)])
+            memref.store(final_max_val.value, red_val, [c_0.value])
             scf.YieldOp([])
 
         mlir_gpu.BarrierOp()
 
-        reduced_max = memref.load(unwrap(red_val), [unwrap(c_0)])
+        reduced_max = memref.load(red_val, [c_0.value])
+        scale = reduced_max / 127
 
-        scale = _arith_mlir.DivFOp(unwrap(reduced_max), unwrap(f_127)).result
+        is_zero = scale == 0
+        final_scale = arith.select(is_zero, f_1, scale)
 
-        is_zero = _arith_mlir.CmpFOp(
-            _arith_mlir.CmpFPredicate.OEQ,
-            unwrap(scale),
-            unwrap(f_0),
-        ).result
-        final_scale = _arith_mlir.SelectOp(
-            unwrap(is_zero), unwrap(f_1), unwrap(scale)
-        ).result
-
-        is_thread_0 = _arith_mlir.CmpIOp(
-            _arith_mlir.CmpIPredicate.eq, unwrap(tid), unwrap(c_0)
-        ).result
-
-        if_op = scf.IfOp(unwrap(is_thread_0))
+        if_op = scf.IfOp(is_thread_0.value)
         with ir.InsertionPoint(if_op.then_block):
-            memref.store(unwrap(final_scale), unwrap(scales), [unwrap(m_idx)])
+            bid_x_val = bid_x.value if hasattr(bid_x, "value") else bid_x
+            memref.store(final_scale.value, scales, [bid_x_val])
             scf.YieldOp([])
 
-        vec_scale = vector.BroadcastOp(vec_type_f32, unwrap(final_scale)).result
-        vec_f1 = vector.BroadcastOp(vec_type_f32, unwrap(f_1)).result
-        vec_inv_scale = _arith_mlir.divf(vec_f1, vec_scale)
+        vec_scale = vector.BroadcastOp(vec_type_f32, final_scale.value).result
+        vec_f1 = vector.BroadcastOp(vec_type_f32, f_1.value).result
+        vec_f1_arith = arith.ArithValue(vec_f1)
+        vec_scale_arith = arith.ArithValue(vec_scale)
+        vec_inv_scale = (vec_f1_arith / vec_scale_arith).value
+
         for i in range(ITERS):
-            c_chunk_offset = arith.index(i * ELEMS_PER_BLOCK_ITER)._value
-            thread_offset = _arith_mlir.MulIOp(unwrap(tid), unwrap(c_vec_width)).result
-            col_idx = _arith_mlir.AddIOp(
-                unwrap(c_chunk_offset), unwrap(thread_offset)
-            ).result
+            c_chunk_offset = arith.index(i * ELEMS_PER_BLOCK_ITER)
+            c_vec_width = arith.index(VEC_WIDTH)
+            thread_offset = tid_linear * c_vec_width
+            col_base = c_chunk_offset + thread_offset
 
-            is_valid = _arith_mlir.CmpIOp(
-                _arith_mlir.CmpIPredicate.slt, unwrap(col_idx), unwrap(c_n)
-            ).result
-
-            if_store = scf.IfOp(unwrap(is_valid))
+            is_valid = col_base < c_n
+            if_store = scf.IfOp(is_valid.value)
             with ir.InsertionPoint(if_store.then_block):
-                coord = rocir.make_coord(m_idx, col_idx)
+                coord = rocir.make_coord(bid_x, col_base)
+                layout_global = rocir.make_layout((c_m, c_n), stride=(c_n, c_1))
                 linear_idx = rocir.crd2idx(coord, layout_global)
-                idx_val = (
-                    linear_idx.value if hasattr(linear_idx, "value") else linear_idx
-                )
 
                 vec_val_f16 = cached_vecs[i]
-                vec_val = _arith_mlir.extf(vec_type_f32, unwrap(vec_val_f16))
+                vec_val = arith.extf(vec_type_f32, vec_val_f16)
 
-                vec_scaled = _arith_mlir.mulf(unwrap(vec_val), unwrap(vec_inv_scale))
+                vec_scaled = vec_val * vec_inv_scale
                 vec_i8_type = T.vector(VEC_WIDTH, T.i8())
-                vec_quant = _arith_mlir.fptosi(vec_i8_type, vec_scaled)
+                vec_quant = arith.fptosi(vec_i8_type, vec_scaled)
 
-                vector.store(vec_quant, output, [idx_val])
+                vector.store(vec_quant.value, output, [linear_idx.value])
                 scf.YieldOp([])
 
     ip.__exit__(None, None, None)

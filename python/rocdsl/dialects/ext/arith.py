@@ -5,8 +5,8 @@ from typing import Optional, Union, Tuple
 import numpy as np
 
 from mlir.ir import (
-    Type, Value, IntegerType, IndexType, F32Type, F64Type,
-    DenseElementsAttr, Location, InsertionPoint, ShapedType
+    Type, Value, IntegerType, IndexType, F32Type, F64Type, F16Type,
+    DenseElementsAttr, Location, InsertionPoint, ShapedType, VectorType
 )
 from mlir.dialects import arith as _arith
 from mlir.dialects._ods_common import get_op_result_or_op_results
@@ -17,11 +17,31 @@ def _is_integer_like_type(t: Type) -> bool:
 
 def _is_floating_point_type(t: Type) -> bool:
     """Check if type is floating point."""
-    return F32Type.isinstance(t) or F64Type.isinstance(t)
+    # Check common float types using isinstance
+    if F32Type.isinstance(t) or F64Type.isinstance(t):
+        return True
+    try:
+        if F16Type.isinstance(t):
+            return True
+    except:
+        pass
+    # Check for f16, bf16, and other float types by checking type name
+    type_str = str(t)
+    return type_str in ['f16', 'f32', 'f64', 'bf16', 'f8E5M2', 'f8E4M3FN']
 
 def _is_index_type(t: Type) -> bool:
     """Check if type is index."""
     return IndexType.isinstance(t)
+
+def _is_vector_type(t: Type) -> bool:
+    """Check if type is a vector."""
+    return VectorType.isinstance(t)
+
+def _get_element_type(t: Type) -> Type:
+    """Get element type from vector or return the type itself for scalars."""
+    if _is_vector_type(t):
+        return VectorType(t).element_type
+    return t
 
 def _infer_mlir_type(value, vector=False):
     """Infer MLIR type from Python value."""
@@ -91,6 +111,140 @@ def f64(value: float, *, loc: Location = None, ip: InsertionPoint = None) -> "Ar
     """Create an f64 constant."""
     return constant(value, type=F64Type.get(), loc=loc, ip=ip)
 
+def maximum(lhs: Union["ArithValue", Value], rhs: Union["ArithValue", Value], *, loc: Location = None) -> "ArithValue":
+    """Compute maximum of two values (automatically handles float/int types).
+    
+    Args:
+        lhs: Left operand (ArithValue, Value, or Python number)
+        rhs: Right operand (ArithValue, Value, or Python number)
+        loc: Optional source location
+        
+    Returns:
+        ArithValue wrapping the maximum result
+        
+    Example:
+        >>> a = arith.f32(1.5)
+        >>> b = arith.f32(2.3)
+        >>> c = arith.maximum(a, b)  # Function style
+        >>> d = a.max(b)              # Method style (equivalent)
+    """
+    return _minmax_op(lhs, rhs, op_type="max", loc=loc)
+
+def minimum(lhs: Union["ArithValue", Value], rhs: Union["ArithValue", Value], *, loc: Location = None) -> "ArithValue":
+    """Compute minimum of two values (automatically handles float/int types).
+    
+    Args:
+        lhs: Left operand (ArithValue, Value, or Python number)
+        rhs: Right operand (ArithValue, Value, or Python number)
+        loc: Optional source location
+        
+    Returns:
+        ArithValue wrapping the minimum result
+        
+    Example:
+        >>> a = arith.f32(1.5)
+        >>> b = arith.f32(2.3)
+        >>> c = arith.minimum(a, b)  # Function style
+        >>> d = a.min(b)              # Method style (equivalent)
+    """
+    return _minmax_op(lhs, rhs, op_type="min", loc=loc)
+
+def select(condition: Union["ArithValue", Value], true_value: Union["ArithValue", Value], 
+           false_value: Union["ArithValue", Value], *, loc: Location = None) -> "ArithValue":
+    """Select between two values based on a condition (ternary operator).
+    
+    Args:
+        condition: Boolean condition (i1 type)
+        true_value: Value to return if condition is true
+        false_value: Value to return if condition is false
+        loc: Optional source location
+        
+    Returns:
+        ArithValue wrapping the selected value
+        
+    Example:
+        >>> cond = a < b
+        >>> result = arith.select(cond, a, b)  # Equivalent to: a if cond else b
+    """
+    cond_val = _unwrap_value(condition) if isinstance(condition, ArithValue) else condition
+    true_val = _unwrap_value(true_value) if isinstance(true_value, ArithValue) else true_value
+    false_val = _unwrap_value(false_value) if isinstance(false_value, ArithValue) else false_value
+    
+    result = _arith.SelectOp(cond_val, true_val, false_val, loc=loc).result
+    return ArithValue(result)
+
+def extf(result_type: Type, value: Union["ArithValue", Value], *, loc: Location = None) -> "ArithValue":
+    """Extend floating point value to a wider type (e.g., f16 -> f32).
+    
+    Args:
+        result_type: Target floating point type
+        value: Value to extend
+        loc: Optional source location
+        
+    Returns:
+        ArithValue wrapping the extended value
+        
+    Example:
+        >>> f16_val = ...  # some f16 value
+        >>> f32_val = arith.extf(T.vector(32, T.f32()), f16_val)
+    """
+    val = _unwrap_value(value) if isinstance(value, ArithValue) else value
+    result = _arith.ExtFOp(result_type, val, loc=loc).result
+    return ArithValue(result)
+
+def fptosi(result_type: Type, value: Union["ArithValue", Value], *, loc: Location = None) -> "ArithValue":
+    """Convert floating point value to signed integer.
+    
+    Args:
+        result_type: Target integer type
+        value: Floating point value to convert
+        loc: Optional source location
+        
+    Returns:
+        ArithValue wrapping the integer result
+        
+    Example:
+        >>> f32_val = arith.f32(3.7)
+        >>> i32_val = arith.fptosi(T.i32(), f32_val)  # Result: 3
+    """
+    val = _unwrap_value(value) if isinstance(value, ArithValue) else value
+    result = _arith.FPToSIOp(result_type, val, loc=loc).result
+    return ArithValue(result)
+
+def constant_vector(element_value: Union[int, float], vector_type: Type, *, loc: Location = None) -> "ArithValue":
+    """Create a constant vector with all elements set to the same value.
+    
+    Args:
+        element_value: Scalar value to splat across the vector
+        vector_type: Vector type (e.g., T.vector(32, T.f32()))
+        loc: Optional source location
+        
+    Returns:
+        ArithValue wrapping the constant vector
+        
+    Example:
+        >>> vec_zero = arith.constant_vector(0.0, T.vector(32, T.f16()))
+        >>> vec_ones = arith.constant_vector(1.0, T.vector(16, T.f32()))
+    """
+    from mlir.ir import FloatAttr, IntegerAttr, DenseElementsAttr
+    
+    # Get element type from vector type
+    element_type = VectorType(vector_type).element_type
+    
+    # Create attribute for the element value
+    if _is_floating_point_type(element_type):
+        elem_attr = FloatAttr.get(element_type, float(element_value))
+    elif _is_integer_like_type(element_type):
+        elem_attr = IntegerAttr.get(element_type, int(element_value))
+    else:
+        raise ValueError(f"Unsupported element type for constant vector: {element_type}")
+    
+    # Create dense elements attribute (splat)
+    dense_attr = DenseElementsAttr.get_splat(vector_type, elem_attr)
+    
+    result = _arith.ConstantOp(vector_type, dense_attr, loc=loc).result
+    return ArithValue(result)
+
 def _unwrap_value(val):
     """递归unwrap ArithValue，获取底层的 ir.Value"""
     while isinstance(val, ArithValue):
@@ -129,10 +283,14 @@ def _binary_op(
             rhs = ArithValue(rhs)
     
     # Determine operation suffix based on type
+    # For vectors, check the element type
+    lhs_type = lhs._value.type if isinstance(lhs, ArithValue) else lhs.type
+    element_type = _get_element_type(lhs_type)
+    
     op_name = op.capitalize()
-    if _is_floating_point_type(lhs._value.type if isinstance(lhs, ArithValue) else lhs.type):
+    if _is_floating_point_type(element_type):
         op_name += "F"
-    elif _is_integer_like_type(lhs._value.type if isinstance(lhs, ArithValue) else lhs.type):
+    elif _is_integer_like_type(element_type):
         if op == "div":
             op_name = "DivSI"  # Signed integer division
         elif op == "mod":
@@ -143,7 +301,7 @@ def _binary_op(
             else:
                 op_name += "I"
     else:
-        raise NotImplementedError(f"Unsupported operand types for {op}: {lhs._value.type if isinstance(lhs, ArithValue) else lhs.type}")
+        raise NotImplementedError(f"Unsupported operand types for {op}: {lhs_type} (element type: {element_type})")
     
     # Get the operation class
     op_class = getattr(_arith, f"{op_name}Op")
@@ -194,6 +352,45 @@ def _comparison_op(
         raise NotImplementedError(f"Comparison not supported for type: {lhs._value.type if isinstance(lhs, ArithValue) else lhs.type}")
     
     return ArithValue(result)
+def _minmax_op(
+    lhs: "ArithValue",
+    rhs: "ArithValue",
+    op_type: str,  # "max" or "min"
+    *,
+    loc: Location = None,
+) -> "ArithValue":
+    """Execute min/max operation based on operand types."""
+    # Coerce rhs to ArithValue if needed
+    if not isinstance(rhs, ArithValue):
+        if isinstance(rhs, (int, float)):
+            rhs = constant(rhs, type=lhs._value.type if isinstance(lhs, ArithValue) else lhs.type, loc=loc)
+        else:
+            rhs = ArithValue(rhs)
+    
+    # Unwrap values
+    lhs_val = _unwrap_value(lhs) if isinstance(lhs, ArithValue) else lhs
+    rhs_val = _unwrap_value(rhs) if isinstance(rhs, ArithValue) else rhs
+    
+    if _is_floating_point_type(lhs_val.type):
+        # Float min/max
+        if op_type == "max":
+            op_class = _arith.MaximumFOp
+        else:
+            op_class = _arith.MinimumFOp
+        result = op_class(lhs_val, rhs_val, loc=loc).result
+    elif _is_integer_like_type(lhs_val.type):
+        # Integer min/max (signed/unsigned logic could be tricky, default to signed for now)
+        # TODO: Add unsigned support if needed
+        if op_type == "max":
+            op_class = _arith.MaxSIOp
+        else:
+            op_class = _arith.MinSIOp
+        result = op_class(lhs_val, rhs_val, loc=loc).result
+    else:
+        raise NotImplementedError(f"{op_type} not supported for type: {lhs_val.type}")
+    
+    return ArithValue(result)
+
 class ArithValue:
     """Value wrapper with operator overloading for Pythonic arithmetic.
     
@@ -229,6 +426,9 @@ class ArithValue:
     __or__ = partialmethod(_binary_op, op="or")
     __xor__ = partialmethod(_binary_op, op="xor")
 
+    # Min/Max methods
+    max = partialmethod(_minmax_op, op_type="max")
+    min = partialmethod(_minmax_op, op_type="min")
     
     # Reverse arithmetic operators (for when left operand is Python type)
     __radd__ = partialmethod(_rbinary_op, op="add")
@@ -263,6 +463,7 @@ from mlir.dialects.arith import (
 
 __all__ = [
     "constant", "index", "i32", "i64", "f32", "f64", "Index",
+    "maximum", "minimum", "select", "extf", "fptosi", "constant_vector",
     "ArithValue",
     "AddIOp", "AddFOp", "SubIOp", "SubFOp", "MulIOp", "MulFOp",
     "DivSIOp", "DivFOp", "RemSIOp", "RemFOp",
