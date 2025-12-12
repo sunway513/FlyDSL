@@ -17,17 +17,7 @@ def _is_integer_like_type(t: Type) -> bool:
 
 def _is_floating_point_type(t: Type) -> bool:
     """Check if type is floating point."""
-    # Check common float types using isinstance
-    if F32Type.isinstance(t) or F64Type.isinstance(t):
-        return True
-    try:
-        if F16Type.isinstance(t):
-            return True
-    except:
-        pass
-    # Check for f16, bf16, and other float types by checking type name
-    type_str = str(t)
-    return type_str in ['f16', 'f32', 'f64', 'bf16', 'f8E5M2', 'f8E4M3FN']
+    return F32Type.isinstance(t) or F64Type.isinstance(t) or F16Type.isinstance(t)
 
 def _is_index_type(t: Type) -> bool:
     """Check if type is index."""

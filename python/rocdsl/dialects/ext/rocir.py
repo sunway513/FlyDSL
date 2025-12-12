@@ -151,8 +151,6 @@ class TensorView:
         self.store(value, coords)
 
 
-
-
 def _to_index_value(val, loc: Optional[Location] = None):
     """Convert python int or MLIR value to an index-typed MLIR value."""
     val = _unwrap_value(val)

@@ -62,7 +62,7 @@ from mlir.dialects import (
 )
 import mlir.extras.types as T
 from utils import compile_to_hsaco
-from tests.test_common import run_perftest
+from test_common import run_perftest
 
 
 class scf_if:
