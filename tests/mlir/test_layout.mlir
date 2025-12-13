@@ -3,18 +3,18 @@
 module {
   func.func @test_make_layout(%i8: index, %i16: index, %i1: index) -> !rocir.layout<2> {
     // Create shape and stride
-    %shape = rocir.make_shape %i8, %i16 : (index, index) -> !rocir.shape<2>
-    %stride = rocir.make_stride %i1, %i8 : (index, index) -> !rocir.stride<2>
+    %shape = rocir.make_shape %i8, %i16 : (index, index) -> !rocir.shape<(?,?)>
+    %stride = rocir.make_stride %i1, %i8 : (index, index) -> !rocir.stride<(?,?)>
     
     // Create layout from shape and stride
-    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<2>, !rocir.stride<2>) -> !rocir.layout<2>
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<(?,?)>, !rocir.stride<(?,?)>) -> !rocir.layout<2>
     
     return %layout : !rocir.layout<2>
   }
   
-  func.func @test_layout_size(%arg0: !rocir.shape<2>) -> index {
+  func.func @test_layout_size(%arg0: !rocir.shape<(?,?)>) -> index {
     // Query layout size
-    %size = rocir.size %arg0 : !rocir.shape<2> -> index
+    %size = rocir.size %arg0 : !rocir.shape<(?,?)> -> index
     
     return %size : index
   }

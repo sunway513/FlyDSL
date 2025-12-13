@@ -7,9 +7,9 @@ func.func @test_idx2crd() {
   %c128 = arith.constant 128 : index
   
   // Create layout with shape (8, 128) and stride (1, 16)
-  %shape = rocir.make_shape %c8, %c128 : (index, index) -> !rocir.shape<-1>
-  %stride = rocir.make_stride %c1, %c16 : (index, index) -> !rocir.stride<-1>
-  %layout = rocir.make_layout %shape, %stride : (!rocir.shape<-1>, !rocir.stride<-1>) -> !rocir.layout<-1>
+  %shape = rocir.make_shape %c8, %c128 : (index, index) -> !rocir.shape<(?,?)>
+  %stride = rocir.make_stride %c1, %c16 : (index, index) -> !rocir.stride<(?,?)>
+  %layout = rocir.make_layout %shape, %stride : (!rocir.shape<(?,?)>, !rocir.stride<(?,?)>) -> !rocir.layout<2>
   
   // Convert linear index 50 back to coordinate
   // Expected: (2, 3) since 50 = 2*1 + 3*16

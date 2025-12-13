@@ -7,9 +7,9 @@ module {
     %c64 = arith.constant 64 : index
     %c1 = arith.constant 1 : index
     
-    %shape = rocir.make_shape %c32, %c64 : (index, index) -> !rocir.shape<-1>
-    %stride = rocir.make_stride %c64, %c1 : (index, index) -> !rocir.stride<-1>
-    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<-1>, !rocir.stride<-1>) -> !rocir.layout<-1>
+    %shape = rocir.make_shape %c32, %c64 : (index, index) -> !rocir.shape<(?,?)>
+    %stride = rocir.make_stride %c64, %c1 : (index, index) -> !rocir.stride<(?,?)>
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<(?,?,?)>, !rocir.stride<(?,?,?)>) -> !rocir.layout<3>
     
     // Create coordinate (2, 3)
     %c2 = arith.constant 2 : index
@@ -32,9 +32,9 @@ module {
     %c16 = arith.constant 16 : index
     %c1 = arith.constant 1 : index
     
-    %shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<-1>
-    %stride = rocir.make_stride %c16, %c1 : (index, index) -> !rocir.stride<-1>
-    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<-1>, !rocir.stride<-1>) -> !rocir.layout<-1>
+    %shape = rocir.make_shape %c8, %c16 : (index, index) -> !rocir.shape<(?,?)>
+    %stride = rocir.make_stride %c16, %c1 : (index, index) -> !rocir.stride<(?,?)>
+    %layout = rocir.make_layout %shape, %stride : (!rocir.shape<(?,?,?)>, !rocir.stride<(?,?,?)>) -> !rocir.layout<3>
     
     // Convert index 35 to coordinate: row=35/16=2, col=35%16=3
     %c35 = arith.constant 35 : index
@@ -49,10 +49,10 @@ module {
   
   func.func @test_rank() -> index {
     %c0 = arith.constant 0 : index
-    %shape = rocir.make_shape %c0, %c0, %c0 : (index, index, index) -> !rocir.shape<-1>
+    %shape = rocir.make_shape %c0, %c0, %c0 : (index, index, index) -> !rocir.shape<(?,?,?)>
     
     // Get rank of 3D shape
-    %rank = rocir.rank %shape : !rocir.shape<-1> -> index
+    %rank = rocir.rank %shape : !rocir.shape<(?,?,?)> -> index
     
     // CHECK: %[[RANK:.*]] = arith.constant 3 : index
     
