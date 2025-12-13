@@ -192,10 +192,10 @@ def _scale_index(value, factor):
     if isinstance(factor, int):
         if factor == 0:
             return _to_index_value(0)
-        result = value_val
-        for _ in range(int(factor) - 1):
-            result = _unwrap_value(arith.AddIOp(result, value_val).result)
-        return result
+        if factor == 1:
+            return value_val
+        factor_val = _unwrap_value(_to_index_value(int(factor)))
+        return arith.MulIOp(value_val, factor_val).result
     factor_val = _unwrap_value(_to_index_value(factor))
     return arith.MulIOp(value_val, factor_val).result
 
