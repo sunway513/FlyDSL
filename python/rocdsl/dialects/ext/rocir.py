@@ -67,38 +67,88 @@ def _get_insertion_point(ip: Optional[InsertionPoint] = None) -> InsertionPoint:
 
 
 def _try_get_constant_index(v: Value) -> Optional[int]:
-    """Best-effort extract an int from an index-typed constant Value."""
-    try:
-        owner = v.owner
-    except Exception:
+    """Best-effort extract an int from an index-typed Value.
+
+    Supports:
+    - arith.constant
+    - a small set of arithmetic ops when all operands are constant (addi, subi, muli)
+
+    This is intentionally conservative: if we can't prove it's constant, return None.
+    """
+
+    def _get_owner_op(val: Value):
+        try:
+            owner = val.owner
+        except Exception:
+            return None, None
+        op = getattr(owner, "operation", owner)
+        name = getattr(op, "name", None)
+        if name is None and hasattr(op, "operation"):
+            name = getattr(op.operation, "name", None)
+        return owner, op
+
+    def _const_from_op(owner, op) -> Optional[int]:
+        # Operation path (newer bindings)
+        try:
+            if getattr(op, "name", None) == "arith.constant":
+                attrs = getattr(op, "attributes", None)
+                if attrs is None:
+                    return None
+                try:
+                    attr = attrs["value"]
+                except Exception:
+                    attr = None
+                if isinstance(attr, IntegerAttr):
+                    return int(attr.value)
+        except Exception:
+            pass
+
+        # OpView path (older bindings)
+        try:
+            if isinstance(owner, arith.ConstantOp):
+                attr = owner.value
+                if isinstance(attr, IntegerAttr):
+                    return int(attr.value)
+        except Exception:
+            pass
         return None
 
-    # Normalize to an Operation handle (some APIs return OpView, others Operation).
-    op = getattr(owner, "operation", owner)
-    try:
-        if getattr(op, "name", None) == "arith.constant":
-            attrs = getattr(op, "attributes", None)
-            if attrs is None:
+    def _operands(op) -> Optional[List[Value]]:
+        try:
+            return list(op.operands)
+        except Exception:
+            return None
+
+    def _eval(val: Value, depth: int = 0) -> Optional[int]:
+        if depth > 8:
+            return None
+
+        owner, op = _get_owner_op(val)
+        if owner is None or op is None:
+            return None
+
+        c = _const_from_op(owner, op)
+        if c is not None:
+            return c
+
+        opname = getattr(op, "name", None)
+        if opname in ("arith.addi", "arith.subi", "arith.muli"):
+            ops = _operands(op)
+            if not ops or len(ops) != 2:
                 return None
-            try:
-                attr = attrs["value"]
-            except Exception:
-                attr = None
-            if isinstance(attr, IntegerAttr):
-                return int(attr.value)
-    except Exception:
+            a = _eval(ops[0], depth + 1)
+            b = _eval(ops[1], depth + 1)
+            if a is None or b is None:
+                return None
+            if opname == "arith.addi":
+                return a + b
+            if opname == "arith.subi":
+                return a - b
+            if opname == "arith.muli":
+                return a * b
         return None
 
-    # Fallback: OpView path (older bindings)
-    try:
-        if isinstance(owner, arith.ConstantOp):
-            attr = owner.value
-            if isinstance(attr, IntegerAttr):
-                return int(attr.value)
-    except Exception:
-        return None
-
-    return None
+    return _eval(v, 0)
 
 
 def _count_leaves_in_tuple_spec(spec: str) -> int:
@@ -528,7 +578,28 @@ def make_shape(*dims, loc: Optional[Location] = None, ip: Optional[InsertionPoin
         # Fallback: flat shape only
         flat_dims = _flatten_nested(dims)
         rank = len(flat_dims)
-        result_type = ShapeType.get(rank)
+        # If any dimension is a compile-time constant, encode it in the type spec
+        # so downstream passes can "see" static information early:
+        #   !rocir.shape<(4,32)> or partial !rocir.shape<(4,?)>
+        spec_elems = []
+        has_any_const = False
+        for d in flat_dims:
+            v = _unwrap_value(d)
+            const = None
+            if isinstance(v, int):
+                const = v
+            elif isinstance(v, Value):
+                const = _try_get_constant_index(v)
+            if const is not None:
+                has_any_const = True
+                spec_elems.append(str(const))
+            else:
+                spec_elems.append("?")
+        if has_any_const:
+            flat_spec = "(" + ",".join(spec_elems) + ")"
+            result_type = Type.parse(f"!rocir.shape<{flat_spec}>")
+        else:
+            result_type = ShapeType.get(rank)
     
     with ip or InsertionPoint.current:
         return rocir_ops.MakeShapeOp(result_type, [_unwrap_value(d) for d in flat_dims], loc=loc).result
@@ -617,7 +688,27 @@ def make_stride(*strides, loc: Optional[Location] = None, ip: Optional[Insertion
     else:
         flat_strides = _flatten_nested(strides)
         rank = len(flat_strides)
-        result_type = StrideType.get(rank)
+        # Same idea as make_shape: encode constant strides into the type spec
+        # e.g. !rocir.stride<(32,1)> or partial !rocir.stride<(?,1)>
+        spec_elems = []
+        has_any_const = False
+        for s in flat_strides:
+            v = _unwrap_value(s)
+            const = None
+            if isinstance(v, int):
+                const = v
+            elif isinstance(v, Value):
+                const = _try_get_constant_index(v)
+            if const is not None:
+                has_any_const = True
+                spec_elems.append(str(const))
+            else:
+                spec_elems.append("?")
+        if has_any_const:
+            flat_spec = "(" + ",".join(spec_elems) + ")"
+            result_type = Type.parse(f"!rocir.stride<{flat_spec}>")
+        else:
+            result_type = StrideType.get(rank)
     
     with ip or InsertionPoint.current:
         return rocir_ops.MakeStrideOp(result_type, [_unwrap_value(s) for s in flat_strides], loc=loc).result
