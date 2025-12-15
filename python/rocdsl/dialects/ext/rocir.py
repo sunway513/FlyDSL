@@ -6,26 +6,43 @@ from Python code.
 """
 
 from typing import List, Optional, Sequence, Union
-from mlir.ir import (
-    Type,
-    Value,
-    Location,
-    InsertionPoint,
-    IndexType,
-    IntegerAttr,
-    IntegerType,
-    MemRefType,
-)
-from mlir.dialects import memref, arith, scf, gpu
 
-# Import generated ops
-import sys
-import os
-_build_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../build/python_bindings"))
-if _build_dir not in sys.path:
-    sys.path.insert(0, _build_dir)
-import rocir as rocir_ops
-# import _rocirPassesExt  # Auto-register passes  # DISABLED: has symbol issues
+# Import from embedded MLIR Python modules
+try:
+    from _mlir.ir import (
+        Type,
+        Value,
+        Location,
+        InsertionPoint,
+        IndexType,
+        IntegerAttr,
+        IntegerType,
+        MemRefType,
+    )
+    from _mlir.dialects import memref, arith, scf, gpu
+    from _mlir.dialects import rocir as rocir_ops
+except ImportError:
+    # Fallback to system-installed mlir
+    from mlir.ir import (
+        Type,
+        Value,
+        Location,
+        InsertionPoint,
+        IndexType,
+        IntegerAttr,
+        IntegerType,
+        MemRefType,
+    )
+    from mlir.dialects import memref, arith, scf, gpu
+    # Try to import from build directory for generated ops
+    import sys
+    import os
+    from pathlib import Path
+    _rocdsl_root = Path(__file__).resolve().parents[5]
+    _python_packages_dir = _rocdsl_root / "build" / "python_packages" / "rocdsl"
+    if _python_packages_dir.exists():
+        sys.path.insert(0, str(_python_packages_dir))
+    from _mlir.dialects import rocir as rocir_ops
 
 
 

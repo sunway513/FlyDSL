@@ -1,110 +1,84 @@
-# Generate Python bindings for the Rocir dialect family
+include(AddMLIRPython)
 
-add_custom_target(RocirPythonModules)
+add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=rocdsl.${MLIR_PYTHON_PACKAGE_PREFIX}.")
 
-set(LLVM_TARGET_DEFINITIONS ${CMAKE_SOURCE_DIR}/include/rocir/RocirPython.td)
+# Declare Rocir Python sources
+declare_mlir_python_sources(RocirPythonSources)
 
-# Add include path for TableGen
-set(MLIR_TABLEGEN_EXE ${MLIR_TABLEGEN_EXE})
-list(APPEND LLVM_TABLEGEN_FLAGS -I ${CMAKE_SOURCE_DIR}/include)
-list(APPEND LLVM_TABLEGEN_FLAGS -I ${CMAKE_SOURCE_DIR}/include/rocir)
-
-# Generate Python bindings for rocir dialect
-mlir_tablegen(_rocir_ops_gen.py -gen-python-op-bindings -bind-dialect=rocir)
-add_public_tablegen_target(RocirPythonOpsIncGen)
-add_dependencies(RocirPythonModules RocirPythonOpsIncGen)
-
-# Generate Python bindings for the ROCm dialect extension
-mlir_tablegen(_rocir_rocm_ops_gen.py -gen-python-op-bindings -bind-dialect=cute_rocm)
-add_public_tablegen_target(RocirRocmPythonOpsIncGen)
-add_dependencies(RocirPythonModules RocirRocmPythonOpsIncGen)
-
-# Generate Python enum bindings if needed
-mlir_tablegen(_rocir_enum_gen.py -gen-python-enum-bindings)
-add_public_tablegen_target(RocirPythonEnumIncGen)
-add_dependencies(RocirPythonModules RocirPythonEnumIncGen)
-
-# Build Python extension module for pass registration
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-
-# Find pybind11
-execute_process(
-  COMMAND "${Python3_EXECUTABLE}" -m pybind11 --cmakedir
-  OUTPUT_VARIABLE pybind11_DIR
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  RESULT_VARIABLE pybind11_NOTFOUND
+# Declare Rocir dialect Python bindings
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT RocirPythonSources
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+  TD_FILE dialects/RocirOps.td
+  SOURCES
+    dialects/rocir.py
+  DIALECT_NAME rocir
+  GEN_ENUM_BINDINGS
 )
 
-if(NOT pybind11_NOTFOUND)
-  find_package(pybind11 CONFIG)
-endif()
-
-if(pybind11_FOUND)
-  message(STATUS "Found pybind11: ${pybind11_DIR}")
-  
-  pybind11_add_module(_rocirPassesExt RocirPassesModule.cpp)
-  
-  target_include_directories(_rocirPassesExt PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${MLIR_INCLUDE_DIRS}
-    ${LLVM_INCLUDE_DIRS}
-  )
-  
-  # Link to MLIRPythonCAPI.so to share the global pass registry with Python MLIR
-  get_filename_component(MLIR_BUILD_DIR "${MLIR_DIR}/../../.." ABSOLUTE)
-  find_library(MLIR_PYTHON_CAPI_LIB
-    NAMES MLIRPythonCAPI
-    PATHS ${MLIR_BUILD_DIR}/tools/mlir/python_packages/mlir_core/mlir/_mlir_libs
-    NO_DEFAULT_PATH
-  )
-  
-  if(MLIR_PYTHON_CAPI_LIB)
-    message(STATUS "Found MLIRPythonCAPI: ${MLIR_PYTHON_CAPI_LIB}")
-  else()
-    message(FATAL_ERROR "MLIRPythonCAPI library not found!")
-  endif()
-  
-  target_link_libraries(_rocirPassesExt PRIVATE
+# Declare Python extension for pass registration
+declare_mlir_python_extension(RocirPythonSources.Passes
+  MODULE_NAME _rocirPasses
+  ADD_TO_PARENT RocirPythonSources
+  PYTHON_BINDINGS_LIBRARY nanobind
+  SOURCES
+    RocirRegisterPasses.cpp
+  PRIVATE_LINK_LIBS
+    LLVMSupport
     RocirDialect
     RocirTransforms
-    ${MLIR_PYTHON_CAPI_LIB}
-  )
-  set_target_properties(_rocirPassesExt PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
-  
-  # Install to python_bindings directory
-  set_target_properties(_rocirPassesExt PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-  )
-  
-  add_dependencies(RocirPythonModules _rocirPassesExt)
-  
-  message(STATUS "Rocir passes Python extension module will be built")
-else()
-  message(WARNING "pybind11 not found - Rocir passes will not be available in Python")
-endif()
-
-# Fix TableGen-generated relative imports for standalone usage
-# TableGen generates "from ._ods_common import ..." which assumes the code is part of mlir.dialects package
-# Since we use build/python_bindings directly in PYTHONPATH, we need absolute imports
-add_custom_command(
-    TARGET RocirPythonOpsIncGen POST_BUILD
-    COMMAND sed -i 's/from \._ods_common/from mlir.dialects._ods_common/g' 
-        ${CMAKE_CURRENT_BINARY_DIR}/_rocir_ops_gen.py
-    COMMENT "Fixing imports in generated Python bindings"
+  EMBED_CAPI_LINK_LIBS
+    MLIRCAPIIR
+    MLIRCAPIRocir
+    MLIRCAPITransforms
+    MLIRCAPIRegisterEverything
 )
 
-add_custom_command(
-    TARGET RocirRocmPythonOpsIncGen POST_BUILD
-    COMMAND sed -i 's/from \._ods_common/from mlir.dialects._ods_common/g' 
-        ${CMAKE_CURRENT_BINARY_DIR}/_rocir_rocm_ops_gen.py
-    COMMENT "Fixing imports in generated Python bindings for the ROCm dialect"
+# Define the Python sources to include from upstream MLIR
+set(RocirMLIRPythonSources
+  RocirPythonSources
+  MLIRPythonSources.Core
+  MLIRPythonSources.Dialects.builtin
+  MLIRPythonSources.Dialects.arith
+  MLIRPythonSources.Dialects.math
+  MLIRPythonSources.Dialects.memref
+  MLIRPythonSources.Dialects.gpu
+  MLIRPythonSources.Dialects.func
+  MLIRPythonSources.Dialects.cf
+  MLIRPythonSources.Dialects.scf
+  MLIRPythonSources.Dialects.vector
+  MLIRPythonSources.Dialects.llvm
+  MLIRPythonSources.ExecutionEngine
 )
 
-# Copy Python wrapper files to build directory at configure time
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/rocir.py
-    ${CMAKE_CURRENT_BINARY_DIR}/rocir.py
-    COPYONLY
+# Create common CAPI library for Python bindings
+add_mlir_python_common_capi_library(RocirPythonCAPI
+  INSTALL_COMPONENT RocirPythonModules
+  INSTALL_DESTINATION "${MLIR_BINDINGS_PYTHON_INSTALL_PREFIX}/_mlir_libs"
+  OUTPUT_DIRECTORY "${MLIR_BINARY_DIR}/${MLIR_BINDINGS_PYTHON_INSTALL_PREFIX}/_mlir_libs"
+  RELATIVE_INSTALL_ROOT "../../../.."
+  DECLARED_SOURCES ${RocirMLIRPythonSources}
 )
 
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/__init__.py "")
+# Set the root prefix for Python modules
+set(RocirPythonModules_ROOT_PREFIX "${MLIR_BINARY_DIR}/${MLIR_BINDINGS_PYTHON_INSTALL_PREFIX}")
+
+# Add MLIR Python modules
+add_mlir_python_modules(RocirPythonModules
+  ROOT_PREFIX "${RocirPythonModules_ROOT_PREFIX}"
+  INSTALL_PREFIX "${MLIR_BINDINGS_PYTHON_INSTALL_PREFIX}"
+  DECLARED_SOURCES "${RocirMLIRPythonSources}"
+  COMMON_CAPI_LINK_LIBS
+    RocirPythonCAPI
+)
+
+# Copy the pure Python sources (rocdsl package) to the build directory
+add_custom_target(CopyRocirPythonSources ALL
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${PROJECT_SOURCE_DIR}/python/rocdsl"
+    "${MLIR_BINARY_DIR}/python_packages/rocdsl"
+  COMMENT "Copying python/rocdsl sources to build/python_packages/rocdsl"
+  DEPENDS RocirPythonModules
+)
+
+add_dependencies(CopyRocirPythonSources RocirPythonModules)

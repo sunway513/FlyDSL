@@ -5,8 +5,15 @@ for Rocir dialect lowering and optimization.
 """
 
 from typing import Optional, Union, List
-from mlir.ir import Module as ir_Module, Context
-from mlir.passmanager import PassManager
+
+# Import from embedded MLIR Python modules
+try:
+    from _mlir.ir import Module as ir_Module, Context
+    from _mlir.passmanager import PassManager
+except ImportError:
+    # Fallback to system-installed mlir
+    from mlir.ir import Module as ir_Module, Context
+    from mlir.passmanager import PassManager
 
 from rocdsl.compiler.context import ensure_rocir_python_extensions
 

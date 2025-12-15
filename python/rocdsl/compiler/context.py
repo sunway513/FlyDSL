@@ -6,30 +6,39 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from mlir import ir
+# Import from embedded MLIR Python modules
+try:
+    # First try to import from the build directory (development mode)
+    _ROCIR_PYTHON_PATH = Path(__file__).resolve().parents[3] / "build" / "python_packages" / "rocdsl"
+    if _ROCIR_PYTHON_PATH.exists():
+        _mlir_path = str(_ROCIR_PYTHON_PATH / "_mlir")
+        if _mlir_path not in sys.path:
+            sys.path.insert(0, _mlir_path)
+    
+    from _mlir import ir
+except ImportError:
+    # Fallback to system-installed mlir (for backward compatibility)
+    from mlir import ir
 
-_ROCIR_BINDINGS_PATH = Path(__file__).resolve().parents[3] / "build" / "python_bindings"
 _PASSES_MODULE = None
-
-
-def _ensure_bindings_path_on_sys_path():
-    if not _ROCIR_BINDINGS_PATH.exists():
-        raise RuntimeError(
-            f"Rocir Python bindings not found at {_ROCIR_BINDINGS_PATH}. "
-            "Run `cmake --build build --target RocirPythonModules` to generate them."
-        )
-    path_str = str(_ROCIR_BINDINGS_PATH)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 
 def ensure_rocir_python_extensions(context: ir.Context):
     """Ensure Rocir passes and dialect are registered for the given context."""
     global _PASSES_MODULE
-    _ensure_bindings_path_on_sys_path()
     if _PASSES_MODULE is None:
-        _PASSES_MODULE = importlib.import_module("_rocirPassesExt")
-    _PASSES_MODULE.register_dialect(context)
+        # Import the embedded passes module
+        try:
+            from _mlir._mlir_libs import _rocirPasses as _PASSES_MODULE
+        except ImportError:
+            # Fallback for old build system
+            import _rocirPasses as _PASSES_MODULE
+    
+    # Register dialects using the new nanobind interface
+    from _mlir import ir as mlir_ir
+    dialect_registry = mlir_ir.DialectRegistry()
+    _PASSES_MODULE.register_dialects(dialect_registry._CAPIPtr)
+    context.append_dialect_registry(dialect_registry)
 
 
 @dataclass
