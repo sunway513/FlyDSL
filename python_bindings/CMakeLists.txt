@@ -1,6 +1,8 @@
 include(AddMLIRPython)
 
-add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=rocdsl.${MLIR_PYTHON_PACKAGE_PREFIX}.")
+# Use the embedded MLIR package as a top-level package (`_mlir.*`), matching the
+# install layout under build/python_packages/rocdsl/_mlir.
+add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=${MLIR_PYTHON_PACKAGE_PREFIX}.")
 
 # Declare Rocir Python sources
 declare_mlir_python_sources(RocirPythonSources)
@@ -14,6 +16,18 @@ declare_mlir_dialect_python_bindings(
     dialects/rocir.py
   DIALECT_NAME rocir
   GEN_ENUM_BINDINGS
+)
+
+# ROCDL dialect (upstream). Some RocDSL helpers import `mlir.dialects.rocdl`,
+# but not all MLIR builds export pre-declared python source groups for it. We
+# generate it here from the installed TableGen files.
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT RocirPythonSources
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+  TD_FILE dialects/ROCDLOps.td
+  SOURCES
+    dialects/rocdl.py
+  DIALECT_NAME rocdl
 )
 
 # Declare Python extension for pass registration

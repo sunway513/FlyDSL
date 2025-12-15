@@ -3,7 +3,7 @@
 #ifndef ROCIR_OPS
 #define ROCIR_OPS
 
-include "RocirDialect.td"
+include "rocir/RocirDialect.td"
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 

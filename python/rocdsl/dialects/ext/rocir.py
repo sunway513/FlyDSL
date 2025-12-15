@@ -864,8 +864,8 @@ def crd2idx(coord: Value, layout: Value, loc: Optional[Location] = None, ip: Opt
     result_type = IndexType.get()
     
     with ip or InsertionPoint.current:
-        op = rocir_ops.Crd2IdxOp(_unwrap_value(coord), _unwrap_value(layout), results=[result_type], loc=loc, ip=ip)
-        return op.results[0]
+        op = rocir_ops.Crd2IdxOp(result_type, _unwrap_value(coord), _unwrap_value(layout), loc=loc, ip=ip)
+        return op.result
 
 
 def idx2crd(idx: Value, layout: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -934,8 +934,8 @@ def size(layout_or_tensor, mode: Optional[List[int]] = None, loc: Optional[Locat
                 return _unwrap_value(layout_or_tensor.shape[idx])
     
     with ip or InsertionPoint.current:
-        op = rocir_ops.SizeOp(_unwrap_value(layout_or_tensor), results=[result_type], loc=loc, ip=ip)
-        return op.results[0]
+        op = rocir_ops.SizeOp(result_type, _unwrap_value(layout_or_tensor), loc=loc, ip=ip)
+        return op.result
 
 
 def cosize(layout: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -954,8 +954,8 @@ def cosize(layout: Value, loc: Optional[Location] = None, ip: Optional[Insertion
     result_type = IndexType.get()
     
     with ip or InsertionPoint.current:
-        op = rocir_ops.CosizeOp(_unwrap_value(layout), results=[result_type], loc=loc, ip=ip)
-        return op.results[0]
+        op = rocir_ops.CosizeOp(result_type, _unwrap_value(layout), loc=loc, ip=ip)
+        return op.result
 
 
 def rank(shape_or_layout: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -974,8 +974,8 @@ def rank(shape_or_layout: Value, loc: Optional[Location] = None, ip: Optional[In
     result_type = IndexType.get()
     
     with ip or InsertionPoint.current:
-        op = rocir_ops.RankOp(_unwrap_value(shape_or_layout), results=[result_type], loc=loc, ip=ip)
-        return op.results[0]
+        op = rocir_ops.RankOp(result_type, _unwrap_value(shape_or_layout), loc=loc, ip=ip)
+        return op.result
 
 
 def get_shape(layout: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1044,7 +1044,7 @@ def get(input: Value, index: Value, loc: Optional[Location] = None, ip: Optional
     result_type = IndexType.get()
     
     with ip or InsertionPoint.current:
-        return rocir_ops.GetOp(input=_unwrap_value(input), idx=_unwrap_value(index), results=[result_type], loc=loc, ip=ip).result
+        return rocir_ops.GetOp(result_type, _unwrap_value(input), _unwrap_value(index), loc=loc, ip=ip).result
 
 
 def composition(layout_a: Value, layout_b: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:

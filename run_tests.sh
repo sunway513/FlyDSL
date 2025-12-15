@@ -1,7 +1,29 @@
 #!/bin/bash
 # Rocir Test Suite - Organized by test type
 
-ROCIR_OPT="./build/tools/rocir-opt/rocir-opt"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
+# Prefer the new tool location (LLVM_RUNTIME_OUTPUT_INTDIR = build/bin),
+# but keep a fallback for older build layouts.
+ROCIR_OPT="${SCRIPT_DIR}/build/bin/rocir-opt"
+if [ ! -x "${ROCIR_OPT}" ]; then
+  ROCIR_OPT="${SCRIPT_DIR}/build/tools/rocir-opt/rocir-opt"
+fi
+if [ ! -x "${ROCIR_OPT}" ]; then
+  if [ -d "${SCRIPT_DIR}/build" ]; then
+    echo "rocir-opt not found. Building it..."
+    cmake --build "${SCRIPT_DIR}/build" --target rocir-opt -j"$(nproc)" || {
+      echo "Error: failed to build rocir-opt"
+      exit 1
+    }
+  fi
+  if [ ! -x "${ROCIR_OPT}" ]; then
+    echo "Error: rocir-opt not found."
+    echo "  Try: ./build.sh"
+    echo "  Or:  cmake --build build --target rocir-opt -j\$(nproc)"
+    exit 1
+  fi
+fi
 PASS="--rocir-coord-lowering"
 
 echo "========================================================================"
@@ -9,12 +31,10 @@ echo "Rocir Test Suite"
 echo "========================================================================"
 echo ""
 
-# Set up Python path
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-export PYTHONPATH=$MLIR_PATH/tools/mlir/python_packages/mlir_core:$PYTHONPATH
-export PYTHONPATH=$PYTHONPATH:$SCRIPT_DIR/build/python_bindings
-export PYTHONPATH=$PYTHONPATH:$SCRIPT_DIR/python
-export PYTHONPATH=$PYTHONPATH:$SCRIPT_DIR
+# Set up Python path for embedded MLIR bindings.
+# - build/python_packages/rocdsl: contains `_mlir/`, and after build.sh also `rocdsl/` and `mlir/` shim
+# - python/: keeps running from sources convenient during development
+export PYTHONPATH="${SCRIPT_DIR}/build/python_packages/rocdsl:${SCRIPT_DIR}/python:${SCRIPT_DIR}:${PYTHONPATH}"
 
 #=============================================================================
 MLIR_TEST_COUNT=0
@@ -55,12 +75,13 @@ for test_file in tests/python/ir/test_*.py; do
         IR_TEST_COUNT=$((IR_TEST_COUNT + 1))
         test_name=$(basename "$test_file" .py)
         echo "Running: $test_name"
-        python3 "$test_file" > /dev/null 2>&1
+        python3 "$test_file" > /tmp/${test_name}.log 2>&1
         if [ $? -eq 0 ]; then
             echo "   PASS"
             IR_PASS_COUNT=$((IR_PASS_COUNT + 1))
         else
             echo "   FAIL"
+            echo "      Log: /tmp/${test_name}.log"
         fi
     fi
 done

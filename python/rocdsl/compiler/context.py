@@ -6,18 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# Import from embedded MLIR Python modules
+# Import from embedded MLIR Python modules (preferred). If unavailable, fall back
+# to the upstream `mlir` package (which may be provided by our shim under
+# python/mlir/ or by a system installation).
 try:
-    # First try to import from the build directory (development mode)
-    _ROCIR_PYTHON_PATH = Path(__file__).resolve().parents[3] / "build" / "python_packages" / "rocdsl"
-    if _ROCIR_PYTHON_PATH.exists():
-        _mlir_path = str(_ROCIR_PYTHON_PATH / "_mlir")
-        if _mlir_path not in sys.path:
-            sys.path.insert(0, _mlir_path)
-    
     from _mlir import ir
 except ImportError:
-    # Fallback to system-installed mlir (for backward compatibility)
     from mlir import ir
 
 _PASSES_MODULE = None
@@ -39,6 +33,14 @@ def ensure_rocir_python_extensions(context: ir.Context):
     dialect_registry = mlir_ir.DialectRegistry()
     _PASSES_MODULE.register_dialects(dialect_registry._CAPIPtr)
     context.append_dialect_registry(dialect_registry)
+
+    # Register LLVM IR translations (required for gpu-module-to-binary, etc).
+    _PASSES_MODULE.register_llvm_translations(context._CAPIPtr)
+
+    # Load all available dialects so op/type registration is available for
+    # building IR (e.g. arith.constant) and parsing textual IR (e.g. func.func).
+    # Without this, MLIR will report "operation was not registered".
+    context.load_all_available_dialects()
 
 
 @dataclass
