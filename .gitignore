@@ -1,38 +1,17 @@
-# Build directories
+# Build outputs
 build/
-build_*/
-cmake-build-*/
-*dump*
-.cache
+*.log
 
-# Python
+# MLIR/nanobind generated type stubs (generated during build)
+python_bindings/mlir/
+
+# Backups
+*.old
+
+# Generated helper scripts
+setup_env.sh
+
+# Python caches
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg
-*.egg-info/
-dist/
-.eggs/
-lib/python*/site-packages/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Compiled files
-*.o
-*.a
-*.cubin
-*.ptx
-
-# Temporary files
-/tmp/
-*.tmp
-
-# OS
-.DS_Store
-Thumbs.db
+*.pyc
+.cache/

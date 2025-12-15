@@ -6,30 +6,41 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from mlir import ir
+# Import from embedded MLIR Python modules (preferred). If unavailable, fall back
+# to the upstream `mlir` package (which may be provided by our shim under
+# python/mlir/ or by a system installation).
+try:
+    from _mlir import ir
+except ImportError:
+    from mlir import ir
 
-_ROCIR_BINDINGS_PATH = Path(__file__).resolve().parents[3] / "build" / "python_bindings"
 _PASSES_MODULE = None
-
-
-def _ensure_bindings_path_on_sys_path():
-    if not _ROCIR_BINDINGS_PATH.exists():
-        raise RuntimeError(
-            f"Rocir Python bindings not found at {_ROCIR_BINDINGS_PATH}. "
-            "Run `cmake --build build --target RocirPythonModules` to generate them."
-        )
-    path_str = str(_ROCIR_BINDINGS_PATH)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 
 def ensure_rocir_python_extensions(context: ir.Context):
     """Ensure Rocir passes and dialect are registered for the given context."""
     global _PASSES_MODULE
-    _ensure_bindings_path_on_sys_path()
     if _PASSES_MODULE is None:
-        _PASSES_MODULE = importlib.import_module("_rocirPassesExt")
-    _PASSES_MODULE.register_dialect(context)
+        # Import the embedded passes module
+        try:
+            from _mlir._mlir_libs import _rocirPasses as _PASSES_MODULE
+        except ImportError:
+            # Fallback for old build system
+            import _rocirPasses as _PASSES_MODULE
+    
+    # Register dialects using the new nanobind interface
+    from _mlir import ir as mlir_ir
+    dialect_registry = mlir_ir.DialectRegistry()
+    _PASSES_MODULE.register_dialects(dialect_registry._CAPIPtr)
+    context.append_dialect_registry(dialect_registry)
+
+    # Register LLVM IR translations (required for gpu-module-to-binary, etc).
+    _PASSES_MODULE.register_llvm_translations(context._CAPIPtr)
+
+    # Load all available dialects so op/type registration is available for
+    # building IR (e.g. arith.constant) and parsing textual IR (e.g. func.func).
+    # Without this, MLIR will report "operation was not registered".
+    context.load_all_available_dialects()
 
 
 @dataclass

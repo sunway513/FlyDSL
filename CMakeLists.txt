@@ -25,6 +25,8 @@ if(MLIR_FOUND)
     include(AddLLVM)
     include(AddMLIR)
     include(HandleLLVMOptions)
+    include(MLIRDetectPythonEnv)
+    mlir_configure_python_dev_packages()
     
     include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
     include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
@@ -61,6 +63,14 @@ endif()
 if(BUILD_RUNTIME)
 #    add_subdirectory(runtime)
 endif()
+
+set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
+set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+# Configure Python package prefix
+set(MLIR_PYTHON_PACKAGE_PREFIX "_mlir" CACHE STRING "" FORCE)
+set(MLIR_BINDINGS_PYTHON_INSTALL_PREFIX "python_packages/rocdsl/${MLIR_PYTHON_PACKAGE_PREFIX}" CACHE STRING "" FORCE)
 
 add_subdirectory(lib)
 add_subdirectory(tools)
