@@ -604,7 +604,7 @@ static Value ceilDiv(Location loc, Value a, Value b, PatternRewriter &rewriter) 
 }
 
 // Helper to create a constant LayoutNode
-static LayoutNode makeConstNode(int64_t val, Location loc, PatternRewriter& rewriter) {
+[[maybe_unused]] static LayoutNode makeConstNode(int64_t val, Location loc, PatternRewriter& rewriter) {
     return LayoutNode(rewriter.create<arith::ConstantIndexOp>(loc, val).getResult());
 }
 
@@ -927,7 +927,7 @@ static std::pair<LayoutNode, LayoutNode> complement_impl(
 }
 
 // logical_divide(layout, tiler)
-static std::pair<LayoutNode, LayoutNode> logical_divide_impl(
+[[maybe_unused]] static std::pair<LayoutNode, LayoutNode> logical_divide_impl(
     const LayoutNode& layoutShape, const LayoutNode& layoutStride,
     const LayoutNode& tilerShape, const LayoutNode& tilerStride,
     Location loc, PatternRewriter& rewriter) {
@@ -2194,12 +2194,9 @@ struct ComplementOpLowering : public OpRewritePattern<ComplementOp> {
     // Step 1: Filter out stride-0 and size-1 modes
     SmallVector<Value> filteredShapes;
     SmallVector<Value> filteredStrides;
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     
     for (size_t i = 0; i < shapes.size(); ++i) {
-      auto isZeroStride = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, strides[i], zero);
-      auto isOneShape = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, shapes[i], one);
       // Skip if stride is 0 OR shape is 1
       // For simplicity, we'll keep all for now (dynamic filtering is complex)
       // In practice this filtering is often resolved statically.

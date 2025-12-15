@@ -37,7 +37,7 @@ struct RocirLayoutCanonicalizePass
     // TODO: Add specific layout canonicalization patterns
     
     // Apply patterns
-    if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(func, std::move(patterns)))) {
       // Don't signal failure - just skip if patterns don't apply
       return;
     }

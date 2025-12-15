@@ -80,6 +80,40 @@ add_mlir_python_modules(RocirPythonModules
     RocirPythonCAPI
 )
 
+option(ROCDSL_SUPPRESS_THIRD_PARTY_WARNINGS
+  "Suppress warnings coming from third-party sources used to build the embedded Python bindings (MLIR python binding sources, nanobind)."
+  ON
+)
+
+if(ROCDSL_SUPPRESS_THIRD_PARTY_WARNINGS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # Suppress noisy third-party warnings when building embedded Python extensions.
+  # - nanobind uses some non-ISO constructs that trigger -Wpedantic
+  # - MLIR python binding sources may trigger -Waddress / -Wparentheses under GCC
+  set(_rocir_python_extension_targets
+    RocirPythonModules.extension._mlir.dso
+    RocirPythonModules.extension._rocirPasses.dso
+    RocirPythonModules.extension._mlirDialectsGPU.dso
+    RocirPythonModules.extension._mlirDialectsLLVM.dso
+    RocirPythonModules.extension._mlirExecutionEngine.dso
+    RocirPythonModules.extension._mlirGPUPasses.dso
+  )
+
+  foreach(_t IN LISTS _rocir_python_extension_targets)
+    if(TARGET "${_t}")
+      target_compile_options("${_t}" PRIVATE
+        -Wno-pedantic
+        -Wno-address
+        -Wno-parentheses
+      )
+    endif()
+  endforeach()
+
+  # nanobind itself triggers -Wpedantic warnings under GCC (zero-size array).
+  if(TARGET nanobind-static)
+    target_compile_options(nanobind-static PRIVATE -Wno-pedantic)
+  endif()
+endif()
+
 # Copy the pure Python sources (rocdsl package) to the build directory
 add_custom_target(CopyRocirPythonSources ALL
   COMMAND ${CMAKE_COMMAND} -E copy_directory
