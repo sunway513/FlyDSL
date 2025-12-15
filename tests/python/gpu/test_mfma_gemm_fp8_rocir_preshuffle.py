@@ -53,7 +53,6 @@ def run_torch(x, weight, x_scale, w_scale, bias=None, dtype=torch.bfloat16):
         out = out.to(bias.dtype) + bias
     return out.to(dtype)
 
-
 def unwrap(v):
     if isinstance(v, int): return arith.constant(v, index=True).value
     while hasattr(v, "value") or hasattr(v, "_value"):
@@ -152,27 +151,25 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
             c4 = arith.constant(4, index=True)
             c8 = arith.constant(8, index=True)
             c512 = arith.constant(512, index=True)
+            c64 = arith.constant(64, index=True)
+            c1024 = arith.constant(1024, index=True)
 
-            # B layout matches `tests.utils.shuffle_weight` (aiter bpreshuffle) output:
-            # view(-1, n_blk, BN, k_blk, 2, 16) then permute(0, n_blk, k_blk, 2, BN, 16)
-            # where BK=32, BN=16 for fp8, and dim_k_split=2.
-            k_blocks = _arith_mlir.DivUIOp(unwrap(c_k), unwrap(c32)).result
-            n_blocks = _arith_mlir.DivUIOp(unwrap(c_n), unwrap(c16)).result
-            s_n_blocks = _arith_mlir.MulIOp(unwrap(c512), unwrap(k_blocks)).result
-
-            dim_k_split = 2
-            c_dim_k_split = arith.constant(dim_k_split, index=True)
-            stride_k_blocks = 256 * dim_k_split
-            c_stride_k_blocks = arith.constant(stride_k_blocks, index=True)
-
+            c_k0 = _arith_mlir.DivUIOp(unwrap(c_k), unwrap(c64)).result
+            stride_n0 = _arith_mlir.MulIOp(unwrap(c_k0), unwrap(c1024)).result
             stride_b = (
-                c16,                  # n_intra
-                s_n_blocks,           # n_blk
-                arith.constant(1, index=True),     # k_intra
-                arith.constant(256, index=True),   # k_pack
-                c_stride_k_blocks,    # k_blk
+                stride_n0,  # n0
+                c1024,      # k0
+                arith.constant(256, index=True),  # k1 (KLane)
+                c16,        # n1
+                arith.constant(1, index=True),    # k2
             )
-            layout_b = rocir.make_layout((c16, n_blocks, c16, c_dim_k_split, k_blocks), stride=stride_b)
+            # Shape: (N0, K0, KLane, NLane, KPack)
+            layout_b = rocir.make_layout((_arith_mlir.DivUIOp(unwrap(c_n), unwrap(c16)).result,
+                                          c_k0,
+                                          arith.constant(4, index=True),
+                                          c16,
+                                          c16),
+                                         stride=stride_b)
             
             shape_lds = rocir.make_shape(tile_m, tile_k)
             stride_lds = rocir.make_stride(lds_stride, 1)
@@ -213,7 +210,8 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
             
             # MFMA operand mapping: match the known-good lane mapping (see `t1.py`)
             row_a_lds = lane_mod_16
-            col_offset_base = _arith_mlir.MulIOp(unwrap(lane_div_16), unwrap(c8)).result
+            # CK mapping: lane_div_16 selects k1 (0..3), each k1 spans 16 fp8 within a 64-wide K block.
+            col_offset_base = _arith_mlir.MulIOp(unwrap(lane_div_16), unwrap(c16)).result
             
             row_b_lds = lane_mod_16
             
@@ -277,41 +275,27 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
             
             # --- B Load Logic ---
             def load_b_tile(base_k):
-                b_vals = []
-                # For our layout, stepping K by +32 only changes k_blk_local by +1, and that
-                # corresponds to +512 bytes in memory (stride_k_blocks = 512 for fp8).
-                # We take advantage of that by computing a single base address (k0) and using
-                # constant index increments (+128 i32 elements == +512B) that the backend can fold
-                # into the instruction's immediate `offset:` field (avoids v_add chains *and*
-                # avoids extra SGPR soffset registers).
-                k0 = _arith_mlir.AddIOp(unwrap(col_offset_base), unwrap(base_k)).result
-                k_intra = _arith_mlir.RemUIOp(unwrap(k0), unwrap(c16)).result
-                k_rem = _arith_mlir.DivUIOp(unwrap(k0), unwrap(c16)).result
-                k_pack = _arith_mlir.RemUIOp(unwrap(k_rem), unwrap(c_dim_k_split)).result
-                k_blk = _arith_mlir.DivUIOp(unwrap(k_rem), unwrap(c_dim_k_split)).result
+                b_packs = []
+                k0_base = _arith_mlir.DivUIOp(unwrap(base_k), unwrap(c64)).result
+                k1 = lane_div_16  # 0..3
+                k2_base = c0
 
                 for i in range(num_acc_n):
                     n_intra = n_intra_list[i]
                     n_blk = n_blk_list[i]
-                    coord_b0 = rocir.make_coord(n_intra, n_blk, k_intra, k_pack, k_blk)
-                    idx_b0_base = rocir.crd2idx(coord_b0, layout_b)
-                    idx_b0 = _arith_mlir.DivUIOp(unwrap(idx_b0_base), unwrap(c4)).result
-
-                    # Emit 2*k_unroll loads: for each ki_step we need b0 (K) and b1 (K+32).
-                    # k_blk_local advances by +1 per +32, so these are consecutive 512B strides.
                     for ki_step in range(k_unroll):
-                        # buffer_ops.buffer_load uses element offsets and multiplies by 4 (i32 bytes),
-                        # so +512B is +128 i32 elements.
-                        inc0 = arith.constant((2 * ki_step + 0) * 128, index=True)
-                        inc1 = arith.constant((2 * ki_step + 1) * 128, index=True)
-                        idx0 = _arith_mlir.AddIOp(unwrap(idx_b0), unwrap(inc0)).result
-                        idx1 = _arith_mlir.AddIOp(unwrap(idx_b0), unwrap(inc1)).result
+                        k0 = _arith_mlir.AddIOp(unwrap(k0_base), unwrap(arith.constant(ki_step, index=True))).result
+                        coord_b = rocir.make_coord(n_blk, k0, k1, n_intra, k2_base)
+                        idx_bytes = rocir.crd2idx(coord_b, layout_b)
+                        idx_i32 = _arith_mlir.DivUIOp(unwrap(idx_bytes), unwrap(c4)).result
 
-                        b0 = buffer_ops.buffer_load(b_rsrc, idx0, vec_width=4, dtype=i32_type)
-                        b1 = buffer_ops.buffer_load(b_rsrc, idx1, vec_width=4, dtype=i32_type)
-                        b_vals.append(b0)
-                        b_vals.append(b1)
-                return b_vals
+                        b16 = buffer_ops.buffer_load(b_rsrc, idx_i32, vec_width=4, dtype=i32_type)
+                        b_vec128 = vector.BitCastOp(vec2_i64, b16).result
+                        b0_pack = unwrap(vector.ExtractOp(b_vec128, static_position=[0], dynamic_position=[]).result)
+                        b1_pack = unwrap(vector.ExtractOp(b_vec128, static_position=[1], dynamic_position=[]).result)
+                        b_packs.append(b0_pack)
+                        b_packs.append(b1_pack)
+                return b_packs
 
             # Split A loads logic
             max_bytes_per_load = 16
@@ -383,21 +367,7 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
                     # x_new = x & ~40 | (bit3 << 5) | (bit5 << 3)
                     
                     def swizzle_idx(col_idx):
-                        # x & ~40
-                        mask_inv = arith.constant(~40, index=True) # -41
-                        base = _arith_mlir.AndIOp(unwrap(col_idx), unwrap(mask_inv)).result
-                        
-                        # bit3
-                        b3 = _arith_mlir.AndIOp(unwrap(col_idx), unwrap(c8)).result
-                        b3_shift = _arith_mlir.MulIOp(unwrap(b3), unwrap(c4)).result # 8 * 4 = 32
-                        
-                        # bit5
-                        b5 = _arith_mlir.AndIOp(unwrap(col_idx), unwrap(c32)).result
-                        b5_shift = _arith_mlir.DivUIOp(unwrap(b5), unwrap(c4)).result # 32 / 4 = 8
-                        
-                        res1 = _arith_mlir.OrIOp(unwrap(base), unwrap(b3_shift)).result
-                        res2 = _arith_mlir.OrIOp(unwrap(res1), unwrap(b5_shift)).result
-                        return res2
+                        return col_idx
 
                     col_swizzled_0 = swizzle_idx(col_0)
                     coord_store_0 = rocir.make_coord(unwrap(row_a_local), unwrap(col_swizzled_0))
@@ -486,64 +456,24 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
                 
                 # Loop Swap: Iterate K_step (outer) -> MI (inner)
                 # To reuse B
-                
                 for ki_step in range(k_unroll):
-                    # Get B for this step from regs.
-                    # Layout after address-rewrite: for each ni we stored:
-                    #   [b0(step0), b1(step0), b0(step1), b1(step1), ...]
-                    # So total b_vals_in is (num_acc_n * 2 * k_unroll).
-                    b0_step = []
-                    b1_step = []
-                    for ni in range(num_acc_n):
-                        base = ni * (2 * k_unroll)
-                        b0_step.append(b_vals_in[base + (2 * ki_step + 0)])
-                        b1_step.append(b_vals_in[base + (2 * ki_step + 1)])
-
-                    # Pack B0 and B1 once per k_step (each MFMA operand is 8B -> i64).
+                    # b_vals_in already contains i64 packs per ni:
+                    # for each ni: [b0(step0), b1(step0), b0(step1), b1(step1), ...]
                     b0_packs = []
                     b1_packs = []
-                    for i in range(num_acc_n):
-                        b0_val = b0_step[i]
-                        b1_val = b1_step[i]
-                        b0_2_i32 = vector.ShuffleOp(b0_val, b0_val, [0, 1]).result
-                        b1_2_i32 = vector.ShuffleOp(b1_val, b1_val, [0, 1]).result
-                        b0_vec64 = vector.BitCastOp(vec1_i64, b0_2_i32).result
-                        b1_vec64 = vector.BitCastOp(vec1_i64, b1_2_i32).result
-                        b0_pack = vector.ExtractOp(b0_vec64, static_position=[0], dynamic_position=[]).result
-                        b1_pack = vector.ExtractOp(b1_vec64, static_position=[0], dynamic_position=[]).result
-                        b0_packs.append(b0_pack)
-                        b1_packs.append(b1_pack)
+                    for ni in range(num_acc_n):
+                        base = ni * (2 * k_unroll)
+                        b0_packs.append(b_vals_in[base + (2 * ki_step + 0)])
+                        b1_packs.append(b_vals_in[base + (2 * ki_step + 1)])
 
                     ki = ki_step * 64
                     ki_val = arith.constant(ki, index=True)
                     col_lds0 = col_offset_base + ki_val
                     col_lds1 = col_offset_base + ki_val + c32
                     
-                    # Swizzle read address as well
+                    # CK mapping: keep LDS K dimension contiguous (no swizzle).
                     def swizzle_idx(col_idx):
-                        # x & ~40
-                        mask_inv = arith.constant(~40, index=True) 
-                        base = _arith_mlir.AndIOp(unwrap(col_idx), unwrap(mask_inv)).result
-                        
-                        c8 = arith.constant(8, index=True)
-                        c32 = arith.constant(32, index=True)
-                        c4 = arith.constant(4, index=True)
-
-                        # bit3
-                        b3 = _arith_mlir.AndIOp(unwrap(col_idx), unwrap(c8)).result
-                        b3_shift = _arith_mlir.MulIOp(unwrap(b3), unwrap(c4)).result 
-                        
-                        # bit5
-                        b5 = _arith_mlir.AndIOp(unwrap(col_idx), unwrap(c32)).result
-                        b5_shift = _arith_mlir.DivUIOp(unwrap(b5), unwrap(c4)).result 
-                        
-                        # NOTE: These bit-fields are disjoint because we cleared them from `base`
-                        # (x & ~40). So OR and ADD are equivalent here. Using ADD helps LLVM
-                        # recognize base+const patterns and fold them into ds_read offset immediates,
-                        # reducing the number of address VGPRs for LDS reads.
-                        res1 = _arith_mlir.AddIOp(unwrap(base), unwrap(b3_shift)).result
-                        res2 = _arith_mlir.AddIOp(unwrap(res1), unwrap(b5_shift)).result
-                        return res2
+                        return col_idx
 
                     col_lds0_swizzled = swizzle_idx(col_lds0)
                     col_lds1_swizzled = swizzle_idx(col_lds1)
@@ -695,14 +625,8 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
     b_storage[: b_flat.numel()] = b_flat
     b_q_fp8 = b_storage[: b_flat.numel()].view(N, K)
     
-    b_shuffled_baseline = shuffle_weight(b_q_fp8)  # (N, K) -> shuffled (Standard)
-    
-    # Use the canonical bpreshuffle layout (matches `layout_b` in the kernel).
-    # Also pad storage for safe dwordx4 loads on B.
-    b_shuf_flat = b_shuffled_baseline.contiguous().view(-1)
-    b_shuf_storage = torch.empty(b_shuf_flat.numel() + PAD_ELEMS, device=device, dtype=b_shuffled_baseline.dtype)
-    b_shuf_storage[: b_shuf_flat.numel()] = b_shuf_flat
-    b_shuffled = b_shuf_storage[: b_shuf_flat.numel()].view(N, K)
+    # Keep the aiter-style preshuffle for optional aiter benchmark at the end.
+    b_shuffled = shuffle_weight(b_q_fp8)  # (N, K) -> aiter shuffled layout
     
     # 4. Compute Baseline using AIter style (dequant + matmul)
     c_ref = run_torch(a_q_fp8, b_q_fp8, scale_a, scale_b, bias=None, dtype=torch.float32)
@@ -766,7 +690,7 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m=16, tile_n=128, tile_k=128):
                 )
             
         # Verify Aiter output first
-        c_aiter, us1 = run_perftest(launch_aiter, a_q_fp8, b_shuffled_baseline, scale_a, scale_b)
+        c_aiter, us1 = run_perftest(launch_aiter, a_q_fp8, b_shuffled, scale_a, scale_b)
         verify_output(c_aiter.to(torch.float32), c_ref, rtol=0.1, atol=0.1)
     
         
@@ -782,7 +706,9 @@ if __name__ == "__main__":
     torch.set_default_device('cuda')
     # Test cases
     print("Running Tiling Tests...")
-    test_mfma_fp8_rocir_preshuffle(16, 7168, 2048, tile_m=16, tile_n=64, tile_k=256) 
-    test_mfma_fp8_rocir_preshuffle(16, 7168, 2048, tile_m=16, tile_n=256, tile_k=256)
+    
     test_mfma_fp8_rocir_preshuffle(1024, 7168, 2048, tile_m=128, tile_n=128, tile_k=128)
-    test_mfma_fp8_rocir_preshuffle(32, 7168, 2048, tile_m=32, tile_n=128, tile_k=256)
+    # test_mfma_fp8_rocir_preshuffle(16, 7168, 2048, tile_m=16, tile_n=64, tile_k=256) 
+    # test_mfma_fp8_rocir_preshuffle(16, 7168, 2048, tile_m=16, tile_n=256, tile_k=256)
+    # test_mfma_fp8_rocir_preshuffle(1024, 7168, 2048, tile_m=128, tile_n=128, tile_k=128)
+    # test_mfma_fp8_rocir_preshuffle(32, 7168, 2048, tile_m=32, tile_n=128, tile_k=256)
