@@ -1,8 +1,8 @@
 """Test operator overloading for elegant Pythonic syntax."""
 
 import pytest
-from mlir.ir import Context, Location, Module, InsertionPoint
-from mlir.dialects import func
+from _mlir.ir import Context, Location, Module, InsertionPoint
+from _mlir.dialects import func
 
 try:
     from rocdsl.dialects.ext import arith

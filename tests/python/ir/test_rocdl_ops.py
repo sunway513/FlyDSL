@@ -3,12 +3,11 @@
 
 import sys
 import os
-
-
-from mlir import ir
-from mlir.dialects import func, arith
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import func, arith
+import _mlir.extras.types as T
 from rocdsl.dialects.ext import rocdl
+from rocdsl.compiler.context import ensure_rocir_python_extensions
 
 print('=' * 70)
 print('ROCDL Dialect Operations Test')
@@ -20,6 +19,7 @@ def test_thread_operations():
     print('-' * 70)
     
     with ir.Context() as ctx, ir.Location.unknown(ctx):
+        ensure_rocir_python_extensions(ctx)
         module = ir.Module.create()
         i32 = T.i32()
         
@@ -53,6 +53,7 @@ def test_sync_operations():
     print('-' * 70)
     
     with ir.Context() as ctx, ir.Location.unknown(ctx):
+        ensure_rocir_python_extensions(ctx)
         module = ir.Module.create()
         
         with ir.InsertionPoint(module.body):
@@ -78,6 +79,7 @@ def test_lane_operations():
     print('-' * 70)
     
     with ir.Context() as ctx, ir.Location.unknown(ctx):
+        ensure_rocir_python_extensions(ctx)
         module = ir.Module.create()
         i32 = T.i32()
         

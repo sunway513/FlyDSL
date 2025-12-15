@@ -78,10 +78,10 @@ cmake --build . --target RocirPythonModules.sources.MLIRPythonSources.Dialects.l
 # Project dialect python bindings
 cmake --build . --target RocirPythonModules.sources.RocirPythonSources.rocir -j$(nproc) || true
 cmake --build . --target RocirPythonModules.sources.RocirPythonSources.rocir.ops_gen -j$(nproc) || true
-cmake --build . --target RocirPythonModules.sources.RocirPythonSources.rocdl -j$(nproc) || true
-cmake --build . --target RocirPythonModules.sources.RocirPythonSources.rocdl.ops_gen -j$(nproc) || true
+cmake --build . --target RocirPythonModules.sources.MLIRPythonSources.Dialects.rocdl -j$(nproc) || true
+cmake --build . --target RocirPythonModules.sources.MLIRPythonSources.Dialects.rocdl.ops_gen -j$(nproc) || true
 
-# Set up PYTHONPATH for the embedded Python package
+# Set up PYTHONPATH for the embedded Python package root (contains `_mlir/` and `rocdsl/`)
 PYTHON_PACKAGE_DIR="${BUILD_DIR}/python_packages/rocdsl"
 
 # Ensure the python package root contains the embedded MLIR package (_mlir) and our sources (rocdsl, mlir shim).
@@ -99,11 +99,6 @@ find "${PYTHON_PACKAGE_DIR}" -mindepth 1 -maxdepth 1 \
 
 # Copy RocDSL python package into the package root as rocdsl/
 cp -r "${SCRIPT_DIR}/python/rocdsl" "${PYTHON_PACKAGE_DIR}/" || { echo "Failed to copy python/rocdsl"; exit 1; }
-
-# Copy mlir shim package (optional, for backward compatibility with 'import mlir')
-if [ -d "${SCRIPT_DIR}/python/mlir" ]; then
-    cp -r "${SCRIPT_DIR}/python/mlir" "${PYTHON_PACKAGE_DIR}/" || { echo "Failed to copy python/mlir"; exit 1; }
-fi
 
 cd "${SCRIPT_DIR}"
 

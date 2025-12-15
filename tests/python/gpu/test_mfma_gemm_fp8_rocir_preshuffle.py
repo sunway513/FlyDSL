@@ -20,12 +20,12 @@ from tests.test_common import verify_output, run_perftest
 import torch
 import torch.nn.functional as F
 import pytest
-from mlir import ir
-from mlir.dialects import vector, memref, builtin, llvm
+from _mlir import ir
+from _mlir.dialects import vector, memref, builtin, llvm
 from rocdsl.dialects.ext import arith, scf, gpu, buffer_ops
-from mlir.dialects import arith as _arith_mlir
-import mlir.dialects.rocdl as rocdl
-import mlir.extras.types as T
+from _mlir.dialects import arith as _arith_mlir
+import _mlir.dialects.rocdl as rocdl
+import _mlir.extras.types as T
 from hip import hip
 import ctypes
 

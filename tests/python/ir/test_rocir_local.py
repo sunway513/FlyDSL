@@ -1,8 +1,8 @@
 """Tests for Rocir local operations (thread/block partitioning)."""
 
 import pytest
-from mlir.ir import IndexType
-from mlir.dialects import func, arith
+from _mlir.ir import IndexType
+from _mlir.dialects import func, arith
 
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.dialects.ext.arith import Index

@@ -6,13 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# Import from embedded MLIR Python modules (preferred). If unavailable, fall back
-# to the upstream `mlir` package (which may be provided by our shim under
-# python/mlir/ or by a system installation).
-try:
-    from _mlir import ir
-except ImportError:
-    from mlir import ir
+from _mlir import ir
 
 _PASSES_MODULE = None
 
@@ -21,12 +15,7 @@ def ensure_rocir_python_extensions(context: ir.Context):
     """Ensure Rocir passes and dialect are registered for the given context."""
     global _PASSES_MODULE
     if _PASSES_MODULE is None:
-        # Import the embedded passes module
-        try:
-            from _mlir._mlir_libs import _rocirPasses as _PASSES_MODULE
-        except ImportError:
-            # Fallback for old build system
-            import _rocirPasses as _PASSES_MODULE
+        from _mlir._mlir_libs import _rocirPasses as _PASSES_MODULE
     
     # Register dialects using the new nanobind interface
     from _mlir import ir as mlir_ir

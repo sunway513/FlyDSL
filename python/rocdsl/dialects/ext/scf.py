@@ -3,14 +3,14 @@
 from typing import Optional, Sequence, Callable
 from contextlib import contextmanager
 
-from mlir.ir import (
+from _mlir.ir import (
     Value,
     Location,
     InsertionPoint,
     IndexType,
     Block,
 )
-from mlir.dialects import scf as _scf
+from _mlir.dialects import scf as _scf
 
 from .arith import constant
 
@@ -175,7 +175,7 @@ def yield_(
 
 
 # Re-export common scf operations
-from mlir.dialects.scf import (
+from _mlir.dialects.scf import (
     IfOp,
     WhileOp,
     YieldOp,

@@ -9,9 +9,9 @@ from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.dialects.ext import gpu, rocir
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from tests.utils import compile_to_hsaco
-from mlir import ir
-from mlir.dialects import arith, memref, scf
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import arith, memref, scf
+import _mlir.extras.types as T
 from hip import hip
 import numpy as np
 import ctypes

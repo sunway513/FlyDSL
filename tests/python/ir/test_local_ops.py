@@ -1,8 +1,8 @@
 """Test local operations: local_partition and local_tile with Pythonic operators."""
 
 import pytest
-from mlir.ir import InsertionPoint
-from mlir.dialects import func
+from _mlir.ir import InsertionPoint
+from _mlir.dialects import func
 
 from rocdsl.dialects.ext import arith, rocir
 

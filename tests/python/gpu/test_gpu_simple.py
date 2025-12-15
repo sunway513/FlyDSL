@@ -11,9 +11,9 @@ from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.dialects.ext import gpu, arith
 
 import numpy as np
-from mlir import ir
-from mlir.dialects import memref
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import memref
+import _mlir.extras.types as T
 
 
 def test_vector_add():

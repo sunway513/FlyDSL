@@ -1,7 +1,7 @@
 """Test pass pipelines and lowering transformations."""
 
 import pytest
-from mlir.ir import Context, Module
+from _mlir.ir import Context, Module
 
 try:
     from rocdsl.passes import (
@@ -86,6 +86,7 @@ def test_pipeline_recipes():
 def test_run_pipeline_basic():
     """Test running a simple pipeline on valid IR."""
     ctx = Context()
+    ctx.load_all_available_dialects()
     
     # Create simple func module
     mlir_code = """
@@ -111,6 +112,7 @@ def test_run_pipeline_basic():
 def test_run_pipeline_with_string():
     """Test running pipeline from string."""
     ctx = Context()
+    ctx.load_all_available_dialects()
     
     mlir_code = """
     module {

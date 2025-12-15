@@ -14,9 +14,9 @@ from rocdsl.dialects.ext.arith import Index
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch, launch_kernel
 
 import numpy as np
-from mlir import ir
-from mlir.dialects import arith, memref, scf
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import arith, memref, scf
+import _mlir.extras.types as T
 
 
 def test_layout_based_transpose():

@@ -9,8 +9,8 @@ from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.dialects.ext import rocir
 from rocdsl.dialects.ext.arith import Index
-from mlir.dialects import func as mlir_func
-from mlir.ir import IndexType
+from _mlir.dialects import func as mlir_func
+from _mlir.ir import IndexType
 
 def unwrap(val):
     if hasattr(val, 'value'): return val.value

@@ -1,8 +1,8 @@
 """Tests for core Rocir operations: make_shape, make_stride, make_layout, size, rank."""
 
 import pytest
-from mlir.ir import Context, Location, Module, InsertionPoint, IndexType
-from mlir.dialects import func, arith
+from _mlir.ir import Context, Location, Module, InsertionPoint, IndexType
+from _mlir.dialects import func, arith
 
 # Import Rocir wrappers
 import rocdsl.dialects.ext.rocir as rocir

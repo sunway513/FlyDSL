@@ -1,7 +1,7 @@
 """Basic example of using RocDSL Python bindings for layout algebra."""
 
-from mlir.ir import Context, Module, InsertionPoint, Location
-from mlir.dialects import func, arith
+from _mlir.ir import Context, Module, InsertionPoint, Location
+from _mlir.dialects import func, arith
 import rocdsl.dialects.ext.rocir as rocir
 
 

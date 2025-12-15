@@ -8,7 +8,7 @@ import sys
 from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.dialects.ext import rocir
 from rocdsl.dialects.ext.arith import Index
-from mlir.dialects import func
+from _mlir.dialects import func
 
 def unwrap(val):
     """Unwrap ArithValue or other wrappers."""
