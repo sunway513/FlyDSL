@@ -4,12 +4,12 @@ from functools import partialmethod
 from typing import Optional, Union, Tuple
 import numpy as np
 
-from mlir.ir import (
+from _mlir.ir import (
     Type, Value, IntegerType, IndexType, F32Type, F64Type, F16Type,
     DenseElementsAttr, Location, InsertionPoint, ShapedType, VectorType
 )
-from mlir.dialects import arith as _arith
-from mlir.dialects._ods_common import get_op_result_or_op_results
+from _mlir.dialects import arith as _arith
+from _mlir.dialects._ods_common import get_op_result_or_op_results
 
 def _is_integer_like_type(t: Type) -> bool:
     """Check if type is integer-like (including index)."""
@@ -224,7 +224,7 @@ def constant_vector(element_value: Union[int, float], vector_type: Type, *, loc:
         >>> vec_zero = arith.constant_vector(0.0, T.vector(32, T.f16()))
         >>> vec_ones = arith.constant_vector(1.0, T.vector(16, T.f32()))
     """
-    from mlir.ir import FloatAttr, IntegerAttr, DenseElementsAttr
+    from _mlir.ir import FloatAttr, IntegerAttr, DenseElementsAttr
     
     # Get element type from vector type
     element_type = VectorType(vector_type).element_type
@@ -253,7 +253,7 @@ def absf(value: Union["ArithValue", Value], *, loc: Location = None) -> "ArithVa
     Returns:
         Absolute value result wrapped in ArithValue
     """
-    from mlir.dialects import math as _math
+    from _mlir.dialects import math as _math
     val = _unwrap_value(value)
     result = _math.AbsFOp(val, loc=loc).result
     return ArithValue(result)
@@ -270,7 +270,7 @@ def reduce(value: Union["ArithValue", Value], kind: str = "add", *, acc: Optiona
     Returns:
         Reduced scalar value wrapped in ArithValue
     """
-    from mlir.dialects import vector as _vector
+    from _mlir.dialects import vector as _vector
     
     val = _unwrap_value(value)
     
@@ -518,7 +518,7 @@ class ArithValue:
         return _unwrap_value(self)
 
 # Re-export commonly used arith operations
-from mlir.dialects.arith import (
+from _mlir.dialects.arith import (
     AddIOp, AddFOp, SubIOp, SubFOp, MulIOp, MulFOp,
     DivSIOp, DivFOp, RemSIOp, RemFOp,
     CmpIOp, CmpFOp, CmpIPredicate, CmpFPredicate,
@@ -541,7 +541,7 @@ __all__ = [
 Index = index
 
 try:
-    from mlir._mlir_libs._mlir import register_value_caster
+    from _mlir._mlir_libs._mlir import register_value_caster
     for t in [F32Type, F64Type, IndexType, IntegerType]:
         register_value_caster(t.static_typeid)(ArithValue)
     print("✓ ArithValue registered for automatic type conversion")

@@ -14,7 +14,7 @@ Example:
     >>> rocdl.barrier()
 """
 
-from mlir.dialects.rocdl import *
+from _mlir.dialects.rocdl import *
 
 __all__ = [
     # Thread/Block/Grid IDs and dimensions

@@ -11,12 +11,12 @@ from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.dialects.ext import gpu, rocir, arith, scf
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
-from mlir import ir
-from mlir.dialects import memref, vector
-from mlir.ir import F32Type, InsertionPoint, IntegerType
-from mlir.dialects import arith as std_arith
-from mlir.dialects import scf as std_scf
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import memref, vector
+from _mlir.ir import F32Type, InsertionPoint, IntegerType
+from _mlir.dialects import arith as std_arith
+from _mlir.dialects import scf as std_scf
+import _mlir.extras.types as T
 from hip import hip
 import numpy as np
 import ctypes

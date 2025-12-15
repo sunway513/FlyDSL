@@ -7,42 +7,18 @@ from Python code.
 
 from typing import List, Optional, Sequence, Union
 
-# Import from embedded MLIR Python modules
-try:
-    from _mlir.ir import (
-        Type,
-        Value,
-        Location,
-        InsertionPoint,
-        IndexType,
-        IntegerAttr,
-        IntegerType,
-        MemRefType,
-    )
-    from _mlir.dialects import memref, arith, scf, gpu
-    from _mlir.dialects import rocir as rocir_ops
-except ImportError:
-    # Fallback to system-installed mlir
-    from mlir.ir import (
-        Type,
-        Value,
-        Location,
-        InsertionPoint,
-        IndexType,
-        IntegerAttr,
-        IntegerType,
-        MemRefType,
-    )
-    from mlir.dialects import memref, arith, scf, gpu
-    # Try to import from build directory for generated ops
-    import sys
-    import os
-    from pathlib import Path
-    _rocdsl_root = Path(__file__).resolve().parents[5]
-    _python_packages_dir = _rocdsl_root / "build" / "python_packages" / "rocdsl"
-    if _python_packages_dir.exists():
-        sys.path.insert(0, str(_python_packages_dir))
-    from _mlir.dialects import rocir as rocir_ops
+from _mlir.ir import (
+    Type,
+    Value,
+    Location,
+    InsertionPoint,
+    IndexType,
+    IntegerAttr,
+    IntegerType,
+    MemRefType,
+)
+from _mlir.dialects import memref, arith, scf, gpu
+from _mlir.dialects import rocir as rocir_ops
 
 
 
@@ -57,8 +33,8 @@ def _get_location(loc: Optional[Location] = None) -> Location:
 def _unwrap_value(v):
     """Unwrap ArithValue or other value wrappers to get underlying MLIR Value."""
     if isinstance(v, int):
-        from mlir.dialects import arith
-        from mlir.ir import IndexType, IntegerAttr
+        from _mlir.dialects import arith
+        from _mlir.ir import IndexType, IntegerAttr
         op = arith.ConstantOp(IndexType.get(), IntegerAttr.get(IndexType.get(), v))
         return _unwrap_value(op.result)
     try:
@@ -444,7 +420,7 @@ class ShapeType(Type):
         """Create a shape type with given rank."""
         # This would need to be implemented in C++ bindings
         # For now, return a generic type
-        from mlir.ir import Context
+        from _mlir.ir import Context
         if context is None:
             context = Context.current
         # Placeholder - would use actual ODS-generated type
@@ -457,7 +433,7 @@ class StrideType(Type):
     @staticmethod
     def get(rank: int, context=None):
         """Create a stride type with given rank."""
-        from mlir.ir import Context
+        from _mlir.ir import Context
         if context is None:
             context = Context.current
         return Type.parse(f"!rocir.stride<{rank}>", context=context)
@@ -469,7 +445,7 @@ class LayoutType(Type):
     @staticmethod
     def get(rank: int, context=None):
         """Create a layout type with given rank."""
-        from mlir.ir import Context
+        from _mlir.ir import Context
         if context is None:
             context = Context.current
         return Type.parse(f"!rocir.layout<{rank}>", context=context)
@@ -481,7 +457,7 @@ class CoordType(Type):
     @staticmethod
     def get(rank: int, context=None):
         """Create a coordinate type with given rank."""
-        from mlir.ir import Context
+        from _mlir.ir import Context
         if context is None:
             context = Context.current
         return Type.parse(f"!rocir.coord<{rank}>", context=context)
@@ -1127,7 +1103,7 @@ def coalesce(layout: Value, loc: Optional[Location] = None, ip: Optional[Inserti
         >>> layout = rocir.make_layout((c2, (c1, c6)), stride=(c1, (c6, c2)))
         >>> coalesced = rocir.coalesce(layout)  # Simplifies to 12:1
     """
-    from mlir import ir as _ir
+    from _mlir import ir as _ir
     
     loc = _get_location(loc)
     result_type = layout.type
@@ -1673,7 +1649,7 @@ def product_each(shape: Value, loc: Optional[Location] = None, ip: Optional[Inse
     loc = _get_location(loc)
     shape = _unwrap_value(shape)
     with _get_insertion_point(ip):
-        # from mlir.dialects import rocir as rocir_ops  # Not available
+        # from _mlir.dialects import rocir as rocir_ops  # Not available
         op = rocir_ops.ProductEachOp(shape, loc=loc)
         return op.result
 
@@ -1729,7 +1705,7 @@ def elem_less(a, b, loc: Optional[Location] = None, ip: Optional[InsertionPoint]
         >>> val = rocir.elem_less(thrCrd[i], shape)
         >>> frgPred[i] = val
     """
-    from mlir.dialects import arith
+    from _mlir.dialects import arith
     loc = _get_location(loc)
 
     def _to_limits(b_val, rank):
@@ -1772,7 +1748,7 @@ def make_copy_atom(element_type: Type, vector_size: int = 8, is_coalesced: bool 
         CopyAtom descriptor
         
     Example:
-        >>> from mlir.ir import F16Type
+        >>> from _mlir.ir import F16Type
         >>> atom = rocir.make_copy_atom(F16Type.get(), vector_size=8)
     """
     return CopyAtom(element_type, vector_size, is_coalesced)
@@ -1889,7 +1865,7 @@ def partition_dst(tiled_copy, tensor, thread_id, loc: Optional[Location] = None,
 
 def fragment_load(fragment, index, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None):
     """Load an element from a register fragment."""
-    from mlir.dialects import memref as memref_dialect
+    from _mlir.dialects import memref as memref_dialect
     loc = _get_location(loc)
     fragment = _unwrap_value(fragment)
     index = _unwrap_value(index)
@@ -1899,7 +1875,7 @@ def fragment_load(fragment, index, loc: Optional[Location] = None, ip: Optional[
 
 def fragment_store(value, fragment, index, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None):
     """Store an element to a register fragment."""
-    from mlir.dialects import memref as memref_dialect
+    from _mlir.dialects import memref as memref_dialect
     loc = _get_location(loc)
     value = _unwrap_value(value)
     fragment = _unwrap_value(fragment)
@@ -1923,7 +1899,7 @@ def _normalize_indices_to_memref(memref_val: Value, indices: List[Value], stride
     Returns:
         List of index Values matching the memref's rank
     """
-    from mlir.ir import MemRefType
+    from _mlir.ir import MemRefType
     
     memref_type = memref_val.type
     if not isinstance(memref_type, MemRefType):
@@ -2009,12 +1985,12 @@ def copy(copy_desc, src, dst,
     Example:
         >>> rocir.copy(atom, src, dst, src_indices=[i,j], dst_indices=[k])
     """
-    from mlir.dialects import memref as memref_dialect
+    from _mlir.dialects import memref as memref_dialect
     loc = _get_location(loc)
 
     def emit_tensor_copy(copy_shape, src_view: TensorView, dst_view: TensorView, pred_view: Optional[Union[TensorView, Value]]):
-        from mlir.dialects import vector
-        from mlir.ir import VectorType
+        from _mlir.dialects import vector
+        from _mlir.ir import VectorType
 
         # Attempt vectorization if copy_desc has vector_size
         vector_size = 1
@@ -2218,7 +2194,7 @@ def printf(format_str: str, *args, loc: Optional[Location] = None, ip: Optional[
         - Use `rocir.printf` for runtime/dynamic values
         - Format strings use "{}" as placeholders (similar to Python f-strings)
     """
-    from mlir.dialects import gpu as _gpu
+    from _mlir.dialects import gpu as _gpu
     
     loc = _get_location(loc)
     

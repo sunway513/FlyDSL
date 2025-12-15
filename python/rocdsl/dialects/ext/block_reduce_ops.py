@@ -11,8 +11,8 @@ Example:
 """
 
 from typing import Optional, Callable
-from mlir.ir import Value, InsertionPoint
-from mlir.dialects import gpu as mlir_gpu, memref, scf
+from _mlir.ir import Value, InsertionPoint
+from _mlir.dialects import gpu as mlir_gpu, memref, scf
 
 try:
     from rocdsl.dialects.ext import arith

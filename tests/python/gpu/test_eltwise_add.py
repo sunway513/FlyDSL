@@ -22,9 +22,9 @@ from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.dialects.ext import func, gpu, rocir, rocm
 from rocdsl.dialects.ext.arith import Index
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
-from mlir.ir import F16Type, F32Type, IntegerType, InsertionPoint
-from mlir.dialects import arith
-import mlir.extras.types as T
+from _mlir.ir import F16Type, F32Type, IntegerType, InsertionPoint
+from _mlir.dialects import arith
+import _mlir.extras.types as T
 from hip import hip
 from tests.test_common import run_perftest
 

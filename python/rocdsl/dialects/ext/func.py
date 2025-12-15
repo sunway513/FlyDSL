@@ -8,13 +8,13 @@ from functools import update_wrapper
 from typing import Optional, List, Union, TypeVar
 
 
-import mlir.ir as ir
-from mlir.extras.meta import op_region_builder
-from mlir.extras import types as T
+import _mlir.ir as ir
+from _mlir.extras.meta import op_region_builder
+from _mlir.extras import types as T
 
-from mlir.dialects._ods_common import get_op_result_or_op_results
-from mlir.dialects.func import *
-from mlir.ir import (
+from _mlir.dialects._ods_common import get_op_result_or_op_results
+from _mlir.dialects.func import *
+from _mlir.ir import (
     FlatSymbolRefAttr,
     FunctionType,
     InsertionPoint,
@@ -127,7 +127,7 @@ def is_relative_to(self, other):
 
 
 def get_user_code_loc(user_base: Optional[Path] = None):
-    from mlir import extras
+    from _mlir import extras
 
     if Context.current is None:
         return

@@ -6,12 +6,14 @@ Exactly following the layout algebra notebook examples from the CUTLASS tree.
 Each test corresponds to a specific cell in the notebook.
 """
 
+import sys
+
 from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.dialects.ext import rocir
 from rocdsl.dialects.ext.arith import Index
-from mlir.dialects import func
-from mlir.ir import IntegerAttr, IntegerType, BoolAttr, IndexType, BlockArgument
+from _mlir.dialects import func
+from _mlir.ir import IntegerAttr, IntegerType, BoolAttr, IndexType, BlockArgument
 
 def unwrap(val):
     """Unwrap ArithValue or other wrappers."""
@@ -78,7 +80,7 @@ def run_lowering_test(ctx, test_name, expected_val=None, expected_vals=None,
                     is_dynamic = isinstance(operand, BlockArgument)
                     if not is_dynamic:
                         try:
-                            from mlir.ir import Block
+                            from _mlir.ir import Block
                             is_dynamic = isinstance(operand.owner, Block)
                         except:
                             pass

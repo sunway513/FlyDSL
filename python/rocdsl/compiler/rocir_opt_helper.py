@@ -4,7 +4,7 @@ This module is maintained for backward compatibility. New code should use
 the Pipeline class from rocdsl.compiler.pipeline instead.
 """
 
-from mlir.ir import Module as ir_Module
+from _mlir.ir import Module as ir_Module
 
 # Import from the new pipeline module
 from rocdsl.compiler.pipeline import Pipeline, RocDSLCompilerError

@@ -6,7 +6,7 @@ Buffer operations use a scalar base pointer and per-thread offsets for efficient
 Example:
     >>> from rocdsl.dialects.ext import buffer_ops
     >>> from rocdsl.dialects.ext import arith
-    >>> import mlir.extras.types as T
+    >>> import _mlir.extras.types as T
     >>> 
     >>> # Create buffer resource from memref
     >>> rsrc = buffer_ops.create_buffer_resource(A)
@@ -21,9 +21,9 @@ Example:
     >>> buffer_ops.buffer_store(data, rsrc, offset)
 """
 
-from mlir import ir
-from mlir.dialects import llvm, rocdl, arith as std_arith, memref
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import llvm, rocdl, arith as std_arith, memref
+import _mlir.extras.types as T
 from typing import Optional, Union
 
 __all__ = [

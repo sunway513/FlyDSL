@@ -7,9 +7,9 @@ import os
 
 from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.dialects.ext import rocir
-from mlir import ir
-from mlir.dialects import arith
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import arith
+import _mlir.extras.types as T
 
 
 def test_coord_operations():

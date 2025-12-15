@@ -5,8 +5,8 @@ import sys
 import os
 
 
-from mlir.ir import Context, Location, Module, InsertionPoint
-from mlir.dialects import func
+from _mlir.ir import Context, Location, Module, InsertionPoint
+from _mlir.dialects import func
 
 from rocdsl.dialects.ext import arith, rocir
 

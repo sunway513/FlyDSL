@@ -9,9 +9,9 @@ from rocdsl.dialects.ext.gpu import lds_space
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from rocdsl.utils import SmemAllocator
 from tests.utils import compile_to_hsaco
-from mlir import ir
-from mlir.dialects import memref
-import mlir.extras.types as T
+from _mlir import ir
+from _mlir.dialects import memref
+import _mlir.extras.types as T
 from hip import hip
 import numpy as np
 import ctypes
@@ -439,7 +439,7 @@ def test_matmul_shared_memory():
         # Or arith.constant(type, value) if pos args correct.
         # But error says constant() takes 1 pos arg. It likely expects arith.constant(T.index(), value) -> arith.constant(value, type=type)
         # Actually arith.constant signature in python bindings: (value, type=None) or (type, value) depending on implementation.
-        # Let's try standard mlir.dialects.arith.ConstantOp
+        # Let's try standard _mlir.dialects.arith.ConstantOp
         
         tile_size_const = arith.index(TILE_SIZE)
         row = (gpu.block_id("y") * tile_size_const + gpu.thread_id("y"))._value

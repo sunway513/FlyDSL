@@ -8,7 +8,7 @@ external MLIR Python installation.
 import pytest
 
 from rocdsl.compiler.context import ensure_rocir_python_extensions
-from mlir.ir import Context, Location, Module, InsertionPoint
+from _mlir.ir import Context, Location, Module, InsertionPoint
 
 
 @pytest.fixture

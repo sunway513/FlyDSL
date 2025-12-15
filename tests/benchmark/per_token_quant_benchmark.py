@@ -48,13 +48,13 @@ from rocdsl.dialects.ext import arith, gpu, rocir, block_reduce_ops
 from rocdsl.dialects.ext.gpu import lds_space
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from rocdsl.utils import SmemAllocator
-from mlir import ir
-from mlir.dialects import (
+from _mlir import ir
+from _mlir.dialects import (
     scf,
     vector,
     memref,
 )
-import mlir.extras.types as T
+import _mlir.extras.types as T
 from utils import compile_to_hsaco
 from test_common import run_perftest
 

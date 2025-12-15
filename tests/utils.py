@@ -3,7 +3,7 @@
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.compiler.rocir_opt_helper import apply_rocir_coord_lowering
 from rocdsl.runtime.hip_util import get_hip_arch
-from mlir import ir
+from _mlir import ir
 import os
 import torch
 import functools
