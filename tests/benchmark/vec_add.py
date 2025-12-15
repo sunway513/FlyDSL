@@ -29,7 +29,7 @@ from utils import compile_to_hsaco
 from tests.test_common import run_perftest
 
 
-def create_vecadd_kernel(
+def create_vec_add_kernel(
     size: int,
     tile_size: int = 8,
     dtype=F32Type,
@@ -140,7 +140,7 @@ def create_vecadd_kernel(
                 coords = (idx,)
                 a_val = frgA[coords]
                 b_val = frgB[coords]
-                c_val = std_arith.AddFOp(a_val, b_val).result
+                c_val = a_val + b_val
                 frgC[coords] = c_val
 
         rocir.copy(tiled_copy_C, frgC, thrC, pred=frgPred)
@@ -210,7 +210,7 @@ def benchmark_vector_add(tile_size: int = 4):
     print(f"Memory Traffic: 3 × {SIZE} × 4 bytes = {3*SIZE*4/1e9:.2f} GB per kernel")
     print("="*80)
     
-    module = create_vecadd_kernel(SIZE, tile_size=TILE_SIZE, dtype=F32Type)
+    module = create_vec_add_kernel(SIZE, tile_size=TILE_SIZE, dtype=F32Type)
     print("  Running canonicalize + CSE pipeline...")
     optimized = run_pipeline(module, Pipeline().canonicalize().cse())
     hsaco = compile_to_hsaco(optimized, kernel_name="vec_add")
