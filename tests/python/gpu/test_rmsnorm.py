@@ -190,9 +190,7 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
                 gpu.barrier()
                 return memref.load(scratch_memref, [unwrap(zero_idx.value)])
 
-            # =========================================================
             # Pass0: global -> LDS row cache (1-pass global read)
-            # =========================================================
             for base_idx_int in range(0, N, BLOCK_THREADS * VEC_WIDTH):
                 c_base = arith.constant(T.index(), base_idx_int).value
                 thread_offset_base = mlir_arith.MulIOp(unwrap(tid), arith.constant(T.index(), VEC_WIDTH).value).result
@@ -220,9 +218,7 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
 
             gpu.barrier()
 
-            # =========================================================
             # Pass1: sumsq (from LDS row cache)
-            # =========================================================
             c_zero = arith.constant(compute_type, 0.0).value
             thread_sumsq = unwrap(c_zero)
 
@@ -263,9 +259,7 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
             ms_eps = mlir_arith.AddFOp(unwrap(mean_sq), unwrap(eps.value), fastmath=fm_fast).result
             rrms = math.rsqrt(unwrap(ms_eps))
 
-            # =========================================================
             # Pass2: normalize + gamma + store
-            # =========================================================
             vec_type_e = ir.VectorType.get([VEC_WIDTH], elem_type)
             vec_type_c = ir.VectorType.get([VEC_WIDTH], compute_type)
             rrms_splat = vector.splat(vec_type_c, unwrap(rrms))
@@ -375,8 +369,7 @@ def run_test(M: int, N: int, dtype: str = "f32") -> bool:
         raise ValueError(f"unsupported dtype: {dtype}")
 
     # Numpy Reference
-    # RMS(x) = sqrt(mean(x^2) + eps)
-    # RMSNorm(x) = x / RMS(x) * gamma
+    # RMS(x) = sqrt(mean(x^2) + eps) RMSNorm(x) = x / RMS(x) * gamma
     sq_mean = np.mean(input_ref**2, axis=1, keepdims=True)
     rms = np.sqrt(sq_mean + EPS)
     expected = (input_ref / rms) * gamma_ref

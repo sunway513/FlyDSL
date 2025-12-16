@@ -222,9 +222,7 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
                 packed = mlir_arith.OrIOp(unwrap(even), unwrap(odd_sh)).result
                 return vector.bitcast(vec_bf16_ty, unwrap(packed))
 
-            # =========================================================
             # Pass0: global -> LDS row cache (1-pass global read)
-            # =========================================================
             c_zero = arith.constant(compute_type, 0.0).value
             FULL_TILES = (N % (BLOCK_THREADS * VEC_WIDTH) == 0)
 
@@ -269,9 +267,7 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
 
             gpu.barrier()
 
-            # =========================================================
             # Pass1: sum / sumsq (from LDS row cache)
-            # =========================================================
             # If fully tiled, we've already accumulated from Pass0 global loads.
             if not FULL_TILES:
                 thread_sum = unwrap(c_zero)
@@ -323,9 +319,7 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
             var_eps = mlir_arith.AddFOp(unwrap(var), unwrap(eps.value), fastmath=fm_fast).result
             rstd = math.rsqrt(unwrap(var_eps))
 
-            # =========================================================
             # Pass2: normalize + affine + store (vectorized)
-            # =========================================================
             vec_type_e = ir.VectorType.get([VEC_WIDTH], elem_type)
             vec_type_c = ir.VectorType.get([VEC_WIDTH], compute_type)
             mean_splat = vector.splat(vec_type_c, unwrap(mean))

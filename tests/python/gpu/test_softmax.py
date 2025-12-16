@@ -94,29 +94,22 @@ def build_softmax_module(M, N, dtype_str="f32"):
     if BLOCK_SIZE < 32: BLOCK_SIZE = 32 # Min block size for warp ops
     
     # Vector Width
-    # Use 8 for aligned, small vectors for unaligned? 
-    # To keep simple in Python gen, we use 8 and fallback to scalar for tail.
+    # Use 8 for aligned, small vectors for unaligned? To keep simple in Python gen, we use 8 and fallback to scalar for tail.
     VEC_WIDTH = 8
 
     # Nontemporal (cache-bypass) hints for global vector loads/stores.
-    # MLIR vector.load/store support `nontemporal` as a BoolAttr. We apply it only
-    # on the aligned vector path.
+    # MLIR vector.load/store support `nontemporal` as a BoolAttr. We apply it only on the aligned vector path.
     USE_NONTEMPORAL = True
     # Conservative alignment hint (bytes) for vector load/store.
     # For f16/bf16 and VEC_WIDTH=8 -> 16B; for f32 -> 32B. Use 16B universally.
     VEC_ALIGN = 16
 
     # Optional: use LLVM AMDGPU bf16 pack intrinsic (requires LLVM support).
-    # - 0 (default): use manual bf16 pack (works on current toolchain)
-    # - 1: use llvm.amdgcn.cvt.pk.bf16.f32 (after you "补上" intrinsic in LLVM build)
-    # NOTE: gfx942 不支持 `v_cvt_pk_bf16_f32`（llvm-mc 会报 instruction not supported），
-    # 因此即使我们“补上”了 LLVM intrinsic，也无法在该架构上选指令。
-    # 为避免误开导致 codegen 直接 abort，这里在 gfx942 上强制禁用 intrinsic 路径。
+    # - 0 (default): use manual bf16 pack (works on current toolchain) - 1: use llvm.amdgcn.cvt.pk.bf16.f32 (after you "补上" intrinsic in LLVM build) NOTE: gfx942 不支持 `v_cvt_pk_bf16_f32`（llvm-mc 会报 instruction not supported）， 因此即使我们“补上”了 LLVM intrinsic，也无法在该架构上选指令。 为避免误开导致 codegen 直接 abort，这里在 gfx942 上强制禁用 intrinsic 路径。
     USE_BF16_PACK_INTR = (os.environ.get("ROCDSL_BF16_PACK_INTR", "0") == "1") and (gpu_arch != "gfx942")
 
     # NOTE: Remaining bf16 "unpack/align" ops (e.g. 0xffff0000) mainly come from
-    # unpacking packed bf16 values in 16B global vector loads. In this pipeline,
-    # scalarizing the loads tends to be re-vectorized back to the same pattern.
+    # unpacking packed bf16 values in 16B global vector loads. In this pipeline, scalarizing the loads tends to be re-vectorized back to the same pattern.
     BF16_SCALARIZE_VEC_LOAD = False
     
     # Allocator for Shared Memory (Warp Reductions)
@@ -146,9 +139,7 @@ def build_softmax_module(M, N, dtype_str="f32"):
             c_log2e = arith.constant(1.4426950408889634, type=compute_type).value  # log2(e)
             fm_fast = mlir_arith.FastMathFlags.fast
 
-            # =========================================================
             # Helper: Block Reduction (wave64 shuffle + wave0 finalize)
-            # =========================================================
             def block_reduce(val, reduce_op_name):
                 # AMD wavefront size is 64 on gfx9+/gfx10+/gfx11.
                 WARP_SIZE = 64
@@ -234,9 +225,7 @@ def build_softmax_module(M, N, dtype_str="f32"):
 
                 return memref.load(s_red, [unwrap(c_zero_idx)])
 
-            # =========================================================
             # 1. Load Data into Registers (Buffering)
-            # =========================================================
             # List of buffered values (vector or scalar with validity)
             row_buffer = [] 
             
@@ -254,13 +243,7 @@ def build_softmax_module(M, N, dtype_str="f32"):
                 curr_idx = mlir_arith.AddIOp(c_base, unwrap(thread_offset_base)).result
                 
                 # Check bounds
-                # If fully within N, vector load
-                # We can check statically for the loop unroll? 
-                # Since N is compile time constant, we check specific offsets.
-                # However, thread_id is dynamic. We rely on logic:
-                # If (base_idx_int + BLOCK_SIZE*VEC_WIDTH) <= N, then ALL threads are safe?
-                # No. tid=255 accesses last chunk.
-                # Safe logic: if (base_idx_int + (BLOCK_SIZE-1)*WIDTH + WIDTH) <= N.
+                # If fully within N, vector load We can check statically for the loop unroll? Since N is compile time constant, we check specific offsets. However, thread_id is dynamic. We rely on logic: If (base_idx_int + BLOCK_SIZE*VEC_WIDTH) <= N, then ALL threads are safe? No. tid=255 accesses last chunk. Safe logic: if (base_idx_int + (BLOCK_SIZE-1)*WIDTH + WIDTH) <= N.
                 
                 is_safe_vector = (base_idx_int + (BLOCK_SIZE - 1) * VEC_WIDTH + VEC_WIDTH) <= N
                 
@@ -300,9 +283,7 @@ def build_softmax_module(M, N, dtype_str="f32"):
                         
                         row_buffer.append((if_load.results[0], is_valid))
 
-            # =========================================================
             # 2. Local Max
-            # =========================================================
             thread_max = unwrap(c_neg_inf)
             
             def reduce_vec_max(vec_val):
@@ -327,14 +308,10 @@ def build_softmax_module(M, N, dtype_str="f32"):
                     red = reduce_vec_max(vec_val)
                     thread_max = mlir_arith.MaximumFOp(unwrap(thread_max), unwrap(red)).result
 
-            # =========================================================
             # 3. Global Max
-            # =========================================================
             global_max = block_reduce(thread_max, "max")
             
-            # =========================================================
             # 4. Local Sum & Exp
-            # =========================================================
             thread_sum = unwrap(c_zero)
             
             # Update buffer in place with Exp values
@@ -373,14 +350,10 @@ def build_softmax_module(M, N, dtype_str="f32"):
             
             row_buffer = new_buffer
             
-            # =========================================================
             # 5. Global Sum
-            # =========================================================
             global_sum = block_reduce(thread_sum, "sum")
             
-            # =========================================================
             # 6. Normalize & Store
-            # =========================================================
             c_one = arith.constant(1.0, type=compute_type).value
             inv_sum = mlir_arith.DivFOp(unwrap(c_one), unwrap(global_sum), fastmath=fm_fast).result
             
@@ -410,9 +383,7 @@ def build_softmax_module(M, N, dtype_str="f32"):
                     if dtype_str == "bf16":
                         if USE_BF16_PACK_INTR:
                             # === BF16 fast-pack store path (LLVM AMDGPU intrinsic) ===
-                            # After patching/rebuilding LLVM, this should exist and lower to
-                            # native pack on gfx9+:
-                            #   llvm.amdgcn.cvt.pk.bf16.f32(float lo, float hi) -> <2 x bf16>
+                            # After patching/rebuilding LLVM, this should exist and lower to native pack on gfx9+: llvm.amdgcn.cvt.pk.bf16.f32(float lo, float hi) -> <2 x bf16>
                             vec_type_bf16 = ir.VectorType.get([VEC_WIDTH], elem_type)
                             bf16_zero = arith.constant(0.0, type=elem_type).value
                             out_bf16 = vector.splat(vec_type_bf16, unwrap(bf16_zero))
@@ -581,11 +552,12 @@ def test_all():
     print("="*80)
     
     configs = [
-        # (64, 256, "f32"),   # Aligned
-        # (128, 1024, "f32"), # Aligned
-        # (32, 128, "f16"),   # Aligned
-        # (64, 2000, "f32"),  # Unaligned (tail handling)
-        # (16, 512, "bf16"),  # BF16
+        # (64, 256, "f32"),    # Aligned
+        # (128, 1024, "f32"),  # Aligned
+        # (32, 128, "f16"),    # Aligned
+        # (64, 2000, "f32"),   # Unaligned (tail handling)
+        # (16, 512, "bf16"),   # BF16
+        # (1024, 8192, "bf16"),# BF16
         (32768, 8192, "bf16"),  # BF16
     ]
     
