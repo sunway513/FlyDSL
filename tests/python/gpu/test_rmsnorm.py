@@ -122,6 +122,24 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
             base_ptr = allocator.get_base()
             s_red = smem_red(base_ptr).get()
             s_row = smem_row(base_ptr).get()
+            # Rocir-style tensor views + tiled copies (like elementwise_add_kernel).
+            c0_idx = arith.constant(T.index(), 0).value
+            tile_cols = BLOCK_THREADS * VEC_WIDTH  # python int
+            tensor_In = rocir.make_tensor(Input, shape=(M, N), strides=(N, 1))
+            tensor_Out = rocir.make_tensor(Output, shape=(M, N), strides=(N, 1))
+            tensor_S = rocir.make_tensor(s_row, shape=(1, N), strides=(N, 1))
+            gIn = rocir.zipped_divide(tensor_In, (1, tile_cols))
+            gOut = rocir.zipped_divide(tensor_Out, (1, tile_cols))
+            gS = rocir.zipped_divide(tensor_S, (1, tile_cols))
+
+            thr_layout = rocir.make_ordered_layout((1, BLOCK_THREADS), order=(1, 0))
+            val_layout = rocir.make_ordered_layout((1, VEC_WIDTH), order=(1, 0))
+            copy_atom_e = rocir.make_copy_atom(elem_type, vector_size=VEC_WIDTH)
+            tiled_copy_e = rocir.make_tiled_copy_tv(
+                copy_atom_e, thr_layout, val_layout,
+                thr_shape=(1, BLOCK_THREADS), val_shape=(1, VEC_WIDTH)
+            )
+            thr_copy_e = tiled_copy_e.get_slice(unwrap(tid))
 
             def block_reduce_add(val_f32, scratch_memref):
                 tid_i32 = mlir_arith.IndexCastOp(T.i32(), tid.value).result
@@ -129,6 +147,12 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
                 lane_i32 = mlir_arith.RemUIOp(unwrap(tid_i32), unwrap(c_warp_i32)).result
                 wave_i32 = mlir_arith.DivUIOp(unwrap(tid_i32), unwrap(c_warp_i32)).result
                 width_i32 = arith.constant(T.i32(), WARP_SIZE)
+                # Use Rocir layout algebra to compute LDS indices for the reduction scratch.
+                c_num_waves = arith.constant(T.index(), RED_SLOTS).value
+                c1 = arith.constant(T.index(), 1).value
+                shape_red = rocir.make_shape(unwrap(c_num_waves))
+                stride_red = rocir.make_stride(unwrap(c1))
+                layout_red = rocir.make_layout(shape_red, stride_red)
 
                 w = unwrap(val_f32)
                 for sh in [32, 16, 8, 4, 2, 1]:
@@ -144,7 +168,8 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
                 if_lane0 = scf.IfOp(unwrap(is_lane0))
                 with ir.InsertionPoint(if_lane0.then_block):
                     wave_idx = mlir_arith.IndexCastOp(T.index(), unwrap(wave_i32)).result
-                    memref.store(unwrap(w), scratch_memref, [unwrap(wave_idx)])
+                    red_idx = rocir.crd2idx(rocir.make_coord(unwrap(wave_idx)), layout_red)
+                    memref.store(unwrap(w), scratch_memref, [unwrap(red_idx)])
                     scf.yield_([])
                 gpu.barrier()
 
@@ -165,7 +190,8 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
                     if_in = scf.IfOp(unwrap(in_range), [T.f32()], hasElse=True)
                     with ir.InsertionPoint(if_in.then_block):
                         lane_idx = mlir_arith.IndexCastOp(T.index(), unwrap(lane_i32)).result
-                        v = memref.load(scratch_memref, [unwrap(lane_idx)])
+                        red_idx = rocir.crd2idx(rocir.make_coord(unwrap(lane_idx)), layout_red)
+                        v = memref.load(scratch_memref, [unwrap(red_idx)])
                         scf.yield_([unwrap(v)])
                     with ir.InsertionPoint(if_in.else_block):
                         scf.yield_([unwrap(arith.constant(T.f32(), 0.0).value)])
@@ -183,12 +209,14 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
                     ).result
                     if_lane0_2 = scf.IfOp(unwrap(is_lane0_2))
                     with ir.InsertionPoint(if_lane0_2.then_block):
-                        memref.store(unwrap(ww), scratch_memref, [unwrap(zero_idx.value)])
+                        red_idx0 = rocir.crd2idx(rocir.make_coord(unwrap(zero_idx.value)), layout_red)
+                        memref.store(unwrap(ww), scratch_memref, [unwrap(red_idx0)])
                         scf.yield_([])
                     scf.yield_([])
 
                 gpu.barrier()
-                return memref.load(scratch_memref, [unwrap(zero_idx.value)])
+                red_idx0 = rocir.crd2idx(rocir.make_coord(unwrap(zero_idx.value)), layout_red)
+                return memref.load(scratch_memref, [unwrap(red_idx0)])
 
             # Pass0: global -> LDS row cache (1-pass global read)
             for base_idx_int in range(0, N, BLOCK_THREADS * VEC_WIDTH):
@@ -198,12 +226,18 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
 
                 tile_safe = (base_idx_int + BLOCK_THREADS * VEC_WIDTH) <= N
                 if tile_safe:
-                    vec_type_e = ir.VectorType.get([VEC_WIDTH], elem_type)
-                    vec_e = vector.load(
-                        vec_type_e, Input, [unwrap(row), unwrap(curr_idx)],
-                        nontemporal=USE_NONTEMPORAL, alignment=VEC_ALIGN
+                    tile_i = base_idx_int // tile_cols  # python int
+                    blkIn = gIn[(unwrap(row), tile_i)]
+                    blkS = gS[(0, tile_i)]
+                    thrIn = thr_copy_e.partition_S(blkIn)
+                    thrS = thr_copy_e.partition_S(blkS)
+                    rocir.copy(
+                        tiled_copy_e,
+                        thrIn,
+                        thrS,
+                        nontemporal=USE_NONTEMPORAL,
+                        alignment=VEC_ALIGN,
                     )
-                    vector.store(unwrap(vec_e), s_row, [unwrap(curr_idx)], alignment=VEC_ALIGN)
                 else:
                     c_N = arith.constant(T.index(), N).value
                     for k in range(VEC_WIDTH):
@@ -297,8 +331,18 @@ def build_rmsnorm_module(M: int, N: int, dtype_str: str):
                     norm = mlir_arith.MulFOp(unwrap(x), unwrap(rrms_splat), fastmath=fm_fast).result
                     y = mlir_arith.MulFOp(unwrap(norm), unwrap(g), fastmath=fm_fast).result
                     y_e = y if dtype_str == "f32" else mlir_arith.truncf(vec_type_e, unwrap(y))
-                    vector.store(unwrap(y_e), Output, [unwrap(row), unwrap(curr_idx)],
-                                 nontemporal=USE_NONTEMPORAL, alignment=VEC_ALIGN)
+                    tile_i = base_idx_int // tile_cols  # python int
+                    blkOut = gOut[(unwrap(row), tile_i)]
+                    thrOut = thr_copy_e.partition_S(blkOut)
+                    frgOut = rocir.make_fragment_like(thrOut, elem_type)
+                    vector.store(unwrap(y_e), frgOut.memref, [c0_idx, c0_idx], alignment=VEC_ALIGN)
+                    rocir.copy(
+                        tiled_copy_e,
+                        frgOut,
+                        thrOut,
+                        nontemporal=USE_NONTEMPORAL,
+                        alignment=VEC_ALIGN,
+                    )
                     g_pref_e = g_next_e
                 else:
                     c_N = arith.constant(T.index(), N).value

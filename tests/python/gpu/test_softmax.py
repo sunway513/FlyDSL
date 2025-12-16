@@ -132,6 +132,28 @@ def build_softmax_module(M, N, dtype_str="f32"):
             
             base_ptr = allocator.get_base()
             s_red = smem_red(base_ptr).get()
+            # Rocir-style: tensor views + tiled copies (like elementwise_add_kernel).
+            c0_idx = arith.index(0).value
+            tile_cols = BLOCK_SIZE * VEC_WIDTH  # python int
+            tensor_A = rocir.make_tensor(A, shape=(M, N), strides=(N, 1))
+            tensor_C = rocir.make_tensor(C, shape=(M, N), strides=(N, 1))
+            gA = rocir.zipped_divide(tensor_A, (1, tile_cols))
+            gC = rocir.zipped_divide(tensor_C, (1, tile_cols))
+
+            thr_layout = rocir.make_ordered_layout((1, BLOCK_SIZE), order=(1, 0))
+            val_layout = rocir.make_ordered_layout((1, VEC_WIDTH), order=(1, 0))
+            copy_atom_load = rocir.make_copy_atom(elem_type, vector_size=VEC_WIDTH)
+            copy_atom_store = rocir.make_copy_atom(elem_type, vector_size=VEC_WIDTH)
+            tiled_copy_A = rocir.make_tiled_copy_tv(
+                copy_atom_load, thr_layout, val_layout,
+                thr_shape=(1, BLOCK_SIZE), val_shape=(1, VEC_WIDTH)
+            )
+            tiled_copy_C = rocir.make_tiled_copy_tv(
+                copy_atom_store, thr_layout, val_layout,
+                thr_shape=(1, BLOCK_SIZE), val_shape=(1, VEC_WIDTH)
+            )
+            thr_copy_A = tiled_copy_A.get_slice(unwrap(tid))
+            thr_copy_C = tiled_copy_C.get_slice(unwrap(tid))
             
             # Element-type constants
             c_zero = arith.constant(0.0, type=compute_type).value
@@ -146,6 +168,12 @@ def build_softmax_module(M, N, dtype_str="f32"):
                 # AMD wavefront size is 64 on gfx9+/gfx10+/gfx11.
                 WARP_SIZE = 64
                 NUM_WAVES = (BLOCK_SIZE + WARP_SIZE - 1) // WARP_SIZE  # python int
+                # Use Rocir layout algebra to compute LDS indices for the reduction scratch.
+                c_num_waves = arith.index(NUM_WAVES).value
+                c1 = arith.index(1).value
+                shape_red = rocir.make_shape(unwrap(c_num_waves))
+                stride_red = rocir.make_stride(unwrap(c1))
+                layout_red = rocir.make_layout(shape_red, stride_red)
 
                 tid_i32 = mlir_arith.IndexCastOp(T.i32(), unwrap(tid)).result
                 c_warp_i32 = arith.constant(WARP_SIZE, type=T.i32()).value
@@ -173,7 +201,8 @@ def build_softmax_module(M, N, dtype_str="f32"):
                 if_lane0 = scf.IfOp(unwrap(is_lane0))
                 with ir.InsertionPoint(if_lane0.then_block):
                     wave_idx = mlir_arith.IndexCastOp(T.index(), unwrap(wave_i32)).result
-                    memref.store(unwrap(w), s_red, [unwrap(wave_idx)])
+                    red_idx = rocir.crd2idx(rocir.make_coord(unwrap(wave_idx)), layout_red)
+                    memref.store(unwrap(w), s_red, [unwrap(red_idx)])
                     scf.yield_([])
                 gpu.barrier()
 
@@ -193,7 +222,8 @@ def build_softmax_module(M, N, dtype_str="f32"):
                     if_in = scf.IfOp(unwrap(in_range), [compute_type], hasElse=True)
                     with ir.InsertionPoint(if_in.then_block):
                         lane_idx = mlir_arith.IndexCastOp(T.index(), unwrap(lane_i32)).result
-                        v = memref.load(s_red, [unwrap(lane_idx)])
+                        red_idx = rocir.crd2idx(rocir.make_coord(unwrap(lane_idx)), layout_red)
+                        v = memref.load(s_red, [unwrap(red_idx)])
                         scf.yield_([unwrap(v)])
                     with ir.InsertionPoint(if_in.else_block):
                         neutral = c_neg_inf if reduce_op_name == "max" else c_zero
@@ -216,16 +246,19 @@ def build_softmax_module(M, N, dtype_str="f32"):
                     ).result
                     if_lane0_2 = scf.IfOp(unwrap(is_lane0_2))
                     with ir.InsertionPoint(if_lane0_2.then_block):
-                        memref.store(unwrap(ww), s_red, [unwrap(c_zero_idx)])
+                        red_idx0 = rocir.crd2idx(rocir.make_coord(unwrap(c_zero_idx)), layout_red)
+                        memref.store(unwrap(ww), s_red, [unwrap(red_idx0)])
                         scf.yield_([])
 
                     scf.yield_([unwrap(ww)])
                 with ir.InsertionPoint(if_wave0.else_block):
-                    keep = memref.load(s_red, [unwrap(c_zero_idx)])
+                    red_idx0 = rocir.crd2idx(rocir.make_coord(unwrap(c_zero_idx)), layout_red)
+                    keep = memref.load(s_red, [unwrap(red_idx0)])
                     scf.yield_([unwrap(keep)])
                 gpu.barrier()
 
-                return memref.load(s_red, [unwrap(c_zero_idx)])
+                red_idx0 = rocir.crd2idx(rocir.make_coord(unwrap(c_zero_idx)), layout_red)
+                return memref.load(s_red, [unwrap(red_idx0)])
 
             # 1. Load Data into Registers (Buffering)
             # List of buffered values (vector or scalar with validity)
@@ -250,12 +283,20 @@ def build_softmax_module(M, N, dtype_str="f32"):
                 is_safe_vector = (base_idx_int + (BLOCK_SIZE - 1) * VEC_WIDTH + VEC_WIDTH) <= N
                 
                 if is_safe_vector:
-                    # Use vector load
-                    vec_type_e = ir.VectorType.get([VEC_WIDTH], elem_type)
-                    vec_val_e = vector.load(
-                        vec_type_e, A, [unwrap(row), unwrap(curr_idx)],
-                        nontemporal=USE_NONTEMPORAL, alignment=VEC_ALIGN
+                    # Rocir tiled copy: global -> rmem fragment, then load vector from fragment.
+                    tile_i = base_idx_int // tile_cols  # python int
+                    blkA = gA[(unwrap(row), tile_i)]
+                    thrA = thr_copy_A.partition_S(blkA)
+                    frgA = rocir.make_fragment_like(thrA, elem_type)
+                    rocir.copy(
+                        tiled_copy_A,
+                        thrA,
+                        frgA,
+                        nontemporal=USE_NONTEMPORAL,
+                        alignment=VEC_ALIGN,
                     )
+                    vec_type_e = ir.VectorType.get([VEC_WIDTH], elem_type)
+                    vec_val_e = vector.load(vec_type_e, frgA.memref, [c0_idx, c0_idx], alignment=VEC_ALIGN)
                     if dtype_str == "bf16":
                         vec_type_c = ir.VectorType.get([VEC_WIDTH], compute_type)
                         vec_val = mlir_arith.extf(vec_type_c, unwrap(vec_val_e))
@@ -434,15 +475,33 @@ def build_softmax_module(M, N, dtype_str="f32"):
                             packed = mlir_arith.OrIOp(unwrap(even), unwrap(odd_sh)).result
                             out_bf16 = vector.bitcast(vec_bf16_ty, unwrap(packed))
 
-                        vector.store(
-                            out_bf16, C, [unwrap(row), unwrap(curr_idx)],
-                            nontemporal=USE_NONTEMPORAL, alignment=VEC_ALIGN
+                        tile_i = base_idx_int // tile_cols  # python int
+                        blkC = gC[(unwrap(row), tile_i)]
+                        thrC = thr_copy_C.partition_S(blkC)
+                        frgC = rocir.make_fragment_like(thrC, elem_type)
+                        vector.store(out_bf16, frgC.memref, [c0_idx, c0_idx], alignment=VEC_ALIGN)
+                        rocir.copy(
+                            tiled_copy_C,
+                            frgC,
+                            thrC,
+                            nontemporal=USE_NONTEMPORAL,
+                            alignment=VEC_ALIGN,
                         )
                     else:
                         # Store directly in element type (no upcast)
-                        vector.store(
-                            norm_vec, C, [unwrap(row), unwrap(curr_idx)],
-                            nontemporal=USE_NONTEMPORAL, alignment=VEC_ALIGN
+                        tile_i = base_idx_int // tile_cols  # python int
+                        blkC = gC[(unwrap(row), tile_i)]
+                        thrC = thr_copy_C.partition_S(blkC)
+                        frgC = rocir.make_fragment_like(thrC, elem_type)
+                        vec_type_e = ir.VectorType.get([VEC_WIDTH], elem_type)
+                        norm_e = norm_vec if dtype_str != "bf16" else mlir_arith.truncf(vec_type_e, unwrap(norm_vec))
+                        vector.store(unwrap(norm_e), frgC.memref, [c0_idx, c0_idx], alignment=VEC_ALIGN)
+                        rocir.copy(
+                            tiled_copy_C,
+                            frgC,
+                            thrC,
+                            nontemporal=USE_NONTEMPORAL,
+                            alignment=VEC_ALIGN,
                         )
                     
                 else:
