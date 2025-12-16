@@ -38,7 +38,7 @@ def test_layout_static_types():
             unwrap(rocir.size(layout)),
         ]
     
-    pipeline = Pipeline().Func(Pipeline().rocir_to_standard()).canonicalize().cse()
+    pipeline = Pipeline().rocir_to_standard().canonicalize().cse()
     run_pipeline(ctx.module, pipeline)
     assert ctx.module.operation.verify()
 
@@ -64,7 +64,7 @@ def test_layout_dynamic_types():
             unwrap(rocir.size(layout)),
         ]
     
-    pipeline = Pipeline().Func(Pipeline().rocir_to_standard()).canonicalize().cse()
+    pipeline = Pipeline().rocir_to_standard().canonicalize().cse()
     run_pipeline(ctx.module, pipeline)
     assert ctx.module.operation.verify()
 
@@ -89,7 +89,7 @@ def test_composition_static_vs_dynamic():
             vals.append(unwrap(rocir.get(stride, Index(i))))
         return vals
     
-    pipeline = Pipeline().Func(Pipeline().rocir_to_standard()).canonicalize().cse()
+    pipeline = Pipeline().rocir_to_standard().canonicalize().cse()
     run_pipeline(ctx_static.module, pipeline)
     assert ctx_static.module.operation.verify()
     
@@ -142,7 +142,7 @@ def test_mixed_static_dynamic():
             unwrap(rocir.get(stride, Index(1))),
         ]
     
-    pipeline = Pipeline().Func(Pipeline().rocir_to_standard()).canonicalize().cse()
+    pipeline = Pipeline().rocir_to_standard().canonicalize().cse()
     run_pipeline(ctx.module, pipeline)
     assert ctx.module.operation.verify()
 

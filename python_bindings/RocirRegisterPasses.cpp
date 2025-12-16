@@ -41,5 +41,6 @@ NB_MODULE(_rocirPasses, m) {
 
   // TableGen-generated registrations
   ::mlir::registerRocirToStandardPass();
+  ::mlir::registerRocirTrivialDCEPass();
 }
 

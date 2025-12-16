@@ -5,6 +5,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Pass/Pass.h"
@@ -1165,9 +1166,28 @@ struct GetOpLowering : public RewritePattern {
       flattenValue(v);
     }
     
-    // If idx is constant, extract from flattened values
-    if (auto constOp = idx.getDefiningOp<arith::ConstantIndexOp>()) {
-      int64_t idxVal = constOp.value();
+    // If idx is constant, extract from flattened values.
+    // Accept common constant forms:
+    // - arith.constant : index
+    // - arith.constant_index (C++ wrapper)
+    // - arith.index_cast of a constant integer.
+    std::function<std::optional<int64_t>(Value)> getConstIndex =
+        [&](Value v) -> std::optional<int64_t> {
+      if (auto constIdx = v.getDefiningOp<arith::ConstantIndexOp>())
+        return constIdx.value();
+      if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
+        if (llvm::isa<IndexType>(cst.getType())) {
+          if (auto intAttr = llvm::dyn_cast<IntegerAttr>(cst.getValue()))
+            return intAttr.getInt();
+        }
+      }
+      if (auto cast = v.getDefiningOp<arith::IndexCastOp>())
+        return getConstIndex(cast.getIn());
+      return std::nullopt;
+    };
+
+    if (auto idxValOpt = getConstIndex(idx)) {
+      int64_t idxVal = *idxValOpt;
       if (idxVal >= 0 && idxVal < (int64_t)flatValues.size()) {
         rewriter.replaceOp(op, flatValues[idxVal]);
         return success();
@@ -1179,6 +1199,7 @@ struct GetOpLowering : public RewritePattern {
     return failure();
   }
 };
+
 
 // Lower rank to a constant.
 struct RankOpLowering : public RewritePattern {

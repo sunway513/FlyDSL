@@ -21,7 +21,7 @@ def Rocir_CoordType : Type<CPred<"llvm::isa<::mlir::rocir::CoordType>($_self)">,
 // Construction Operations
 //===----------------------------------------------------------------------===//
 
-def Rocir_MakeShapeOp : Rocir_Op<"make_shape", []> {
+def Rocir_MakeShapeOp : Rocir_Op<"make_shape", [Pure]> {
   let summary = "Create a rocir shape from index values or nested shapes";
   let description = [{
     Creates a shape value from runtime index values or nested shapes.
@@ -35,7 +35,7 @@ def Rocir_MakeShapeOp : Rocir_Op<"make_shape", []> {
   let assemblyFormat = "$values attr-dict `:` functional-type($values, $result)";
 }
 
-def Rocir_MakeStrideOp : Rocir_Op<"make_stride", []> {
+def Rocir_MakeStrideOp : Rocir_Op<"make_stride", [Pure]> {
   let summary = "Create a rocir stride from index values or nested strides";
   let description = [{
     Creates a stride value from runtime index values or nested strides.
@@ -49,7 +49,7 @@ def Rocir_MakeStrideOp : Rocir_Op<"make_stride", []> {
   let assemblyFormat = "$values attr-dict `:` functional-type($values, $result)";
 }
 
-def Rocir_MakeLayoutOp : Rocir_Op<"make_layout", []> {
+def Rocir_MakeLayoutOp : Rocir_Op<"make_layout", [Pure]> {
   let summary = "Create a rocir layout from shape and stride";
   let description = [{
     Creates a layout value by combining a shape and stride.
@@ -60,7 +60,7 @@ def Rocir_MakeLayoutOp : Rocir_Op<"make_layout", []> {
   let assemblyFormat = "$shape `,` $stride attr-dict `:` functional-type(operands, $result)";
 }
 
-def Rocir_MakeCoordOp : Rocir_Op<"make_coord", []> {
+def Rocir_MakeCoordOp : Rocir_Op<"make_coord", [Pure]> {
   let summary = "Create a rocir coordinate from index values";
   let description = [{
     Creates a coordinate value from runtime index values.

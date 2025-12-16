@@ -22,17 +22,30 @@ def unwrap(val):
     return val
 
 
+def flatten_nested_list(nested):
+    """Flatten a nested list/tuple structure into a flat list."""
+    if not isinstance(nested, (list, tuple)):
+        return [nested]
+    flat = []
+    for item in nested:
+        flat.extend(flatten_nested_list(item))
+    return flat
+
+
 def run_lowering_test(ctx, test_name, expected_val=None, expected_vals=None,
                       dynamic_indices=None):
     """Run the lowering pipeline and verify success and result value(s).
     
     Uses assertions for pytest compatibility - returns None on success, raises on failure.
     """
+    if expected_vals is not None:
+        expected_vals = flatten_nested_list(expected_vals)
+
     print(f"  Running lowering pipeline for {test_name}...")
     
     # Lower rocir ops to standard arithmetic
-    # Use nested pipeline because RocirToStandardPass is restricted to func.func
-    pipeline = Pipeline().Func(Pipeline().rocir_to_standard()).canonicalize().cse()
+    # RocirToStandardPass runs at module scope (can lower Rocir ops inside gpu.func).
+    pipeline = Pipeline().rocir_to_standard().canonicalize().cse()
     run_pipeline(ctx.module, pipeline)
     
     assert ctx.module.operation.verify(), f"{test_name}: IR verification failed."
@@ -280,7 +293,9 @@ def test_composition_basic():
         return vals
 
     # Expected: shape [2, 2, 3] + stride [24, 2, 8]
-    run_lowering_test(ctx, "composition_basic", expected_vals=[2, 2, 3, 24, 2, 8])
+    # Structure: ((2,2),3):((24,2),8)
+    run_lowering_test(ctx, "composition_basic", 
+                      expected_vals=[((2, 2), 3), ((24, 2), 8)])
 
 
 def test_composition_static_vs_dynamic():
@@ -354,7 +369,9 @@ def test_composition_static_vs_dynamic():
     print("  Creating static layout: B_static = make_layout((5, 4), stride=(1, 5))")
     print("  Computing: R_static = composition(A_static, B_static)")
     print("  Expected: All values will be arith.constant operations")
-    run_lowering_test(ctx, "composition_static", expected_vals=[5, 2, 2, 16, 80, 4])
+    # Structure: (5,(2,2)):(16,(80,4)) ?? Notebook says (5,2,2)
+    run_lowering_test(ctx, "composition_static", 
+                      expected_vals=[(5, 2, 2), (16, 80, 4)])
     
     # -------------------------------------------------------------------------
     # Part 2: DYNAMIC composition - runtime values from function arguments
@@ -417,7 +434,7 @@ def test_composition_static_vs_dynamic():
     # For dynamic composition, we don't verify exact values since they're runtime-dependent
     # We just ensure the lowering succeeds and produces valid IR
     from rocdsl.compiler.pipeline import Pipeline, run_pipeline
-    pipeline = Pipeline().Func(Pipeline().rocir_to_standard()).canonicalize().cse()
+    pipeline = Pipeline().rocir_to_standard().canonicalize().cse()
     run_pipeline(ctx_dynamic.module, pipeline)
     assert ctx_dynamic.module.operation.verify(), "Dynamic composition IR verification failed"
     print("  ✓ composition_dynamic: Lowering successful!")
@@ -496,8 +513,9 @@ def test_logical_divide_1d():
                 unwrap(stride_d0), unwrap(stride_d1), unwrap(stride_d2), unwrap(stride_d3)]
 
     # Expected: shape [2,2,2,3] + stride [4,1,2,8]
+    # Structure: ((2,2),(2,3)):((4,1),(2,8))
     run_lowering_test(ctx, "logical_divide_1d", 
-                            expected_vals=[2, 2, 2, 3, 4, 1, 2, 8])
+                            expected_vals=[((2, 2), (2, 3)), ((4, 1), (2, 8))])
 
 
 def test_logical_divide_2d():
@@ -549,8 +567,9 @@ def test_logical_divide_2d():
     #                        expected_vals=[3, 2, 2, 4, 2, 2, 177, 59, 13, 2, 26, 1])
     # print("  ✓ logical_divide_2d: Skipping value verification due to composition split (verified structure manually)")
     # run_lowering_test(ctx, "logical_divide_2d")
+    # Structure: ((3,3),((2,4),(2,2))):((177,59),((13,2),(26,1)))
     run_lowering_test(ctx, "logical_divide_2d", 
-                            expected_vals=[3, 3, 2, 4, 2, 2, 177, 59, 13, 2, 26, 1])
+                            expected_vals=[((3, 3), ((2, 4), (2, 2))), ((177, 59), ((13, 2), (26, 1)))])
 
 
 def test_shape_stride_type_nested_spec_printing():
@@ -607,8 +626,9 @@ def test_zipped_divide():
         return vals
 
     # Expected: shape [3,2,4,3,2,2] + stride [177,13,2,59,26,1]
+    # Structure: ((3,(2,4)),(3,(2,2))):((177,(13,2)),(59,(26,1)))
     run_lowering_test(ctx, "zipped_divide", 
-                           expected_vals=[3, 2, 4, 3, 2, 2, 177, 13, 2, 59, 26, 1])
+                           expected_vals=[((3, (2, 4)), (3, (2, 2))), ((177, (13, 2)), (59, (26, 1)))])
 
 
 def test_tiled_divide():
@@ -652,8 +672,9 @@ def test_tiled_divide():
         return vals
 
     # Expected: shape [3,2,4,3,2,2] + stride [177,13,2,59,26,1]
+    # Structure: ((3,(2,4)),3,(2,2)):((177,(13,2)),59,(26,1))
     run_lowering_test(ctx, "tiled_divide", 
-                           expected_vals=[3, 2, 4, 3, 2, 2, 177, 13, 2, 59, 26, 1])
+                           expected_vals=[((3, (2, 4)), 3, (2, 2)), ((177, (13, 2)), 59, (26, 1))])
 
 
 def test_flat_divide():
@@ -735,8 +756,9 @@ def test_logical_product_1d():
     # Expected: block shape (2,2) concatenated with tiler shape (6)
     # Stride: block stride (4,1) concatenated with scaled tiler stride (1 * block_size)
     # block_size = 2*2 = 4, so tiler stride becomes 1*4 = 4
+    # Structure: (2,2,6):(4,1,4)
     run_lowering_test(ctx, "logical_product_1d",
-                            expected_vals=[2, 2, 6, 4, 1, 4])
+                            expected_vals=[(2, 2, 6), (4, 1, 4)])
 
 
 def test_blocked_raked_product():
@@ -779,8 +801,17 @@ def test_blocked_raked_product():
         return vals
 
     # Expected: shape [2,5,3,4] + stride [5,1,10,30] (block_size=10)
+    # Structure: ((2,3),(5,4)):((5,10),(1,30))
+    # Wait, ((2,3),(5,4)) flattened is [2, 3, 5, 4] or [2, 5, 3, 4] depending on composition?
+    # The previous passing test used [2, 5, 3, 4].
+    # But if structure is ((2,3),(5,4)), it should be 2, 3, 5, 4.
+    # Blocked product (A, B) -> (A, B) structure?
+    # No, blocked product typically interleave or append.
+    # If the previous test passed with [2, 5, 3, 4], then the result is (2, 5, 3, 4).
+    # I'll stick to flat list wrapped in tuple if structure is ambiguous here.
+    # But for safety I'll group shape and stride.
     run_lowering_test(ctx, "blocked_raked_product", 
-                            expected_vals=[2, 5, 3, 4, 5, 1, 10, 30])
+                            expected_vals=[(2, 5, 3, 4), (5, 1, 10, 30)])
 
 
 def test_zipped_tiled_flat_product():
@@ -823,8 +854,9 @@ def test_zipped_tiled_flat_product():
         return vals
 
     # Expected: shape [2,5,3,4] + stride [5,1,10,30] (block_size=10)
+    # Structure: (2,5,3,4):(5,1,10,30)
     run_lowering_test(ctx, "zipped_tiled_flat_product", 
-                            expected_vals=[2, 5, 3, 4, 5, 1, 10, 30])
+                            expected_vals=[(2, 5, 3, 4), (5, 1, 10, 30)])
 
 
 def test_complement_simple():

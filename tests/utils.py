@@ -16,6 +16,7 @@ def compile_to_hsaco(mlir_module, kernel_name="kernel", waves_per_eu: Optional[i
     
     Pipeline:
     1. Apply rocir coordinate lowering (rocir ops -> arithmetic)
+    2. Lower remaining Rocir ops to standard dialects (rocir-to-standard)
     2. Canonicalize and CSE
     3. Attach ROCDL target for current GPU architecture
     4. Convert GPU dialect to ROCDL
@@ -116,6 +117,20 @@ def compile_to_hsaco(mlir_module, kernel_name="kernel", waves_per_eu: Optional[i
     # Apply rocir coordinate lowering first
     lowered_module = _timeit("02_rocir_coord_lowering", lambda: apply_rocir_coord_lowering(mlir_module))
     dump_stage(lowered_module, "02_rocir_lowered")
+
+    # Lower remaining Rocir ops before any GPU/LLVM conversion.
+    # This keeps Rocir dialect ops from leaking into LLVM translation (which would
+    # otherwise fail with leftover unrealized conversion casts).
+    lowered_module = _timeit("02b_rocir_to_standard",
+                             lambda: run_pipeline(lowered_module, Pipeline().rocir_to_standard()))
+    dump_stage(lowered_module, "02b_rocir_to_standard")
+
+    # Dead-code elimination (module-level). In our embedded environment upstream
+    # MLIR does not register a generic 'dce/adce', so we provide a standalone
+    # pass 'trivial-dce'.
+    lowered_module = _timeit("02c_trivial_dce",
+                             lambda: run_pipeline(lowered_module, Pipeline().add_pass("trivial-dce")))
+    dump_stage(lowered_module, "02c_trivial_dce")
     
     # Get the current GPU architecture
     gpu_arch = get_hip_arch()
