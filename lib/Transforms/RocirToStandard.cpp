@@ -63,49 +63,44 @@ struct LayoutNode {
 };
 
 // Helper to deserialize from MakeShape/MakeStride ops
-static LayoutNode deserializeLayoutNode(Operation* op) {
+static LayoutNode deserializeLayoutNode(Operation* op, PatternRewriter& rewriter, Location loc) {
     SmallVector<Value> values;
     ArrayRef<int32_t> structure;
+    ArrayRef<int64_t> dims;
     
     if (isa<MakeShapeOp>(op)) {
         auto makeShape = cast<MakeShapeOp>(op);
         values = makeShape.getValues();
         if (auto type = dyn_cast<ShapeType>(makeShape.getResult().getType())) {
             structure = type.getStructure();
+            dims = type.getDims();
         }
     } else if (isa<MakeStrideOp>(op)) {
         auto makeStride = cast<MakeStrideOp>(op);
         values = makeStride.getValues();
         if (auto type = dyn_cast<StrideType>(makeStride.getResult().getType())) {
             structure = type.getStructure();
+            dims = type.getDims();
         }
     } else {
-        // Not a make op, assume leaf or fail?
-        // If it's a value coming from elsewhere (e.g. function arg), we might assume flat structure or treat as leaf.
-        // For now, treat as single leaf if it produces a shape/stride type with rank 0/1, or fail.
         if (!op) return LayoutNode(Value()); 
         return LayoutNode(op->getResult(0)); 
     }
     
     if (structure.empty()) {
         // Assume flat structure - but values might be nested shapes/strides!
-        // Need to recursively deserialize nested values
         std::vector<LayoutNode> children;
         for (auto v : values) {
-            // Check if this value is a nested shape/stride
             if (auto *defOp = v.getDefiningOp()) {
                 auto opName = defOp->getName().getStringRef();
                 if (opName == "rocir.make_shape" || opName == "rocir.make_stride") {
-                    // Recursively deserialize nested structure
-                    children.push_back(deserializeLayoutNode(defOp));
+                    children.push_back(deserializeLayoutNode(defOp, rewriter, loc));
                     continue;
                 }
             }
-            // Leaf value (index)
             children.push_back(LayoutNode(v));
         }
         if (children.empty()) {
-             // Empty tuple
              return LayoutNode(std::vector<LayoutNode>{});
         }
         return LayoutNode(children);
@@ -114,26 +109,36 @@ static LayoutNode deserializeLayoutNode(Operation* op) {
     // Parse structure
     int valueIdx = 0;
     int structIdx = 0;
+    int dimIdx = 0;
     
     std::function<LayoutNode()> parse = [&]() -> LayoutNode {
         if (structIdx >= static_cast<int>(structure.size())) return LayoutNode(Value());
         
         int32_t code = structure[structIdx++];
         if (code == -1) {
-            // Leaf - get next value
-            if (valueIdx >= static_cast<int>(values.size())) return LayoutNode(Value());
-            Value v = values[valueIdx++];
+            // Leaf
+            int64_t dimVal = (dimIdx < static_cast<int>(dims.size())) ? dims[dimIdx++] : -1;
             
-            // Check if this value is actually a nested shape/stride
-            if (auto *defOp = v.getDefiningOp()) {
-                auto opName = defOp->getName().getStringRef();
-                if (opName == "rocir.make_shape" || opName == "rocir.make_stride") {
-                    // Recursively deserialize nested structure
-                    return deserializeLayoutNode(defOp);
+            if (dimVal != -1) {
+                // Constant from Type
+                Value c = rewriter.create<arith::ConstantIndexOp>(loc, dimVal);
+                return LayoutNode(c);
+            } else {
+                // Dynamic from operands
+                if (valueIdx >= static_cast<int>(values.size())) {
+                    // This should not happen if IR is valid vs Type
+                    return LayoutNode(Value()); 
                 }
+                Value v = values[valueIdx++];
+                
+                if (auto *defOp = v.getDefiningOp()) {
+                    auto opName = defOp->getName().getStringRef();
+                    if (opName == "rocir.make_shape" || opName == "rocir.make_stride") {
+                        return deserializeLayoutNode(defOp, rewriter, loc);
+                    }
+                }
+                return LayoutNode(v);
             }
-            
-            return LayoutNode(v);
         } else {
             std::vector<LayoutNode> children;
             for (int i = 0; i < code; ++i) {
@@ -1080,8 +1085,8 @@ struct CosizeOpLowering : public RewritePattern {
       return failure();
     
     // Flatten shapes and strides to leaves to handle nested structures
-    LayoutNode shapeNode = deserializeLayoutNode(shapeOp);
-    LayoutNode strideNode = deserializeLayoutNode(strideOp);
+    LayoutNode shapeNode = deserializeLayoutNode(shapeOp, rewriter, loc);
+    LayoutNode strideNode = deserializeLayoutNode(strideOp, rewriter, loc);
     
     std::vector<LayoutNode> shapeLeaves;
     std::vector<LayoutNode> strideLeaves;
@@ -1504,10 +1509,10 @@ struct CompositionOpLowering : public OpRewritePattern<CompositionOp> {
     auto strideBOp = layoutBOp->getOperand(1).getDefiningOp();
     
     // Deserialize to LayoutNodes
-    LayoutNode shapeA = deserializeLayoutNode(shapeAOp);
-    LayoutNode strideA = deserializeLayoutNode(strideAOp);
-    LayoutNode shapeB = deserializeLayoutNode(shapeBOp);
-    LayoutNode strideB = deserializeLayoutNode(strideBOp);
+    LayoutNode shapeA = deserializeLayoutNode(shapeAOp, rewriter, loc);
+    LayoutNode strideA = deserializeLayoutNode(strideAOp, rewriter, loc);
+    LayoutNode shapeB = deserializeLayoutNode(shapeBOp, rewriter, loc);
+    LayoutNode strideB = deserializeLayoutNode(strideBOp, rewriter, loc);
     
     // Coalesce the LHS before composition when it is safe; tuple RHS would lose structure.
     // TODO: implement proper coprofile-based coalescing.
@@ -1820,8 +1825,8 @@ static Value lowerLogicalDivide(
     auto makeCombinedShape = rewriter.create<MakeShapeOp>(loc, combinedShapeType, combinedShapeVals);
     auto makeCombinedStride = rewriter.create<MakeStrideOp>(loc, combinedStrideType, combinedStrideVals);
     
-    LayoutNode combinedShapeNode = deserializeLayoutNode(makeCombinedShape.getOperation());
-    LayoutNode combinedStrideNode = deserializeLayoutNode(makeCombinedStride.getOperation());
+    LayoutNode combinedShapeNode = deserializeLayoutNode(makeCombinedShape.getOperation(), rewriter, loc);
+    LayoutNode combinedStrideNode = deserializeLayoutNode(makeCombinedStride.getOperation(), rewriter, loc);
     
     auto [coalescedInputShape, coalescedInputStride] = coalesceLayoutNode(inputShape, inputStride, loc, rewriter);
     
@@ -1861,10 +1866,10 @@ struct LogicalDivideOpLowering : public OpRewritePattern<LogicalDivideOp> {
     Value tilerShape = tilerLayoutOp->getOperand(0);
     Value tilerStride = tilerLayoutOp->getOperand(1);
     
-    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp());
-    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp());
-    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp());
-    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp());
+    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp(), rewriter, loc);
+    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp(), rewriter, loc);
     
     auto ctx = rewriter.getContext();
     // logical_divide does not zip results of distribution
@@ -1904,10 +1909,10 @@ struct TiledDivideOpLowering : public OpRewritePattern<TiledDivideOp> {
     Value tilerShape = tilerLayoutOp->getOperand(0);
     Value tilerStride = tilerLayoutOp->getOperand(1);
     
-    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp());
-    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp());
-    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp());
-    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp());
+    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp(), rewriter, loc);
+    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp(), rewriter, loc);
     
     auto ctx = rewriter.getContext();
     // tiled_divide zips results of distribution
@@ -2011,10 +2016,10 @@ struct ZippedDivideOpLowering : public OpRewritePattern<ZippedDivideOp> {
     Value tilerShape = tilerLayoutOp->getOperand(0);
     Value tilerStride = tilerLayoutOp->getOperand(1);
     
-    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp());
-    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp());
-    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp());
-    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp());
+    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp(), rewriter, loc);
+    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp(), rewriter, loc);
     
     auto ctx = rewriter.getContext();
     // zipped_divide zips results of distribution
@@ -2060,10 +2065,10 @@ struct FlatDivideOpLowering : public OpRewritePattern<FlatDivideOp> {
     Value tilerShape = tilerLayoutOp->getOperand(0);
     Value tilerStride = tilerLayoutOp->getOperand(1);
     
-    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp());
-    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp());
-    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp());
-    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp());
+    LayoutNode inputShapeNode = deserializeLayoutNode(inputShape.getDefiningOp(), rewriter, loc);
+    LayoutNode inputStrideNode = deserializeLayoutNode(inputStride.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerShapeNode = deserializeLayoutNode(tilerShape.getDefiningOp(), rewriter, loc);
+    LayoutNode tilerStrideNode = deserializeLayoutNode(tilerStride.getDefiningOp(), rewriter, loc);
     
     auto ctx = rewriter.getContext();
     // flat_divide uses zipped structure internally before flattening
