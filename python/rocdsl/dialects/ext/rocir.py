@@ -17,8 +17,14 @@ from _mlir.ir import (
     IntegerType,
     MemRefType,
 )
-from _mlir.dialects import memref, arith, scf, gpu
+from _mlir.dialects import memref, arith, scf, gpu, vector, math, llvm
 from _mlir.dialects import rocir as rocir_ops
+
+# Also expose RocDSL "extended" wrappers (like test_eltwise_add.py uses) so
+# tests can route everything through `rocir.*` without importing `mlir.*`.
+from . import arith as arith_ext  # noqa: E402
+from . import scf as scf_ext      # noqa: E402
+from . import gpu as gpu_ext      # noqa: E402
 
 
 
@@ -1980,6 +1986,10 @@ def copy(copy_desc, src, dst,
          src_indices: Optional[List[Value]] = None,
          dst_indices: Optional[List[Value]] = None,
          pred: Optional[Value] = None,
+         *,
+         nontemporal: Optional[bool] = None,
+         alignment: Optional[int] = None,
+         return_vector: bool = False,
          loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> None:
     """Execute a copy operation using the given copy atom.
     
@@ -1999,6 +2009,9 @@ def copy(copy_desc, src, dst,
     """
     from _mlir.dialects import memref as memref_dialect
     loc = _get_location(loc)
+
+    # If return_vector=True, we capture the last vector value loaded by the vectorized path.
+    captured_vec = {"val": None}
 
     def emit_tensor_copy(copy_shape, src_view: TensorView, dst_view: TensorView, pred_view: Optional[Union[TensorView, Value]]):
         from _mlir.dialects import vector
@@ -2088,7 +2101,15 @@ def copy(copy_desc, src, dst,
                         store_indices = _normalize_indices_to_memref(dst_view.memref, [_unwrap_value(idx) for idx in vec_dst_idx], dst_view.strides, loc)
 
                         # Vector Load
-                        vec_val = vector.load(vec_type, src_view.memref, load_indices)
+                        vec_val = vector.load(
+                            vec_type,
+                            src_view.memref,
+                            load_indices,
+                            nontemporal=nontemporal,
+                            alignment=alignment,
+                        )
+                        if return_vector and captured_vec["val"] is None:
+                            captured_vec["val"] = vec_val
 
                         # Handle Predicate (TensorView case only inside loop)
                         if pred_view is not None and isinstance(pred_view, TensorView):
@@ -2110,11 +2131,23 @@ def copy(copy_desc, src, dst,
                             cond = _unwrap_value(cond)
                             if_op = scf.IfOp(cond, [], loc=loc)
                             with InsertionPoint(if_op.then_block):
-                                vector.store(vec_val, dst_view.memref, store_indices)
+                                vector.store(
+                                    vec_val,
+                                    dst_view.memref,
+                                    store_indices,
+                                    nontemporal=nontemporal,
+                                    alignment=alignment,
+                                )
                                 scf.YieldOp([])
                         else:
                             # No predicate or handled by hoisted check
-                            vector.store(vec_val, dst_view.memref, store_indices)
+                            vector.store(
+                                vec_val,
+                                dst_view.memref,
+                                store_indices,
+                                nontemporal=nontemporal,
+                                alignment=alignment,
+                            )
 
                 if hoisted_cond is not None:
                     # Hoist the scf.If outside the vector loop
@@ -2147,12 +2180,12 @@ def copy(copy_desc, src, dst,
     if isinstance(copy_desc, TiledCopy) and isinstance(src, TensorView) and isinstance(dst, TensorView):
         # pred can be TensorView or scalar Value
         emit_tensor_copy(copy_desc.val_shape, src, dst, pred)
-        return
+        return captured_vec["val"] if return_vector else None
 
     if isinstance(src, TensorView) and isinstance(dst, TensorView):
         # pred can be TensorView or scalar Value
         emit_tensor_copy(src.shape, src, dst, pred)
-        return
+        return captured_vec["val"] if return_vector else None
 
     src_val = _unwrap_value(src)
     dst_val = _unwrap_value(dst)
@@ -2164,6 +2197,7 @@ def copy(copy_desc, src, dst,
             memref_dialect.store(val, dst_val, d_idx)
         else:
             raise ValueError("copy requires explicit indices for raw values")
+    return captured_vec["val"] if return_vector else None
 
 
 #===----------------------------------------------------------------------===//

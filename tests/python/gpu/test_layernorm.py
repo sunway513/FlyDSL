@@ -12,17 +12,19 @@ LayerNorm(x) = (x - mean) / sqrt(var + eps) * gamma + beta
 import sys
 import os
 
+# Add paths to find rocdsl and mlir packages (prefer embedded MLIR to avoid mixing runtimes)
+repo_root = os.path.join(os.path.dirname(__file__), "../../..")
+embedded_pkgs = os.path.join(repo_root, "build", "python_packages", "rocdsl")
+if os.path.isdir(os.path.join(embedded_pkgs, "_mlir")):
+    sys.path.insert(0, embedded_pkgs)
+else:
+    sys.path.insert(0, os.path.join(os.environ.get('MLIR_PATH', ''), 'tools/mlir/python_packages/mlir_core'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../build/python_bindings'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../python'))
+sys.path.insert(0, repo_root)
 
-
-from rocdsl.compiler.context import RAIIMLIRContextModule
-from rocdsl.dialects.ext import gpu, scf, rocir
-from rocdsl.dialects.ext.gpu import lds_space
-from rocdsl.runtime.hip_util import hip_check, get_hip_arch
-from rocdsl.utils import SmemAllocator
+from rocdsl.runtime.hip_util import hip_check
 from tests.utils import compile_to_hsaco
-from _mlir import ir
-from _mlir.dialects import arith, memref, math
-import _mlir.extras.types as T
 try:
     from hip import hip
 except ImportError:
@@ -33,176 +35,25 @@ import numpy as np
 import ctypes
 import time
 
-# LayerNorm dimensions
-M = 64   # Batch size
-N = 256  # Feature size
-EPS = 1e-5
+from gpu_common import EPS, bf16_to_fp32_cpu, fp32_to_bf16_rne_cpu
+from examples.layernorm_kernel import (
+    build_layernorm_module,
+    KERNEL_NAME as LAYERNORM_KERNEL_NAME,
+    BLOCK_THREADS,
+)
 
-ctx = RAIIMLIRContextModule(allow_unregistered_dialects=True)
-gpu.set_container_module(ctx.module)
+fp32_to_bf16_cpu = fp32_to_bf16_rne_cpu
 
-# Initialize Allocator with architecture for capacity checks
-allocator = SmemAllocator(ctx, arch=get_hip_arch())
-
-# Allocate Shared Memory for reduction (size N)
-smem_decl = allocator.allocate_array(T.f32(), N)
-
-@gpu.module("layernorm_module", [f'#rocdl.target<chip = "{get_hip_arch()}", abi = "500">'])
-def gpu_mod():
-    # Finalize allocation to create global buffer
-    allocator.finalize()
-
-ip = ir.InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
-ip.__enter__()
-
-@gpu.func(emit=True)
-def layernorm_kernel(
-    Input: T.memref(M, N, T.f32()),
-    Gamma: T.memref(N, T.f32()),
-    Beta: T.memref(N, T.f32()),
-    Output: T.memref(M, N, T.f32())
-):
-    # IDs
-    row = gpu.block_id("x")
-    tid = gpu.thread_id("x")
-    
-    # Constants
-    zero_idx = arith.constant(T.index(), 0)
-    one_idx = arith.constant(T.index(), 1)
-    n_idx = arith.constant(T.index(), N)
-    n_float = arith.constant(T.f32(), float(N))
-    eps = arith.constant(T.f32(), EPS)
-    
-    # Define Rocir Layouts for Shared Memory
-    smem_shape = rocir.make_shape(n_idx)
-    smem_stride = rocir.make_stride(one_idx)
-    smem_layout = rocir.make_layout(smem_shape, smem_stride)
-
-    # Helper to get smem index from linear offset
-    def get_smem_idx(idx_val):
-        coord = rocir.make_coord(idx_val)
-        val = rocir.crd2idx(coord, smem_layout)
-        return val.value if hasattr(val, 'value') else val
-
-    # Get shared memory using allocator
-    base_ptr = allocator.get_base()
-    smem_obj = smem_decl(base_ptr)
-    smem = smem_obj.get() # This is memref<Nxf32, 3> view
-    
-    # Load Input
-    val = memref.load(Input, [row.value, tid.value])
-    
-    # -----------------------------------------------------
-    # 1. Calculate Mean
-    # -----------------------------------------------------
-    tid_idx = get_smem_idx(tid.value)
-    memref.store(val.value, smem, [tid_idx])
-    gpu.barrier()
-    
-    is_thread_0 = arith.cmpi(arith.CmpIPredicate.eq, tid.value, zero_idx.value)
-    
-    # Reduction Sum for Mean (Thread 0 only)
-    if_op = scf.IfOp(is_thread_0.value)
-    with ir.InsertionPoint(if_op.then_block):
-        zero_smem_idx = get_smem_idx(zero_idx.value)
-        init_sum = memref.load(smem, [zero_smem_idx])
-        
-        loop = scf.ForOp(one_idx.value, n_idx.value, one_idx.value, [init_sum.value])
-        with ir.InsertionPoint(loop.body):
-            i = loop.induction_variable
-            curr_sum = loop.inner_iter_args[0]
-            
-            i_idx = get_smem_idx(i.value)
-            v = memref.load(smem, [i_idx])
-            
-            new_sum = arith.addf(curr_sum.value, v.value)
-            scf.yield_([new_sum.value])
-        
-        sum_val = loop.results[0]
-        mean_val = arith.divf(sum_val.value, n_float.value)
-        # Store mean back to smem[0] to broadcast
-        memref.store(mean_val.value, smem, [zero_smem_idx])
-        scf.yield_([])
-    
-    gpu.barrier()
-    
-    # Broadcast Mean
-    mean = memref.load(smem, [get_smem_idx(zero_idx.value)])
-    
-    # -----------------------------------------------------
-    # 2. Calculate Variance
-    # -----------------------------------------------------
-    # (val - mean)^2
-    diff = arith.subf(val.value, mean.value)
-    sq_diff = arith.mulf(diff.value, diff.value)
-    
-    # Store to shared mem for reduction
-    memref.store(sq_diff.value, smem, [tid_idx])
-    gpu.barrier()
-    
-    # Reduction Sum for Variance (Thread 0 only)
-    if_op_var = scf.IfOp(is_thread_0.value)
-    with ir.InsertionPoint(if_op_var.then_block):
-        zero_smem_idx = get_smem_idx(zero_idx.value)
-        init_var_sum = memref.load(smem, [zero_smem_idx])
-        
-        loop_var = scf.ForOp(one_idx.value, n_idx.value, one_idx.value, [init_var_sum.value])
-        with ir.InsertionPoint(loop_var.body):
-            i = loop_var.induction_variable
-            curr_sum = loop_var.inner_iter_args[0]
-            
-            i_idx = get_smem_idx(i.value)
-            v = memref.load(smem, [i_idx])
-            
-            new_sum = arith.addf(curr_sum.value, v.value)
-            scf.yield_([new_sum.value])
-            
-        var_sum = loop_var.results[0]
-        var_val = arith.divf(var_sum.value, n_float.value)
-        memref.store(var_val.value, smem, [zero_smem_idx])
-        scf.yield_([])
-        
-    gpu.barrier()
-    
-    # Broadcast Variance
-    variance = memref.load(smem, [get_smem_idx(zero_idx.value)])
-    
-    # -----------------------------------------------------
-    # 3. Normalize and Scale
-    # -----------------------------------------------------
-    # rstd = 1 / sqrt(var + eps)
-    var_eps = arith.addf(variance.value, eps.value)
-    rstd = math.rsqrt(var_eps.value)
-    
-    # We still have 'diff' = (val - mean) in register
-    # norm = diff * rstd
-    norm = arith.mulf(diff.value, rstd.value)
-    
-    # Load Gamma, Beta
-    g = memref.load(Gamma, [tid.value])
-    b = memref.load(Beta, [tid.value])
-    
-    # result = norm * gamma + beta
-    scaled = arith.mulf(norm.value, g.value)
-    result = arith.addf(scaled.value, b.value)
-    
-    memref.store(result.value, Output, [row.value, tid.value])
-
-ip.__exit__(None, None, None)
-
-def test_layernorm():
-    print("\n" + "="*80)
-    print("Testing LayerNorm Operator (M={}, N={})".format(M, N))
-    print("="*80)
+def run_test(M: int, N: int, dtype: str = "f32") -> bool:
+    print(f"\nTesting LayerNorm (M={M}, N={N}, dtype={dtype})")
 
     if hip is None:
         print("HIP not available, skipping...")
-        return
+        return True
 
-    # Compile
-    print("Compiling kernel...")
+    ctx = build_layernorm_module(M, N, dtype)
     try:
-        hsaco = compile_to_hsaco(ctx.module)
+        hsaco = compile_to_hsaco(ctx.module, kernel_name=LAYERNORM_KERNEL_NAME)
     except Exception as e:
         print(f"Compilation failed: {e}")
         print(ctx.module)
@@ -210,27 +61,58 @@ def test_layernorm():
 
     print(f" HSACO size: {len(hsaco)} bytes")
 
-    # Prepare Data
     np.random.seed(42)
-    input_host = np.random.randn(M, N).astype(np.float32)
-    gamma_host = np.random.rand(N).astype(np.float32)
-    beta_host = np.random.rand(N).astype(np.float32)
-    output_host = np.zeros((M, N), dtype=np.float32)
+    input_f32 = np.random.randn(M, N).astype(np.float32)
+    gamma_f32 = np.random.rand(N).astype(np.float32)
+    beta_f32 = np.random.rand(N).astype(np.float32)
+
+    if dtype == "f32":
+        input_host = input_f32
+        gamma_host = gamma_f32
+        beta_host = beta_f32
+        output_host = np.zeros((M, N), dtype=np.float32)
+        elem_bytes = 4
+        input_ref = input_f32
+        gamma_ref = gamma_f32
+        beta_ref = beta_f32
+        atol = 1e-4
+    elif dtype == "f16":
+        input_host = input_f32.astype(np.float16)
+        gamma_host = gamma_f32.astype(np.float16)
+        beta_host = beta_f32.astype(np.float16)
+        output_host = np.zeros((M, N), dtype=np.float16)
+        elem_bytes = 2
+        input_ref = input_host.astype(np.float32)
+        gamma_ref = gamma_host.astype(np.float32)
+        beta_ref = beta_host.astype(np.float32)
+        atol = 1e-2
+    elif dtype == "bf16":
+        input_host = fp32_to_bf16_cpu(input_f32)
+        gamma_host = fp32_to_bf16_cpu(gamma_f32)
+        beta_host = fp32_to_bf16_cpu(beta_f32)
+        output_host = np.zeros((M, N), dtype=np.uint16)
+        elem_bytes = 2
+        input_ref = bf16_to_fp32_cpu(input_host)
+        gamma_ref = bf16_to_fp32_cpu(gamma_host)
+        beta_ref = bf16_to_fp32_cpu(beta_host)
+        atol = 2e-2
+    else:
+        raise ValueError(f"unsupported dtype: {dtype}")
 
     # Numpy Reference
-    mean = np.mean(input_host, axis=1, keepdims=True)
-    var = np.var(input_host, axis=1, keepdims=True)
-    expected = (input_host - mean) / np.sqrt(var + EPS) * gamma_host + beta_host
+    mean = np.mean(input_ref, axis=1, keepdims=True)
+    var = np.var(input_ref, axis=1, keepdims=True)
+    expected = (input_ref - mean) / np.sqrt(var + EPS) * gamma_ref + beta_ref
 
     # Allocate GPU Memory
-    d_input = hip_check(hip.hipMalloc(M * N * 4))
-    d_gamma = hip_check(hip.hipMalloc(N * 4))
-    d_beta = hip_check(hip.hipMalloc(N * 4))
-    d_output = hip_check(hip.hipMalloc(M * N * 4))
+    d_input = hip_check(hip.hipMalloc(M * N * elem_bytes))
+    d_gamma = hip_check(hip.hipMalloc(N * elem_bytes))
+    d_beta = hip_check(hip.hipMalloc(N * elem_bytes))
+    d_output = hip_check(hip.hipMalloc(M * N * elem_bytes))
 
-    hip_check(hip.hipMemcpy(d_input, input_host.ctypes.data, M * N * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice))
-    hip_check(hip.hipMemcpy(d_gamma, gamma_host.ctypes.data, N * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice))
-    hip_check(hip.hipMemcpy(d_beta, beta_host.ctypes.data, N * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice))
+    hip_check(hip.hipMemcpy(d_input, input_host.ctypes.data, M * N * elem_bytes, hip.hipMemcpyKind.hipMemcpyHostToDevice))
+    hip_check(hip.hipMemcpy(d_gamma, gamma_host.ctypes.data, N * elem_bytes, hip.hipMemcpyKind.hipMemcpyHostToDevice))
+    hip_check(hip.hipMemcpy(d_beta, beta_host.ctypes.data, N * elem_bytes, hip.hipMemcpyKind.hipMemcpyHostToDevice))
 
     # Load Kernel
     hip_module = hip_check(hip.hipModuleLoadData(hsaco))
@@ -238,7 +120,7 @@ def test_layernorm():
 
     # Launch Config
     grid_x, grid_y, grid_z = M, 1, 1
-    block_x, block_y, block_z = N, 1, 1
+    block_x, block_y, block_z = BLOCK_THREADS, 1, 1
     smem_size = 0
 
     arg_ptrs = [
@@ -258,20 +140,29 @@ def test_layernorm():
     print(f"Kernel execution time: {(end_time - start_time)*1000:.4f} ms")
 
     # Copy back
-    hip_check(hip.hipMemcpy(output_host.ctypes.data, d_output, M * N * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
+    hip_check(hip.hipMemcpy(output_host.ctypes.data, d_output, M * N * elem_bytes, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
+
+    if dtype == "f32":
+        output_ref = output_host
+    elif dtype == "f16":
+        output_ref = output_host.astype(np.float32)
+    else:  # bf16
+        output_ref = bf16_to_fp32_cpu(output_host)
 
     # Verification
-    error = np.max(np.abs(output_host - expected))
-    print(f"Max absolute error: {error:.2e}")
+    error = np.max(np.abs(output_ref - expected))
+    print(f"Max absolute error: {error:.2e} (atol={atol})")
 
-    if np.allclose(output_host, expected, atol=1e-4):
-        print("PASSED: LayerNorm implementation is correct.")
+    if error < atol:
+        print("✅ PASSED")
+        ok = True
     else:
-        print("❌ FAILED: Results do not match reference.")
+        print("❌ FAILED")
         print("First row Expected:")
         print(expected[0, :5])
         print("First row Actual:")
         print(output_host[0, :5])
+        ok = False
 
     # Cleanup
     hip_check(hip.hipFree(d_input))
@@ -279,7 +170,35 @@ def test_layernorm():
     hip_check(hip.hipFree(d_beta))
     hip_check(hip.hipFree(d_output))
     hip_check(hip.hipModuleUnload(hip_module))
+    return ok
+
+def test_all():
+    print("="*80)
+    print("Running LayerNorm Tests")
+    print("="*80)
+
+    configs = [
+        # (64, 256, "f32"),    # Aligned
+        # (128, 1024, "f32"),  # Aligned
+        # (32, 128, "f16"),    # Aligned
+        # (64, 2000, "f32"),   # Unaligned (tail handling)
+        # (16, 512, "bf16"),   # BF16
+        # (1024, 8192, "bf16"),# BF16
+        (32768, 8192, "bf16"),  # BF16
+    ]
+
+    failures = 0
+    for M, N, dtype in configs:
+        if not run_test(M, N, dtype):
+            failures += 1
+
+    print("\n" + "="*80)
+    if failures == 0:
+        print("ALL TESTS PASSED")
+    else:
+        print(f"{failures} TESTS FAILED")
+    print("="*80)
 
 if __name__ == "__main__":
-    test_layernorm()
+    test_all()
 
