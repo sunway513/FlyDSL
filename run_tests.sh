@@ -154,8 +154,8 @@ if command -v rocm-smi &> /dev/null; then
                 echo "   PASS"
                 GPU_PASS_COUNT=$((GPU_PASS_COUNT + 1))
                 # Show key metrics if available
-                if grep -q "GFLOPS" /tmp/${test_name}.log; then
-                    grep "GFLOPS" /tmp/${test_name}.log | tail -1 | sed 's/^/      /'
+                if grep -q "TFLOPS" /tmp/${test_name}.log; then
+                    grep "TFLOPS" /tmp/${test_name}.log | tail -1 | sed 's/^/      /'
                 fi
             else
                 echo "   FAIL"

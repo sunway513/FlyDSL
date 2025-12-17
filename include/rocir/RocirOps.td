@@ -188,6 +188,22 @@ def Rocir_CompositionOp : Rocir_Op<"composition", []> {
   let arguments = (ins Rocir_LayoutType:$layoutA, Rocir_LayoutType:$layoutB);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$layoutA `,` $layoutB attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$layoutA, "Value":$layoutB), [{
+      auto lhsTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(layoutA.getType());
+      auto rhsTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(layoutB.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (lhsTy && rhsTy) {
+        auto inferred = ::mlir::rocir::inferCompositionType($_builder.getContext(), lhsTy, rhsTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(),
+                                                    std::max(lhsTy.getRank(), rhsTy.getRank()));
+      }
+      build($_builder, $_state, resultTy, layoutA, layoutB);
+    }]>
+  ];
 }
 
 def Rocir_CoalesceOp : Rocir_Op<"coalesce", []> {
@@ -225,8 +241,6 @@ def Rocir_ComplementOp : Rocir_Op<"complement", []> {
   let assemblyFormat = "$tiler `,` $target_size attr-dict `:` functional-type(operands, $result)";
 }
 
-#endif // ROCIR_OPS
-
 //===----------------------------------------------------------------------===//
 // Layout Product Operations
 //===----------------------------------------------------------------------===//
@@ -241,6 +255,21 @@ def Rocir_LogicalProductOp : Rocir_Op<"logical_product", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalProductType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), aTy.getRank() + bTy.getRank());
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 def Rocir_ZippedProductOp : Rocir_Op<"zipped_product", []> {
@@ -253,6 +282,22 @@ def Rocir_ZippedProductOp : Rocir_Op<"zipped_product", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats zipped_product the same as logical_product.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalProductType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), aTy.getRank() + bTy.getRank());
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 def Rocir_TiledProductOp : Rocir_Op<"tiled_product", []> {
@@ -265,6 +310,22 @@ def Rocir_TiledProductOp : Rocir_Op<"tiled_product", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats tiled_product the same as logical_product.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalProductType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), aTy.getRank() + bTy.getRank());
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 def Rocir_FlatProductOp : Rocir_Op<"flat_product", []> {
@@ -277,6 +338,22 @@ def Rocir_FlatProductOp : Rocir_Op<"flat_product", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats flat_product the same as logical_product.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalProductType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), aTy.getRank() + bTy.getRank());
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 def Rocir_RakedProductOp : Rocir_Op<"raked_product", []> {
@@ -289,6 +366,22 @@ def Rocir_RakedProductOp : Rocir_Op<"raked_product", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats raked_product the same as logical_product.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalProductType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), aTy.getRank() + bTy.getRank());
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 def Rocir_BlockedProductOp : Rocir_Op<"blocked_product", []> {
@@ -301,6 +394,22 @@ def Rocir_BlockedProductOp : Rocir_Op<"blocked_product", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats blocked_product the same as logical_product.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalProductType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), aTy.getRank() + bTy.getRank());
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 
@@ -318,6 +427,22 @@ def Rocir_LogicalDivideOp : Rocir_Op<"logical_divide", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalDivideType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(),
+                                                    std::max(aTy.getRank(), bTy.getRank()));
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 def Rocir_ZippedDivideOp : Rocir_Op<"zipped_divide", []> {
@@ -330,6 +455,23 @@ def Rocir_ZippedDivideOp : Rocir_Op<"zipped_divide", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats zipped_divide the same as logical_divide.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalDivideType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(),
+                                                    std::max(aTy.getRank(), bTy.getRank()));
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 def Rocir_TiledDivideOp : Rocir_Op<"tiled_divide", []> {
@@ -342,6 +484,23 @@ def Rocir_TiledDivideOp : Rocir_Op<"tiled_divide", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats tiled_divide the same as logical_divide.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalDivideType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(),
+                                                    std::max(aTy.getRank(), bTy.getRank()));
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
 
 //===----------------------------------------------------------------------===//
@@ -363,7 +522,26 @@ def Rocir_FlatDivideOp : Rocir_Op<"flat_divide", []> {
   let arguments = (ins Rocir_LayoutType:$input, Rocir_LayoutType:$tiler);
   let results = (outs Rocir_LayoutType:$result);
   let assemblyFormat = "$input `,` $tiler attr-dict `:` functional-type(operands, $result)";
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$tiler), [{
+      // Current lowering treats flat_divide the same as logical_divide.
+      auto aTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(input.getType());
+      auto bTy = llvm::dyn_cast<::mlir::rocir::LayoutType>(tiler.getType());
+      ::mlir::Type resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(), -1);
+      if (aTy && bTy) {
+        auto inferred = ::mlir::rocir::inferLogicalDivideType($_builder.getContext(), aTy, bTy);
+        if (::mlir::succeeded(inferred))
+          resultTy = *inferred;
+        else
+          resultTy = ::mlir::rocir::LayoutType::get($_builder.getContext(),
+                                                    std::max(aTy.getRank(), bTy.getRank()));
+      }
+      build($_builder, $_state, resultTy, input, tiler);
+    }]>
+  ];
 }
+
+#endif // ROCIR_OPS
 
 
 //===----------------------------------------------------------------------===//

@@ -153,21 +153,15 @@ hip_check(hip.hipMemcpy(c_host.ctypes.data, d_c, M * N * 4, hip.hipMemcpyKind.hi
 
 error = np.max(np.abs(c_host - expected))
 rel_error = error / (np.max(np.abs(expected)) + 1e-8)
-gflops = (2.0 * M * N * K * 1e-9) / (avg_time_ms * 1e-3)
+gbps = (2.0 * M * N * K * 4) / (avg_time_ms * 1e-3) / 1e3
 
 print(f"\n{'='*80}")
-print(f"Results (256x256):")
-print(f"Time: {avg_time_ms:.3f} ms")
-print(f"Performance: {gflops:.1f} GFLOPS")
-print(f"Max error: {error:.2e}")
-print(f"Relative error: {rel_error:.2e}")
-print(f"Shared memory: {2 * TILE_SIZE * TILE_SIZE * 4} bytes/block")
-print("="*80)
+print(f"Throughput: {avg_time_ms:.3f} ms, {gbps:.1f} GB/s")
+print(f"{'='*80}\n")
 
 if rel_error < 1e-3:
-    print("\n SHARED MEMORY OPTIMIZATION WORKING!")
-    print("Solution: memref.global_ with lds_space() + memref.get_global()")
+    print("\n SHARED MEMORY OPTIMIZATION CORRECT!")
 else:
-    print(f"\n❌ Error: {rel_error:.2e}")
+    print(f"\nMax error: {error:.2e}, Relative error: {rel_error:.2e}")
     print(expected[:5,:5])
     print(c_host[:5,:5])
