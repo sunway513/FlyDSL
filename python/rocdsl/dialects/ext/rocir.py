@@ -1062,7 +1062,7 @@ def composition(layout_a: Value, layout_b: Value, loc: Optional[Location] = None
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.CompositionOp(result_type, _unwrap_value(layout_a), layout_b, loc=loc).result
+        return rocir_ops.CompositionOp(result_type, _unwrap_value(layout_a), _unwrap_value(layout_b), loc=loc).result
 
 
 def complement(tiler: Value, target_size: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1157,7 +1157,7 @@ def logical_product(block: Value, tiler: Value, loc: Optional[Location] = None, 
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.LogicalProductOp(result_type, _unwrap_value(block), tiler, loc=loc).result
+        return rocir_ops.LogicalProductOp(result_type, _unwrap_value(block), _unwrap_value(tiler), loc=loc).result
 
 
 def zipped_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1167,7 +1167,7 @@ def zipped_product(block: Value, tiler: Value, loc: Optional[Location] = None, i
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.ZippedProductOp(result_type, _unwrap_value(block), tiler, loc=loc).result
+        return rocir_ops.ZippedProductOp(result_type, _unwrap_value(block), _unwrap_value(tiler), loc=loc).result
 
 
 def tiled_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1177,7 +1177,7 @@ def tiled_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.TiledProductOp(result_type, _unwrap_value(block), tiler, loc=loc).result
+        return rocir_ops.TiledProductOp(result_type, _unwrap_value(block), _unwrap_value(tiler), loc=loc).result
 
 
 def flat_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1187,7 +1187,7 @@ def flat_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip:
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.FlatProductOp(result_type, _unwrap_value(block), tiler, loc=loc).result
+        return rocir_ops.FlatProductOp(result_type, _unwrap_value(block), _unwrap_value(tiler), loc=loc).result
 
 
 def raked_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1197,7 +1197,7 @@ def raked_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.RakedProductOp(result_type, _unwrap_value(block), tiler, loc=loc).result
+        return rocir_ops.RakedProductOp(result_type, _unwrap_value(block), _unwrap_value(tiler), loc=loc).result
 
 
 def blocked_product(block: Value, tiler: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1207,7 +1207,7 @@ def blocked_product(block: Value, tiler: Value, loc: Optional[Location] = None, 
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.BlockedProductOp(result_type, _unwrap_value(block), tiler, loc=loc).result
+        return rocir_ops.BlockedProductOp(result_type, _unwrap_value(block), _unwrap_value(tiler), loc=loc).result
 
 
 # Divide operations
@@ -1229,7 +1229,7 @@ def logical_divide(layout: Value, tiler: Value, loc: Optional[Location] = None, 
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.LogicalDivideOp(result_type, _unwrap_value(layout), tiler, loc=loc).result
+        return rocir_ops.LogicalDivideOp(result_type, _unwrap_value(layout), _unwrap_value(tiler), loc=loc).result
 
 
 def zipped_divide(layout_or_tensor, tiler_or_shape, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None):
@@ -1258,7 +1258,7 @@ def zipped_divide(layout_or_tensor, tiler_or_shape, loc: Optional[Location] = No
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.ZippedDivideOp(result_type, _unwrap_value(layout_or_tensor), tiler_or_shape, loc=loc).result
+        return rocir_ops.ZippedDivideOp(result_type, _unwrap_value(layout_or_tensor), _unwrap_value(tiler_or_shape), loc=loc).result
 
 
 def tiled_divide(layout: Value, tiler: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1268,7 +1268,7 @@ def tiled_divide(layout: Value, tiler: Value, loc: Optional[Location] = None, ip
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.TiledDivideOp(result_type, _unwrap_value(layout), tiler, loc=loc).result
+        return rocir_ops.TiledDivideOp(result_type, _unwrap_value(layout), _unwrap_value(tiler), loc=loc).result
 
 
 def flat_divide(layout: Value, tiler: Value, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None) -> Value:
@@ -1278,7 +1278,7 @@ def flat_divide(layout: Value, tiler: Value, loc: Optional[Location] = None, ip:
     result_type = LayoutType.get(-1)
     
     with ip or InsertionPoint.current:
-        return rocir_ops.FlatDivideOp(result_type, _unwrap_value(layout), tiler, loc=loc).result
+        return rocir_ops.FlatDivideOp(result_type, _unwrap_value(layout), _unwrap_value(tiler), loc=loc).result
 
 
 # Local operations

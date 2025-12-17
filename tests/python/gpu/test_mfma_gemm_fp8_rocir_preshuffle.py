@@ -656,6 +656,7 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
     flops = 2 * M * N * K
 
     tflops = flops / (us / 1e6) / 1e12
+    gflops = tflops * 1000.0
     bw = bytes_moved / 1e9 / (us / 1e6)
     print(f"Throughput: {us:.1f} us, {tflops:.2f} TFLOPS, BW: {bw:.2f} GB/s")
 
@@ -681,7 +682,7 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
         
         tflops_aiter = flops / (us1 / 1e6) / 1e12
         bw_aiter = bytes_moved / 1e9 / (us1 / 1e6)
-        print(f"Aiter Throughput: {us1:.1f} us, {tflops_aiter:.2f} TFLOPS, BW: {bw_aiter:.2f} GB/s")
+        print(f"Aiter: {us1:.1f} us, {tflops_aiter:.2f} TFLOPS, BW: {bw_aiter:.2f} GB/s")
         
         print(f"Speedup vs Aiter: {tflops / tflops_aiter:.2f}x, us {us1:.1f} vs {us:.1f}")
         print("-" * 40)

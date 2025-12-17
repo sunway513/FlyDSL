@@ -1,6 +1,7 @@
 add_mlir_dialect_library(RocirDialect
   RocirDialect.cpp
   RocirOps.cpp
+  RocirLayoutAlgebra.cpp
   RocirTypes.cpp
   
   DEPENDS

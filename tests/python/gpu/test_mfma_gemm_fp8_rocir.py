@@ -487,12 +487,11 @@ def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n
     
     avg_ms = avg_us / 1000
     gflops = flops / (avg_us / 1e6) / 1e9
-    bandwidth_gbs = bytes_moved / (avg_us / 1e6) / 1e9
+    tflops = gflops / 1000.0
+    bandwidth_tbs = bytes_moved / (avg_us / 1e6) / 1e12
     
     print(f"\n{'='*80}")
-    print(f"Throughput: {gflops:.2f} GFLOPS")
-    print(f"Bandwidth: {bandwidth_gbs:.2f} GB/s")
-    print(f"Average Time: {avg_ms:.3f} ms")
+    print(f"Throughput: {avg_ms:.3f} ms, {tflops:.2f} TFLOPS, BW: {bandwidth_tbs:.2f} TB/s")
     print(f"{'='*80}\n")
 
 if __name__ == "__main__":
