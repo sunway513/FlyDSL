@@ -119,9 +119,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = global_col < n_c
             col_end_valid = (global_col + vec_width_c) <= n_c
             valid_load = row_valid & col_valid & col_end_valid
-            cond_val = (
-                valid_load.value if hasattr(valid_load, "value") else valid_load._value
-            )
+            cond_val = valid_load.value if hasattr(valid_load, "value") else valid_load
             if_op = scf.IfOp(cond_val)
             with ir.InsertionPoint(if_op.then_block):
                 vals = []
@@ -162,11 +160,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = base_col_b < m_c
             col_end_valid = (base_col_b + vec_width_c) <= m_c
             valid_store = row_valid & col_valid & col_end_valid
-            cond_val = (
-                valid_store.value
-                if hasattr(valid_store, "value")
-                else valid_store._value
-            )
+            cond_val = valid_store.value if hasattr(valid_store, "value") else valid_store
             if_op = scf.IfOp(cond_val)
             with ir.InsertionPoint(if_op.then_block):
                 vals = []
@@ -380,9 +374,7 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = global_col < n_c
             col_end_valid = (global_col + vec_width_c) <= n_c
             valid_load = row_valid & col_valid & col_end_valid
-            mask_val = (
-                valid_load.value if hasattr(valid_load, "value") else valid_load._value
-            )
+            mask_val = valid_load.value if hasattr(valid_load, "value") else valid_load
 
             vec_val = buffer_ops.buffer_load_2d(
                 a_rsrc, global_row, global_col, n_c, vec_width=VEC_WIDTH, mask=mask_val
@@ -425,11 +417,7 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = base_col_b < m_c
             col_end_valid = (base_col_b + vec_width_c) <= m_c
             valid_store = row_valid & col_valid & col_end_valid
-            mask_val = (
-                valid_store.value
-                if hasattr(valid_store, "value")
-                else valid_store._value
-            )
+            mask_val = valid_store.value if hasattr(valid_store, "value") else valid_store
 
             buffer_ops.buffer_store_2d(
                 vec_val, b_rsrc, base_row_b, base_col_b, m_c, mask=mask_val
@@ -596,7 +584,7 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
         # Helpers to keep the kernel code readable.
         def v(x):
             """Unwrap ArithValue (or similar wrappers) to an MLIR Value."""
-            return x.value if hasattr(x, "value") else (x._value if hasattr(x, "_value") else x)
+            return x.value if hasattr(x, "value") else x
 
         def if_(pred):
             """Create scf.if with a possibly wrapped i1 predicate."""

@@ -89,10 +89,10 @@ def test_lane_operations():
             def lane_test():
                 src = arith_ext.constant(42, type=i32)
                 lane = arith_ext.constant(0, type=i32)
-                val1 = rocdl.readlane(i32, src._value, lane._value)
-                val2 = rocdl.readfirstlane(i32, src._value)
+                val1 = rocdl.readlane(i32, src.value, lane.value)
+                val2 = rocdl.readfirstlane(i32, src.value)
                 offset = arith_ext.constant(0x1F, type=i32)
-                val3 = rocdl.ds_swizzle(i32, src._value, offset._value)
+                val3 = rocdl.ds_swizzle(i32, src.value, offset.value)
         
         mlir_str = str(module)
         assert 'rocdl.readlane' in mlir_str or 'rocdl.ds.swizzle' in mlir_str

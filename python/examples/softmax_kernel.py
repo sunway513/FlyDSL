@@ -22,8 +22,6 @@ KERNEL_NAME = "softmax_kernel"
 def unwrap(v):
     if hasattr(v, "value"):
         return v.value
-    if hasattr(v, "_value"):
-        return v._value
     if hasattr(v, "result"):
         return v.result
     return v

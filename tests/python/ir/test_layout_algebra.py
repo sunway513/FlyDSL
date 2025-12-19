@@ -7,6 +7,7 @@ Each test corresponds to a specific cell in the notebook.
 """
 
 import sys
+import traceback
 
 from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
@@ -17,8 +18,8 @@ from _mlir.ir import IntegerAttr, IntegerType, BoolAttr, IndexType, BlockArgumen
 
 def unwrap(val):
     """Unwrap ArithValue or other wrappers."""
-    if hasattr(val, 'value'): return val.value
-    if hasattr(val, '_value'): return val._value
+    if hasattr(val, 'value'):
+        return val.value
     return val
 
 

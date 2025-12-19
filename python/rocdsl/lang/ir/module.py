@@ -102,7 +102,18 @@ class MlirModule:
                 with ir.InsertionPoint.at_block_begin(self.module.body):
                     sig = inspect.signature(fn)
                     input_types, _, _ = prep_func_types(sig, [])
-                    mlir_func.FuncOp.from_py_func(*input_types)(fn)
+                    # `prep_func_types` may return lambdas/strings. Materialize them
+                    # into concrete MLIR types inside the active Context.
+                    locals_ = {"T": gpu.T} if hasattr(gpu, "T") else {}
+                    materialized_inputs = []
+                    for t in input_types:
+                        if isinstance(t, str):
+                            materialized_inputs.append(ir.Type(eval(t, fn.__globals__, locals_)))
+                        elif callable(t) and getattr(t, "__name__", None) == (lambda: 0).__name__:
+                            materialized_inputs.append(t())
+                        else:
+                            materialized_inputs.append(t)
+                    mlir_func.FuncOp.from_py_func(*materialized_inputs)(fn)
 
         cls.cls_jit_fn.append(wrapper)
         return fn
@@ -160,7 +171,18 @@ class _JitDescriptor:
                         with ir.InsertionPoint.at_block_begin(instance_self.module.body):
                             sig = inspect.signature(fn)
                             input_types, _, _ = prep_func_types(sig, [])
-                            mlir_func.FuncOp.from_py_func(*input_types)(fn)
+                            # `prep_func_types` may return lambdas/strings. Materialize them
+                            # into concrete MLIR types inside the active Context.
+                            locals_ = {"T": gpu.T} if hasattr(gpu, "T") else {}
+                            materialized_inputs = []
+                            for t in input_types:
+                                if isinstance(t, str):
+                                    materialized_inputs.append(ir.Type(eval(t, fn.__globals__, locals_)))
+                                elif callable(t) and getattr(t, "__name__", None) == (lambda: 0).__name__:
+                                    materialized_inputs.append(t())
+                                else:
+                                    materialized_inputs.append(t)
+                            mlir_func.FuncOp.from_py_func(*materialized_inputs)(fn)
 
                 self._wrapper = wrapper
         except TypeError:

@@ -20,8 +20,6 @@ KERNEL_NAME = "layernorm"
 def unwrap(v):
     if hasattr(v, "value"):
         return v.value
-    if hasattr(v, "_value"):
-        return v._value
     if hasattr(v, "result"):
         return v.result
     return v

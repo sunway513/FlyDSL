@@ -51,8 +51,8 @@ def run_torch(x, weight, x_scale, w_scale, bias=None, dtype=torch.float32):
 def unwrap(v):
     if isinstance(v, int):
         return arith.constant(v, index=True).value
-    if hasattr(v, "value"): return v.value
-    if hasattr(v, "_value"): return v._value
+    if hasattr(v, "value"):
+        return v.value
     return v
 
 

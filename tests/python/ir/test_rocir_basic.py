@@ -11,8 +11,8 @@ from rocdsl.dialects.ext.arith import Index
 
 def _unwrap(val):
     """Unwrap ArithValue to get underlying MLIR Value."""
-    if hasattr(val, '_value'):
-        return val._value
+    if hasattr(val, "value"):
+        return val.value
     return val
 
 

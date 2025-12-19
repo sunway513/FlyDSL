@@ -56,11 +56,8 @@ def run_torch(x, weight, x_scale, w_scale, bias=None, dtype=torch.bfloat16):
 
 def unwrap(v):
     if isinstance(v, int): return arith.constant(v, index=True).value
-    while hasattr(v, "value") or hasattr(v, "_value"):
-        if hasattr(v, "_value"):
-            v = v._value
-        elif hasattr(v, "value"):
-            v = v.value
+    while hasattr(v, "value"):
+        v = v.value
     return v
 
 @pytest.mark.parametrize("M, N, K, tile_m, tile_n, tile_k", [(1024, 7168, 2048, 128, 128, 128)])

@@ -13,8 +13,8 @@ from _mlir.dialects import func as mlir_func
 from _mlir.ir import IndexType
 
 def unwrap(val):
-    if hasattr(val, 'value'): return val.value
-    if hasattr(val, '_value'): return val._value
+    if hasattr(val, 'value'):
+        return val.value
     return val
 
 

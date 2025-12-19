@@ -22,9 +22,9 @@ def unwrap_values(*values):
     """
     unwrapped = []
     for val in values:
-        if hasattr(val, '_value'):
+        if hasattr(val, "value"):
             # It's an ArithValue or similar wrapper
-            unwrapped.append(val._value)
+            unwrapped.append(val.value)
         else:
             # Already an MLIR Value
             unwrapped.append(val)

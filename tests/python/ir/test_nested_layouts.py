@@ -12,8 +12,8 @@ from _mlir.dialects import func
 
 def unwrap(val):
     """Unwrap ArithValue or other wrappers."""
-    if hasattr(val, 'value'): return val.value
-    if hasattr(val, '_value'): return val._value
+    if hasattr(val, 'value'):
+        return val.value
     return val
 
 def test_nested_layout_direct():
