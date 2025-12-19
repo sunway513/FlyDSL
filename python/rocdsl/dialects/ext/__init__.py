@@ -1,19 +1,18 @@
-"""Extended dialect wrappers for more Pythonic MLIR programming."""
+"""Extended dialect wrappers for more Pythonic MLIR programming.
 
-from . import arith
-from . import scf
-from . import rocir
-from . import gpu
-from . import func
-from . import rocdl
-from . import vector
-from . import math
-from . import llvm
-from . import buffer_ops
-from . import block_reduce_ops
-from _mlir.dialects import memref
+This package is intentionally **lazy-imported** to keep import side effects small.
+Several wrapper modules register helpers with the embedded MLIR runtime and some
+environments are sensitive to heavy import-time registration.
+"""
 
-__all__ = [
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+from _mlir.dialects import memref as memref
+
+_SUBMODULES = {
     "arith",
     "scf",
     "rocir",
@@ -25,5 +24,13 @@ __all__ = [
     "llvm",
     "buffer_ops",
     "block_reduce_ops",
-    "memref",
-]
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _SUBMODULES:
+        return importlib.import_module(f"{__name__}.{name}")
+    raise AttributeError(name)
+
+
+__all__ = sorted(list(_SUBMODULES) + ["memref"])

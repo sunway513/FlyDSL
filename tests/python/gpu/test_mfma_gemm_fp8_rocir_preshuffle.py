@@ -38,6 +38,9 @@ except ImportError:
     print("Warning: Aiter not found, skipping comparison")
     HAS_AITER = False
 
+# Aiter benchmarking can be expensive (JIT build/tuning). Keep it off by default in CI.
+RUN_AITER_BENCH = os.environ.get("ROCDSL_RUN_AITER_BENCH", "0") == "1"
+
 
 def run_torch(x, weight, x_scale, w_scale, bias=None, dtype=torch.bfloat16):
     """
@@ -628,64 +631,81 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
     ]
     
     hip_module = hip_check(hip.hipModuleLoadData(hsaco))
-    kernel_func = hip_check(hip.hipModuleGetFunction(hip_module, b"kernel_fixed"))
-    
-    def launch_kernel(c, a, b, sa, sb):
-        arg_ptrs = [
-            ctypes.c_void_p(c.data_ptr()),
-            ctypes.c_void_p(a.data_ptr()),
-            ctypes.c_void_p(b.data_ptr()),
-            ctypes.c_void_p(sa.data_ptr()),
-            ctypes.c_void_p(sb.data_ptr()),
-            ctypes.c_long(M), ctypes.c_long(N), ctypes.c_long(K)
-        ]
-        current_args_array = (ctypes.c_void_p * 8)(*[ctypes.addressof(p) for p in arg_ptrs])
-        
-        hip_check(hip.hipModuleLaunchKernel(kernel_func, grid_x, grid_y, 1, 256, 1, 1, 0, 0, current_args_array, None))
-    
-    _, us = run_perftest(launch_kernel, c_out_raw, a_q_fp8, b_shuffled, scale_a, scale_b)
-    c_out_scaled = c_out_raw.to(torch.float32)
-    
-    # 7. Verify
-    # Keep output clean; enable these for debugging.
-    # print(f"c_out_scaled: {c_out_scaled}")
-    # print(f"c_ref: {c_ref}")
-    assert verify_output(c_out_scaled, c_ref, rtol=0.1, atol=0.1)
-    # Benchmark
-    bytes_moved = size_a + size_b + size_c * 2 + (M + N) * 4
-    flops = 2 * M * N * K
+    try:
+        kernel_func = hip_check(hip.hipModuleGetFunction(hip_module, b"kernel_fixed"))
 
-    tflops = flops / (us / 1e6) / 1e12
-    gflops = tflops * 1000.0
-    bw = bytes_moved / 1e9 / (us / 1e6)
-    print(f"Throughput: {us:.1f} us, {tflops:.2f} TFLOPS, BW: {bw:.2f} GB/s")
-
-    if HAS_AITER:
-        print("-" * 40)
-        print("Running Aiter Benchmark...")
-        
-        
-        def launch_aiter(a, b, sa, sb):
-            return aiter.gemm_a8w8_bpreshuffle(
-                    a, 
-                    b, 
-                    sa, 
-                    sb, 
-                    None, # bias
-                    torch.float16
+        def launch_kernel(c, a, b, sa, sb):
+            arg_ptrs = [
+                ctypes.c_void_p(c.data_ptr()),
+                ctypes.c_void_p(a.data_ptr()),
+                ctypes.c_void_p(b.data_ptr()),
+                ctypes.c_void_p(sa.data_ptr()),
+                ctypes.c_void_p(sb.data_ptr()),
+                ctypes.c_long(M), ctypes.c_long(N), ctypes.c_long(K),
+            ]
+            current_args_array = (ctypes.c_void_p * 8)(*[ctypes.addressof(p) for p in arg_ptrs])
+            hip_check(
+                hip.hipModuleLaunchKernel(
+                    kernel_func,
+                    grid_x,
+                    grid_y,
+                    1,
+                    256,
+                    1,
+                    1,
+                    0,
+                    0,
+                    current_args_array,
+                    None,
                 )
-            
-        # Verify Aiter output first
-        c_aiter, us1 = run_perftest(launch_aiter, a_q_fp8, b_shuffled, scale_a, scale_b)
-        verify_output(c_aiter.to(torch.float32), c_ref, rtol=0.1, atol=0.1)
-    
-        
-        tflops_aiter = flops / (us1 / 1e6) / 1e12
-        bw_aiter = bytes_moved / 1e9 / (us1 / 1e6)
-        print(f"Aiter: {us1:.1f} us, {tflops_aiter:.2f} TFLOPS, BW: {bw_aiter:.2f} GB/s")
-        
-        print(f"Speedup vs Aiter: {tflops / tflops_aiter:.2f}x, us {us1:.1f} vs {us:.1f}")
-        print("-" * 40)
+            )
+
+        _, us = run_perftest(launch_kernel, c_out_raw, a_q_fp8, b_shuffled, scale_a, scale_b)
+        c_out_scaled = c_out_raw.to(torch.float32)
+
+        # 7. Verify
+        # Keep output clean; enable these for debugging.
+        # print(f"c_out_scaled: {c_out_scaled}")
+        # print(f"c_ref: {c_ref}")
+        assert verify_output(c_out_scaled, c_ref, rtol=0.1, atol=0.1)
+
+        # Benchmark
+        bytes_moved = size_a + size_b + size_c * 2 + (M + N) * 4
+        flops = 2 * M * N * K
+        tflops = flops / (us / 1e6) / 1e12
+        bw = bytes_moved / 1e9 / (us / 1e6)
+        print(f"Throughput: {us:.1f} us, {tflops:.2f} TFLOPS, BW: {bw:.2f} GB/s")
+
+        if HAS_AITER and RUN_AITER_BENCH:
+            print("-" * 40)
+            print("Running Aiter Benchmark...")
+
+            def launch_aiter(a, b, sa, sb):
+                return aiter.gemm_a8w8_bpreshuffle(
+                    a,
+                    b,
+                    sa,
+                    sb,
+                    None,  # bias
+                    torch.float16,
+                )
+
+            # Verify Aiter output first
+            c_aiter, us1 = run_perftest(launch_aiter, a_q_fp8, b_shuffled, scale_a, scale_b)
+            verify_output(c_aiter.to(torch.float32), c_ref, rtol=0.1, atol=0.1)
+
+            tflops_aiter = flops / (us1 / 1e6) / 1e12
+            bw_aiter = bytes_moved / 1e9 / (us1 / 1e6)
+            print(f"Aiter: {us1:.1f} us, {tflops_aiter:.2f} TFLOPS, BW: {bw_aiter:.2f} GB/s")
+            print(f"Speedup vs Aiter: {tflops / tflops_aiter:.2f}x, us {us1:.1f} vs {us:.1f}")
+            print("-" * 40)
+        elif HAS_AITER and not RUN_AITER_BENCH:
+            print("-" * 40)
+            print("Skipping Aiter benchmark (set ROCDSL_RUN_AITER_BENCH=1 to enable)")
+            print("-" * 40)
+    finally:
+        # Explicit unload avoids some HIP binding finalization issues.
+        hip_check(hip.hipModuleUnload(hip_module))
 
 
 if __name__ == "__main__":
@@ -698,3 +718,10 @@ if __name__ == "__main__":
     # test_mfma_fp8_rocir_preshuffle(16, 7168, 2048, tile_m=16, tile_n=256, tile_k=256)
     # test_mfma_fp8_rocir_preshuffle(1024, 7168, 2048, tile_m=128, tile_n=128, tile_k=128)
     # test_mfma_fp8_rocir_preshuffle(32, 7168, 2048, tile_m=32, tile_n=128, tile_k=256)
+
+    # Work around a known finalization crash in some environments where native GPU/MLIR
+    # bindings execute callbacks while the interpreter is shutting down and the GIL is
+    # already released. Hard-exiting avoids running Python finalizers.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

@@ -14,6 +14,7 @@ from _mlir.extras.meta import (
 )
 
 from .func import FuncBase, make_maybe_no_args_decorator, get_user_code_loc
+from .python_control_flow import lower_range_for_loops
 
 # from ...util import (
 #     ModuleMeta,
@@ -41,7 +42,6 @@ from _mlir.ir import (
     Type,
     UnitAttr,
     Value,
-    register_attribute_builder,
 )
 
 
@@ -77,7 +77,6 @@ def set_container_module(module):
     return module
 
 
-@register_attribute_builder("DeviceMappingArrayAttr")
 def get_device_mapping_array_attr(mapping: List[Attribute], context: Optional[Context] = None) -> ArrayAttr:
     if context is None:
         context = Context.current
@@ -411,11 +410,14 @@ def func(
     loc=None,
     ip=None,
     emit_grid=False,
+    lower_range_loops: bool = False,
 ) -> Grid:
     if loc is None:
         loc = get_user_code_loc()
     if generics is None and hasattr(f, "__type_params__") and f.__type_params__:
         generics = f.__type_params__
+    if lower_range_loops:
+        f = lower_range_for_loops(f)
     func_ = GPUFunc(
         body_builder=f,
         func_op_ctor=GPUFuncOp,
@@ -435,6 +437,30 @@ def func(
     if emit_grid:
         func_ = Grid(func_)
     return func_
+
+
+@make_maybe_no_args_decorator
+def kernel(
+    f,
+    *,
+    emit_grid: bool = False,
+    loc=None,
+    ip=None,
+    **kwargs,
+) -> Grid:
+    """
+    Enables lowering of `for i in range(...)` into `scf.for` when bounds are MLIR Values,
+    while preserving Python unrolling for pure int bounds.
+    """
+    return func(
+        f,
+        emit=True,
+        emit_grid=emit_grid,
+        lower_range_loops=True,
+        loc=loc,
+        ip=ip,
+        **kwargs,
+    )
 
 
 def all_reduce__(value: Value, *, op=None, uniform=None, loc=None, ip=None):

@@ -8,16 +8,18 @@ import os
 from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.dialects.ext import gpu, scf, rocir
 from rocdsl.dialects.ext.gpu import lds_space
+from rocdsl.dialects.ext import arith
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from rocdsl.utils import SmemAllocator
 from tests.utils import compile_to_hsaco
 from _mlir import ir
-from _mlir.dialects import arith, memref
+from _mlir.dialects import memref
 import _mlir.extras.types as T
 from hip import hip
 import numpy as np
 import ctypes
 import time
+import gc
 
 M, N, K = 256, 256, 256
 TILE_SIZE = 16
@@ -47,27 +49,27 @@ def matmul_shared(A: T.memref(M, K, T.f32()), B: T.memref(K, N, T.f32()), C: T.m
     As = s_a_decl(base_ptr)
     Bs = s_b_decl(base_ptr)
     
-    row = (gpu.block_id("y") * arith.constant(T.index(), TILE_SIZE) + gpu.thread_id("y"))._value
-    col = (gpu.block_id("x") * arith.constant(T.index(), TILE_SIZE) + gpu.thread_id("x"))._value
+    tile_c = arith.index(TILE_SIZE)
+    row = (gpu.block_id("y") * tile_c + gpu.thread_id("y"))
+    col = (gpu.block_id("x") * tile_c + gpu.thread_id("x"))
     
     tx = gpu.thread_id("x")
     ty = gpu.thread_id("y")
     
-    zero = arith.constant(T.index(), 0)
-    one = arith.constant(T.index(), 1)
-    tile_c = arith.constant(T.index(), TILE_SIZE)
-    k_c = arith.constant(T.index(), K)
-    zero_f = arith.constant(T.f32(), 0.0)
+    zero = arith.index(0)
+    one = arith.index(1)
+    k_c = arith.index(K)
+    zero_f = arith.f32(0.0)
     
     acc = zero_f
-    num_tiles = arith.constant(T.index(), K // TILE_SIZE)
+    num_tiles = arith.index(K // TILE_SIZE)
     
     # Helper for 2D to 1D mapping: idx = y * WIDTH + x
-    tile_width = arith.constant(T.index(), TILE_SIZE)
+    tile_width = arith.index(TILE_SIZE)
     
     # Rocir Layout definition
-    tile_size_idx = arith.constant(T.index(), TILE_SIZE)
-    one_idx = arith.constant(T.index(), 1)
+    tile_size_idx = tile_c
+    one_idx = one
     
     # Shape: (TILE_SIZE, TILE_SIZE)
     tile_shape = rocir.make_shape(tile_size_idx, tile_size_idx)
@@ -84,13 +86,13 @@ def matmul_shared(A: T.memref(M, K, T.f32()), B: T.memref(K, N, T.f32()), C: T.m
     with ir.InsertionPoint(for_tiles.body):
         t = for_tiles.induction_variable
         acc_val = for_tiles.inner_iter_args[0]
-        k_base = (t * tile_c)._value
+        k_base = (t * tile_c)
         
-        a_col = (k_base + tx)._value
+        a_col = (k_base + tx)
         a_val = memref.load(A, [row.value, a_col.value])
         As.store(a_val.value, [get_tile_idx(ty.value, tx.value)])
         
-        b_row = (k_base + ty)._value
+        b_row = (k_base + ty)
         b_val = memref.load(B, [b_row.value, col.value])
         Bs.store(b_val.value, [get_tile_idx(ty.value, tx.value)])
         
@@ -103,7 +105,7 @@ def matmul_shared(A: T.memref(M, K, T.f32()), B: T.memref(K, N, T.f32()), C: T.m
             
             a_smem = As.load([get_tile_idx(ty.value, k_local.value)])
             b_smem = Bs.load([get_tile_idx(k_local.value, tx.value)])
-            new_acc = (acc_k + a_smem * b_smem)._value
+            new_acc = (acc_k + a_smem * b_smem)
             
             scf.yield_([new_acc.value])
         
@@ -165,3 +167,23 @@ else:
     print(f"\nMax error: {error:.2e}, Relative error: {rel_error:.2e}")
     print(expected[:5,:5])
     print(c_host[:5,:5])
+
+# Cleanup HIP resources explicitly. Some HIP python bindings can crash at interpreter
+# shutdown if modules/allocations are still live.
+hip_check(hip.hipFree(d_a))
+hip_check(hip.hipFree(d_b))
+hip_check(hip.hipFree(d_c))
+hip_check(hip.hipModuleUnload(hip_module))
+
+# Ensure MLIR objects are torn down before interpreter finalization.
+# Some native bindings crash if they are finalized during Python shutdown.
+del allocator
+del ctx
+gc.collect()
+
+# Work around a known finalization crash in some environments where native GPU/MLIR
+# bindings execute callbacks while the interpreter is shutting down and the GIL is
+# already released. Hard-exiting avoids running Python finalizers.
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0)

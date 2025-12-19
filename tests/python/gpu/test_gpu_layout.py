@@ -46,8 +46,8 @@ def test_layout_based_transpose():
         tx, ty = gpu.thread_id("x"), gpu.thread_id("y")
         bdx, bdy = gpu.block_dim("x"), gpu.block_dim("y")
         
-        row = (by * bdy + ty)._value
-        col = (bx * bdx + tx)._value
+        row = (by * bdy + ty)
+        col = (bx * bdx + tx)
         
         # Create layout constants
         M_c, N_c = Index(M), Index(N)
@@ -64,13 +64,12 @@ def test_layout_based_transpose():
         output_layout = rocir.make_layout(output_shape, output_stride)
         
         # Bounds check
-        valid = ((row < M_c)._value & (col < N_c)._value._value
-        )
+        valid = (row < M_c) & (col < N_c)
         
         # Transpose: Input[row,col] -> Output[col,row]
         if valid:
-            val = memref.load(Input, [row.value if hasattr(row, "value") else row, col.value if hasattr(col, "value") else col])
-            memref.store(val.value if hasattr(val, "value") else val, Output, [col.value if hasattr(col, "value") else col, row.value if hasattr(row, "value") else row])
+            val = memref.load(Input, [row.value, col.value])
+            memref.store(val.value, Output, [col.value, row.value])
 
     ip.__exit__(None, None, None)
     assert gpu_module.operation.verify()
@@ -119,8 +118,8 @@ def test_strided_layout_access():
         tx, ty = gpu.thread_id("x"), gpu.thread_id("y")
         bdx, bdy = gpu.block_dim("x"), gpu.block_dim("y")
         
-        row = (by * bdy + ty)._value
-        col = (bx * bdx + tx)._value
+        row = (by * bdy + ty)
+        col = (bx * bdx + tx)
         
         # Layout constants
         M_c, N_c = Index(M), Index(N)
@@ -137,17 +136,16 @@ def test_strided_layout_access():
         output_size = rocir.size(output_layout)
         
         # Bounds check
-        valid = ((row < M_c)._value & (col < N_c)._value._value
-        )
+        valid = (row < M_c) & (col < N_c)
         
         # Strided copy with scaling
         if valid:
-            in_idx = (row * in_s + col)._value
-            out_idx = (row * out_s + col)._value
+            in_idx = (row * in_s + col)
+            out_idx = (row * out_s + col)
             
-            val = memref.load(Input, [in_idx.value if hasattr(in_idx, "value") else in_idx])
+            val = memref.load(Input, [in_idx.value])
             result = (val * arith.constant(T.f32(), 2.0))
-            memref.store(result.value if hasattr(result, "value") else result, Output, [out_idx.value if hasattr(out_idx, "value") else out_idx])
+            memref.store(result.value, Output, [out_idx.value])
 
     ip.__exit__(None, None, None)
     assert gpu_module.operation.verify()
@@ -193,8 +191,8 @@ def test_tiled_layout():
         bdx, bdy = gpu.block_dim("x"), gpu.block_dim("y")
         
         # Global thread position
-        row = (by * bdy + ty)._value
-        col = (bx * bdx + tx)._value
+        row = (by * bdy + ty)
+        col = (bx * bdx + tx)
         
         # Constants
         M_c, N_c = Index(M), Index(N)
@@ -215,13 +213,12 @@ def test_tiled_layout():
         partitioned = rocir.logical_divide(global_layout, tiler_layout)
         
         # Bounds check
-        valid = ((row < M_c)._value & (col < N_c)._value._value
-        )
+        valid = (row < M_c) & (col < N_c)
         
         # Copy with layout awareness
         if valid:
-            val = memref.load(Input, [row.value if hasattr(row, "value") else row, col.value if hasattr(col, "value") else col])
-            memref.store(val.value if hasattr(val, "value") else val, Output, [row.value if hasattr(row, "value") else row, col.value if hasattr(col, "value") else col])
+            val = memref.load(Input, [row.value, col.value])
+            memref.store(val.value, Output, [row.value, col.value])
 
     ip.__exit__(None, None, None)
     assert gpu_module.operation.verify()

@@ -104,7 +104,7 @@ def test_vector_add():
     
     @gpu.func(emit=True)
     def vecAdd(A: T.memref(SIZE, T.f32()), B: T.memref(SIZE, T.f32()), C: T.memref(SIZE, T.f32())):
-        tid = (gpu.block_id("x") * gpu.block_dim("x") + gpu.thread_id("x"))._value
+        tid = (gpu.block_id("x") * gpu.block_dim("x") + gpu.thread_id("x"))
         size_c = SIZE
         
         # Create 1D layout for vector (contiguous stride)
@@ -114,16 +114,15 @@ def test_vector_add():
         vec_layout = rocir.make_layout(vec_shape, vec_stride)
         
         # Create coordinate and convert to linear index using rocir
-        thread_coord = rocir.make_coord(tid)
+        thread_coord = rocir.make_coord(tid.value)
         linear_idx = rocir.crd2idx(thread_coord, vec_layout)
-        
-        valid = (tid < size_c)._value
-        if valid:
-            # Use layout-computed linear index for memory access
-            a = memref.load(A, [linear_idx.value if hasattr(linear_idx, "value") else linear_idx])
-            b = memref.load(B, [linear_idx.value if hasattr(linear_idx, "value") else linear_idx])
-            c = (a + b)._value
-            memref.store(c.value if hasattr(c, "value") else c, C, [linear_idx.value if hasattr(linear_idx, "value") else linear_idx])
+
+        # Use layout-computed linear index for memory access
+        idx = linear_idx.value if hasattr(linear_idx, "value") else linear_idx
+        a = memref.load(A, [idx])
+        b = memref.load(B, [idx])
+        c = a + b
+        memref.store(c.value, C, [idx])
 
     ip.__exit__(None, None, None)
     
@@ -195,8 +194,8 @@ def test_matrix_transpose():
         tx = gpu.thread_id("x")
         ty = gpu.thread_id("y")
         
-        row = (by * arith.index(16) + ty)._value
-        col = (bx * arith.index(16) + tx)._value
+        row = (by * arith.index(16) + ty)
+        col = (bx * arith.index(16) + tx)
         
         m_c = M
         n_c = N
@@ -213,20 +212,22 @@ def test_matrix_transpose():
         b_layout = rocir.make_layout(b_shape, b_stride)
         
         # Create thread coordinate and convert to indices
-        thread_coord = rocir.make_coord(row, col)
+        thread_coord = rocir.make_coord(row.value, col.value)
         a_idx = rocir.crd2idx(thread_coord, a_layout)
         
         # Transposed coordinate for B
-        transposed_coord = rocir.make_coord(col, row)
+        transposed_coord = rocir.make_coord(col.value, row.value)
         b_idx = rocir.crd2idx(transposed_coord, b_layout)
         
-        row_valid = (row < m_c)._value
-        col_valid = (col < n_c)._value
-        valid = (row_valid & col_valid)._value
+        row_valid = (row < m_c)
+        col_valid = (col < n_c)
+        valid = (row_valid & col_valid)
         
-        if valid:
-            val = memref.load(A, [row.value if hasattr(row, "value") else row, col.value if hasattr(col, "value") else col])
-            memref.store(val.value if hasattr(val, "value") else val, B, [col.value if hasattr(col, "value") else col, row.value if hasattr(row, "value") else row])
+        with scf.if_(valid.value) as then_block:
+            with ir.InsertionPoint(then_block):
+                val = memref.load(A, [row.value, col.value])
+                memref.store(val.value, B, [col.value, row.value])
+                scf.yield_()
 
     ip.__exit__(None, None, None)
     
@@ -296,8 +297,8 @@ def test_matmul():
         tx = gpu.thread_id("x")
         ty = gpu.thread_id("y")
         
-        row = (by * arith.index(16) + ty)._value
-        col = (bx * arith.index(16) + tx)._value
+        row = (by * arith.index(16) + ty)
+        col = (bx * arith.index(16) + tx)
         
         m_c = M
         n_c = N
@@ -318,40 +319,44 @@ def test_matmul():
         c_layout = rocir.make_layout(c_shape, c_stride)
         
         # Create coordinate for current thread
-        thread_coord = rocir.make_coord(row, col)
+        thread_coord = rocir.make_coord(row.value, col.value)
         c_idx = rocir.crd2idx(thread_coord, c_layout)
         
-        row_valid = (row < m_c)._value
-        col_valid = (col < n_c)._value
-        valid = (row_valid & col_valid)._value
+        row_valid = (row < m_c)
+        col_valid = (col < n_c)
+        valid = (row_valid & col_valid)
         
-        if valid:
-            sum_val = arith.f32(0.0)
-            k_idx = arith.index(0)._value
-            
-            for_op = scf.ForOp(k_idx.value, arith.index(k_c).value, arith.index(one).value, [sum_val.value])
-            with ir.InsertionPoint(for_op.body):
-                k = for_op.induction_variable
-                acc = for_op.inner_iter_args[0]
+        with scf.if_(valid.value) as then_block:
+            with ir.InsertionPoint(then_block):
+                sum_val = arith.f32(0.0)
+                k0 = arith.index(0)
                 
-                # Use layout to compute A[row, k] linear address
-                a_coord = rocir.make_coord(row, k)
-                a_idx = rocir.crd2idx(a_coord, a_layout)
-                a_val = memref.load(A, [a_idx.value if hasattr(a_idx, "value") else a_idx])
+                for_op = scf.ForOp(k0.value, arith.index(k_c).value, arith.index(one).value, [sum_val.value])
+                with ir.InsertionPoint(for_op.body):
+                    k = for_op.induction_variable
+                    acc = for_op.inner_iter_args[0]
+                    
+                    # Use layout to compute A[row, k] linear address
+                    a_coord = rocir.make_coord(row.value, k.value if hasattr(k, "value") else k)
+                    a_idx = rocir.crd2idx(a_coord, a_layout)
+                    a_val = memref.load(A, [a_idx.value if hasattr(a_idx, "value") else a_idx])
+                    
+                    # Use layout to compute B[k, col] linear address
+                    b_coord = rocir.make_coord(k.value if hasattr(k, "value") else k, col.value)
+                    b_idx = rocir.crd2idx(b_coord, b_layout)
+                    b_val = memref.load(B, [b_idx.value if hasattr(b_idx, "value") else b_idx])
+                    
+                    prod = a_val * b_val
+                    new_acc = acc + prod
+                    
+                    scf.yield_([new_acc.value])
                 
-                # Use layout to compute B[k, col] linear address
-                b_coord = rocir.make_coord(k, col)
-                b_idx = rocir.crd2idx(b_coord, b_layout)
-                b_val = memref.load(B, [b_idx.value if hasattr(b_idx, "value") else b_idx])
-                
-                prod = (a_val * b_val)._value
-                new_acc = (acc + prod)._value
-                
-                scf.yield_([new_acc.value])
-            
-            result = for_op.results[0]
-            # Use layout-computed linear index for C
-            memref.store(result.value if hasattr(result, "value") else result, C, [c_idx.value if hasattr(c_idx, "value") else c_idx])
+                result = for_op.results[0]
+                result_val = result.value if hasattr(result, "value") else result
+                c_idx_val = c_idx.value if hasattr(c_idx, "value") else c_idx
+                # Use layout-computed linear index for C
+                memref.store(result_val, C, [c_idx_val])
+                scf.yield_()
 
     ip.__exit__(None, None, None)
     
@@ -442,8 +447,8 @@ def test_matmul_shared_memory():
         # Let's try standard _mlir.dialects.arith.ConstantOp
         
         tile_size_const = arith.index(TILE_SIZE)
-        row = (gpu.block_id("y") * tile_size_const + gpu.thread_id("y"))._value
-        col = (gpu.block_id("x") * tile_size_const + gpu.thread_id("x"))._value
+        row = (gpu.block_id("y") * tile_size_const + gpu.thread_id("y"))
+        col = (gpu.block_id("x") * tile_size_const + gpu.thread_id("x"))
         
         tx = gpu.thread_id("x")
         ty = gpu.thread_id("y")
@@ -476,17 +481,17 @@ def test_matmul_shared_memory():
         with ir.InsertionPoint(for_tiles.body):
             t = for_tiles.induction_variable
             acc_val = for_tiles.inner_iter_args[0]
-            k_base = (t * tile_c)._value
+            k_base = (t * tile_c)
             
-            a_col = (k_base + tx)._value
-            a_val = memref.load(A, [row.value if hasattr(row, "value") else row, a_col.value if hasattr(a_col, "value") else a_col])
+            a_col = (k_base + tx)
+            a_val = memref.load(A, [row.value, a_col.value])
             # Store to As[ty, tx] -> As[ty * TILE + tx]
-            As.store(a_val.value if hasattr(a_val, "value") else a_val, [get_tile_idx(ty.value, tx.value)])
+            As.store(a_val.value, [get_tile_idx(ty.value, tx.value)])
             
-            b_row = (k_base + ty)._value
-            b_val = memref.load(B, [b_row.value if hasattr(b_row, "value") else b_row, col.value if hasattr(col, "value") else col])
+            b_row = (k_base + ty)
+            b_val = memref.load(B, [b_row.value, col.value])
             # Store to Bs[ty, tx] -> Bs[ty * TILE + tx]
-            Bs.store(b_val.value if hasattr(b_val, "value") else b_val, [get_tile_idx(ty.value, tx.value)])
+            Bs.store(b_val.value, [get_tile_idx(ty.value, tx.value)])
             
             gpu.barrier()
             
@@ -500,14 +505,17 @@ def test_matmul_shared_memory():
                 # Load from Bs[k_local, tx]
                 b_smem = Bs.load([get_tile_idx(k_local.value, tx.value)])
                 
-                new_acc = (acc_k + a_smem * b_smem)._value
-                
+                new_acc = (acc_k + a_smem * b_smem)
                 scf.yield_([new_acc.value])
             
             gpu.barrier()
             scf.yield_([for_k.results[0].value if hasattr(for_k.results[0], "value") else for_k.results[0]])
         
-        memref.store(for_tiles.results[0].value if hasattr(for_tiles.results[0], "value") else for_tiles.results[0], C, [row.value if hasattr(row, "value") else row, col.value if hasattr(col, "value") else col])
+        memref.store(
+            for_tiles.results[0].value if hasattr(for_tiles.results[0], "value") else for_tiles.results[0],
+            C,
+            [row.value, col.value],
+        )
     
     ip.__exit__(None, None, None)
     

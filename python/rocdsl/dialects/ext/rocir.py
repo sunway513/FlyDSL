@@ -18,6 +18,8 @@ from _mlir.ir import (
     MemRefType,
 )
 from _mlir.dialects import memref, arith, scf, gpu, vector, math, llvm
+from _mlir.extras import types as T
+from rocdsl.lang.ir.module import MlirModule, kernel, jit
 from _mlir.dialects import rocir as rocir_ops
 
 # Also expose RocDSL "extended" wrappers (like test_eltwise_add.py uses) so
@@ -357,6 +359,7 @@ def _to_index_value(val, loc: Optional[Location] = None):
     return val
 
 
+
 def _linear_idx_to_coords(index_value, dims):
     """Convert linear index into per-dimension coordinates."""
     coords = []
@@ -401,6 +404,18 @@ def const_index(value, loc: Optional[Location] = None, ip: Optional[InsertionPoi
     with ip or InsertionPoint.current:
         op = arith.ConstantOp(IndexType.get(), IntegerAttr.get(IndexType.get(), int(value)), loc=loc)
         return _unwrap_value(op.result if hasattr(op, "result") else op)
+
+
+def to_index(val, loc: Optional[Location] = None, ip: Optional[InsertionPoint] = None):
+    """Convert python int or MLIR Value to an index-typed MLIR Value.
+
+    Useful when writing code that may run either as a Python-unrolled loop
+    (where loop indices are Python ints) or as an IR loop (scf.for) where
+    induction variables are MLIR Values.
+    """
+    loc = _get_location(loc)
+    with ip or InsertionPoint.current:
+        return _unwrap_value(_to_index_value(val, loc))
 
 
 def thread_idx(axis: str = "x"):
@@ -799,7 +814,6 @@ def make_layout(shape, stride=None, loc: Optional[Location] = None, ip: Optional
     shape_spec, rank = _extract_spec_and_rank_from_rocir_shape_or_stride_type(str(shape.type))
     stride_spec, _ = _extract_spec_and_rank_from_rocir_shape_or_stride_type(str(stride.type))
 
-    # Flyx-like: encode both shape+stride specs into layout type if available.
     if shape_spec is not None and stride_spec is not None:
         result_type = Type.parse(f"!rocir.layout<{shape_spec}:{stride_spec}>")
     else:
@@ -2252,6 +2266,10 @@ def printf(format_str: str, *args, loc: Optional[Location] = None, ip: Optional[
 
 
 __all__ = [
+    "T",
+    "MlirModule",
+    "kernel",
+    "jit",
     # Types
     "ShapeType",
     "StrideType",
@@ -2273,6 +2291,7 @@ __all__ = [
     "composition",
     "coalesce",
     "const_index",
+    "to_index",
     "thread_idx",
     "block_idx",
     "block_dim",

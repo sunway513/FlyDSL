@@ -68,9 +68,23 @@ class RAIIMLIRContext:
         self.location = location
         self.location.__enter__()
 
-    def __del__(self):
-        self.location.__exit__(None, None, None)
-        self.context.__exit__(None, None, None)
+    def __del__(self):  # pragma: no cover
+        # Avoid calling into MLIR python bindings during interpreter shutdown.
+        # Some environments finalize without the GIL held, which can abort the process.
+        try:
+            if getattr(sys, "is_finalizing", lambda: False)():
+                return
+        except Exception:
+            return
+
+        try:
+            self.location.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            self.context.__exit__(None, None, None)
+        except Exception:
+            pass
         if ir is not None:
             assert ir.Context is not self.context
 
@@ -95,10 +109,27 @@ class RAIIMLIRContextModule:
         self.insertion_point = ir.InsertionPoint(self.module.body)
         self.insertion_point.__enter__()
 
-    def __del__(self):
-        self.insertion_point.__exit__(None, None, None)
-        self.location.__exit__(None, None, None)
-        self.context.__exit__(None, None, None)
+    def __del__(self):  # pragma: no cover
+        # Avoid calling into MLIR python bindings during interpreter shutdown.
+        # Some environments finalize without the GIL held, which can abort the process.
+        try:
+            if getattr(sys, "is_finalizing", lambda: False)():
+                return
+        except Exception:
+            return
+
+        try:
+            self.insertion_point.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            self.location.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            self.context.__exit__(None, None, None)
+        except Exception:
+            pass
         if ir is not None:
             assert ir.Context is not self.context
 

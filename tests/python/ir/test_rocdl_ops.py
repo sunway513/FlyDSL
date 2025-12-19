@@ -4,9 +4,10 @@
 import sys
 import os
 from _mlir import ir
-from _mlir.dialects import func, arith
+from _mlir.dialects import func
 import _mlir.extras.types as T
 from rocdsl.dialects.ext import rocdl
+from rocdsl.dialects.ext import arith as arith_ext
 from rocdsl.compiler.context import ensure_rocir_python_extensions
 
 print('=' * 70)
@@ -86,11 +87,11 @@ def test_lane_operations():
         with ir.InsertionPoint(module.body):
             @func.FuncOp.from_py_func()
             def lane_test():
-                src = arith.constant(i32, 42)
-                lane = arith.constant(i32, 0)
+                src = arith_ext.constant(42, type=i32)
+                lane = arith_ext.constant(0, type=i32)
                 val1 = rocdl.readlane(i32, src._value, lane._value)
                 val2 = rocdl.readfirstlane(i32, src._value)
-                offset = arith.constant(i32, 0x1F)
+                offset = arith_ext.constant(0x1F, type=i32)
                 val3 = rocdl.ds_swizzle(i32, src._value, offset._value)
         
         mlir_str = str(module)

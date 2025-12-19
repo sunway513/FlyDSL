@@ -42,13 +42,13 @@ def test_vector_add():
         bdx, bdy = gpu.block_dim("x"), gpu.block_dim("y")
         
         # Calculate global thread index
-        row = (by * bdy + ty)._value
-        col = (bx * bdx + tx)._value
+        row = (by * bdy + ty)
+        col = (bx * bdx + tx)
         
         # Vector addition: C[row,col] = A[row,col] + B[row,col]
         a = memref.load(A, [row.value, col.value])
         b = memref.load(B, [row.value, col.value])
-        c = (a + b)._value
+        c = a + b
         memref.store(c.value, C, [row.value, col.value])
     
     ip.__exit__(None, None, None)

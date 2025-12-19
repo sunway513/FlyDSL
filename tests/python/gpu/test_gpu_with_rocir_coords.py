@@ -10,7 +10,8 @@ from rocdsl.dialects.ext import gpu, rocir
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from tests.utils import compile_to_hsaco
 from _mlir import ir
-from _mlir.dialects import arith, memref, scf
+from _mlir.dialects import memref
+from rocdsl.dialects.ext import arith, scf
 import _mlir.extras.types as T
 from hip import hip
 import numpy as np
@@ -44,13 +45,14 @@ def test_matmul_with_rocir():
         ty = gpu.thread_id("y")
 
         # Compute thread coordinates
-        row = (by * arith.constant(T.index(), 16) + ty)._value
-        col = (bx * arith.constant(T.index(), 16) + tx)._value
+        tile = arith.index(16)
+        row = (by * tile + ty)
+        col = (bx * tile + tx)
 
-        m_c = arith.constant(T.index(), M)
-        n_c = arith.constant(T.index(), N)
-        k_c = arith.constant(T.index(), K)
-        one = arith.constant(T.index(), 1)
+        m_c = arith.index(M)
+        n_c = arith.index(N)
+        k_c = arith.index(K)
+        one = arith.index(1)
 
         # Create rocir layout for output matrix C
         c_shape = rocir.make_shape(m_c, n_c)
@@ -58,34 +60,36 @@ def test_matmul_with_rocir():
         c_layout = rocir.make_layout(c_shape, c_stride)
 
         # Create coordinate for current thread's position
-        thread_coord = rocir.make_coord(row, col)
+        thread_coord = rocir.make_coord(row.value, col.value)
         
         # Use crd2idx to compute linear index (will be lowered to arith ops)
         linear_idx = rocir.crd2idx(thread_coord, c_layout)
 
-        row_valid = (row < m_c)._value
-        col_valid = (col < n_c)._value
-        valid = (row_valid & col_valid)._value
+        row_valid = (row < m_c)
+        col_valid = (col < n_c)
+        valid = (row_valid & col_valid)
 
-        if valid:
-            sum_val = arith.constant(T.f32(), 0.0)
-            k_idx = arith.constant(T.index(), 0)
+        with scf.if_(valid.value) as then_block:
+            with ir.InsertionPoint(then_block):
+                sum_val = arith.f32(0.0)
+                k0 = arith.index(0)
 
-            for_op = scf.ForOp(k_idx.value, k_c.value, one.value, [sum_val.value])
-            with ir.InsertionPoint(for_op.body):
-                k = for_op.induction_variable
-                acc = for_op.inner_iter_args[0]
+                for_op = scf.ForOp(k0.value, k_c.value, one.value, [sum_val.value])
+                with ir.InsertionPoint(for_op.body):
+                    k = for_op.induction_variable
+                    acc = for_op.inner_iter_args[0]
 
-                a_val = memref.load(A, [row.value, k.value])
-                b_val = memref.load(B, [k.value, col.value])
+                    k_val = k.value if hasattr(k, "value") else k
+                    a_val = memref.load(A, [row.value, k_val])
+                    b_val = memref.load(B, [k_val, col.value])
 
-                prod = (a_val * b_val)._value
-                new_acc = (acc + prod)._value
+                    new_acc = acc + (a_val * b_val)
+                    scf.yield_([new_acc.value])
 
-                scf.yield_([new_acc.value])
-
-            result = for_op.results[0]
-            memref.store(result.value, C, [row.value, col.value])
+                result = for_op.results[0]
+                result_val = result.value if hasattr(result, "value") else result
+                memref.store(result_val, C, [row.value, col.value])
+                scf.yield_()
 
     ip.__exit__(None, None, None)
 

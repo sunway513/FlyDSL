@@ -118,8 +118,8 @@ endif()
 add_custom_target(CopyRocirPythonSources ALL
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${PROJECT_SOURCE_DIR}/python/rocdsl"
-    "${MLIR_BINARY_DIR}/python_packages/rocdsl"
-  COMMENT "Copying python/rocdsl sources to build/python_packages/rocdsl"
+    "${MLIR_BINARY_DIR}/python_packages/rocdsl/rocdsl"
+  COMMENT "Copying python/rocdsl sources to build/python_packages/rocdsl/rocdsl"
   DEPENDS RocirPythonModules
 )
 

@@ -34,6 +34,9 @@ def __getattr__(name):
     elif name == "scf":
         from .dialects.ext import scf
         return scf
+    elif name == "lang":
+        from . import lang
+        return lang
     elif name in ["Pipeline", "run_pipeline", "lower_rocir_to_standard"]:
         from . import passes
         return getattr(passes, name)
@@ -42,6 +45,7 @@ __all__ = [
     "rocir",
     "arith",
     "scf",
+    "lang",
     "Pipeline",
     "run_pipeline",
     "lower_rocir_to_standard",

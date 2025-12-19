@@ -2,6 +2,7 @@
 
 from functools import partialmethod
 from typing import Optional, Union, Tuple
+import os
 import numpy as np
 
 from _mlir.ir import (
@@ -466,10 +467,14 @@ class ArithValue:
     """
     
     def __init__(self, value: Value):
-        """Wrap an MLIR Value."""
-        # Don't call super().__init__() - Value is not meant to be subclassed normally
-        # Instead, we just store the value and delegate attribute access
-        object.__setattr__(self, '_value', value)
+        """Wrap an MLIR Value.
+
+        Note: In some environments we register `ArithValue` as a global MLIR value
+        caster. This can cause values returned from MLIR to already be `ArithValue`
+        instances. To keep `. _value` stable (always an `ir.Value`), we unwrap
+        nested wrappers here.
+        """
+        object.__setattr__(self, "_value", _unwrap_value(value))
     
     def __getattr__(self, name):
         """Delegate attribute access to wrapped value."""
@@ -541,9 +546,12 @@ __all__ = [
 Index = index
 
 try:
+    # Register `ArithValue` as an automatic wrapper for common scalar types so
+    # op results can participate in Python operator overloading.
     from _mlir._mlir_libs._mlir import register_value_caster
+
     for t in [F32Type, F64Type, IndexType, IntegerType]:
         register_value_caster(t.static_typeid)(ArithValue)
-    print("✓ ArithValue registered for automatic type conversion")
-except Exception as e:
-    print(f"Warning: failed to register value caster: {e}")
+except Exception:
+    # Best-effort only.
+    pass

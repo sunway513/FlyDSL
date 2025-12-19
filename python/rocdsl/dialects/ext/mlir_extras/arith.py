@@ -1,5 +1,6 @@
 import ast
 import copy
+import os
 import operator
 from abc import abstractmethod
 from copy import deepcopy
@@ -11,7 +12,6 @@ from bytecode import ConcreteBytecode
 
 from ...ast.canonicalize import StrictTransformer, Canonicalizer, BytecodePatcher
 from ...util import get_user_code_loc, infer_mlir_type, mlir_type_to_np_dtype
-from ...._mlir_libs._mlir import register_value_caster
 from ....dialects import complex as complex_dialect
 from ....dialects._arith_enum_gen import (
     _arith_cmpfpredicateattr,
@@ -536,8 +536,12 @@ class Scalar(ArithValue):
         return other
 
 
-for t in [BF16Type, F16Type, F32Type, F64Type, IndexType, IntegerType, ComplexType]:
-    register_value_caster(t.static_typeid)(Scalar)
+if os.environ.get("ROCDSL_REGISTER_VALUE_CASTER", "0") == "1":
+    # Import and register lazily to avoid importing MLIR internals unless requested.
+    from ...._mlir_libs._mlir import register_value_caster
+
+    for t in [BF16Type, F16Type, F32Type, F64Type, IndexType, IntegerType, ComplexType]:
+        register_value_caster(t.static_typeid)(Scalar)
 
 
 class CanonicalizeFMA(StrictTransformer):
