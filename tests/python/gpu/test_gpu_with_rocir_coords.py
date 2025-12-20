@@ -9,7 +9,7 @@ from rocdsl.dialects.ext import rocir
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from tests.utils import compile_to_hsaco
 from _mlir.dialects import memref
-from rocdsl.dialects.ext import arith, scf
+from rocdsl.dialects.ext import arith
 import _mlir.extras.types as T
 import pytest
 try:
@@ -69,7 +69,6 @@ def test_matmul_with_rocir():
 
             if valid:
                 sum_val = arith.f32(0.0)
-                # Python `for` + reassignment is auto-lowered into scf.for with iter_args/yield/results.
                 for k in range(k_c):
                     k_v = k.value if hasattr(k, "value") else k
                     a_val = memref.load(A, [row.value, k_v])

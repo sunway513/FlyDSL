@@ -51,7 +51,6 @@ def test_matmul_shared_working():
             C: lambda: T.memref(M, N, T.f32()),
         ):
             gpu = rocir.gpu_ext
-            scf = rocir.scf_ext
 
             # Get references to shared memory using Allocator
             base_ptr = allocator.get_base()
@@ -82,8 +81,6 @@ def test_matmul_shared_working():
                 idx_val = rocir.crd2idx(coord, tile_layout)
                 return idx_val.value if hasattr(idx_val, "value") else idx_val
 
-            # Use Python `for` loops: they are lowered to scf.for, and `acc` becomes loop-carried
-            # automatically via reassignment (`acc = acc + ...`).
             for t in range(num_tiles):
                 k_base = (t * tile_c)
 

@@ -206,9 +206,9 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
                         c_k = rocir.const_index(k)
                         idx_k = mlir_arith.AddIOp(unwrap(curr_idx), unwrap(c_k)).result
                         is_valid = mlir_arith.CmpIOp(mlir_arith.CmpIPredicate.ult, unwrap(idx_k), unwrap(c_N)).result
-                            if is_valid:
-                                v_e = tensor_In[(unwrap(row), unwrap(idx_k))]
-                                tensor_S[(unwrap(c0_idx), unwrap(idx_k))] = unwrap(v_e)
+                        if is_valid:
+                            v_e = tensor_In[(unwrap(row), unwrap(idx_k))]
+                            tensor_S[(unwrap(c0_idx), unwrap(idx_k))] = unwrap(v_e)
 
             gpu.barrier()
 
