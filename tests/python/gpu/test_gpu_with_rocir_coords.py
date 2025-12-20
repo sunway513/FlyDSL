@@ -69,23 +69,15 @@ def test_matmul_with_rocir():
 
             if valid:
                 sum_val = arith.f32(0.0)
-                k0 = arith.index(0)
-                # scf_ext.for_ accepts ArithValue wrappers; no need to manually unwrap `.value`.
-                with rocir.scf_ext.for_(k0, k_c, one, iter_args=[sum_val]) as for_op:
-                    k = for_op.induction_variable
-                    acc = for_op.inner_iter_args[0]
+                # Python `for` + reassignment is auto-lowered into scf.for with iter_args/yield/results.
+                for k in range(k_c):
+                    k_v = k.value if hasattr(k, "value") else k
+                    a_val = memref.load(A, [row.value, k_v])
+                    b_val = memref.load(B, [k_v, col.value])
+                    sum_val = sum_val + (a_val * b_val)
 
-                    k_val = k.value if hasattr(k, "value") else k
-                    a_val = memref.load(A, [row.value, k_val])
-                    b_val = memref.load(B, [k_val, col.value])
-
-                    new_acc = acc + (a_val * b_val)
-                    rocir.scf_ext.yield_([new_acc.value])
-
-                result = for_op.results[0]
-                result_val = result.value if hasattr(result, "value") else result
-                memref.store(result_val, C, [row.value, col.value])
-                rocir.scf_ext.yield_([])
+                out_v = sum_val.value if hasattr(sum_val, "value") else sum_val
+                memref.store(out_v, C, [row.value, col.value])
 
     print("\n Generated MLIR with rocir coordinate operations:")
     print("- rocir.make_shape: Defines matrix dimensions")

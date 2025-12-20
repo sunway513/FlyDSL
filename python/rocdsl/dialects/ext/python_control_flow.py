@@ -165,7 +165,83 @@ class _RangeForLowerer(ast.NodeTransformer):
         )
         is_value_def = ast.fix_missing_locations(is_value_def)
 
-        node.body = injected + [is_value_def] + node.body
+        # def __rocdsl_unwrap(x):
+        #   if hasattr(x, "value"): return x.value
+        #   if hasattr(x, "_value"): return x._value
+        #   return x
+        unwrap_def = ast.FunctionDef(
+            name="__rocdsl_unwrap",
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg="x")],
+                kwonlyargs=[],
+                kw_defaults=[],
+                defaults=[],
+                vararg=None,
+                kwarg=None,
+            ),
+            body=[
+                ast.If(
+                    test=ast.Call(
+                        func=ast.Name(id="hasattr", ctx=ast.Load()),
+                        args=[ast.Name(id="x", ctx=ast.Load()), ast.Constant("value")],
+                        keywords=[],
+                    ),
+                    body=[ast.Return(value=ast.Attribute(value=ast.Name(id="x", ctx=ast.Load()), attr="value", ctx=ast.Load()))],
+                    orelse=[],
+                ),
+                ast.If(
+                    test=ast.Call(
+                        func=ast.Name(id="hasattr", ctx=ast.Load()),
+                        args=[ast.Name(id="x", ctx=ast.Load()), ast.Constant("_value")],
+                        keywords=[],
+                    ),
+                    body=[ast.Return(value=ast.Attribute(value=ast.Name(id="x", ctx=ast.Load()), attr="_value", ctx=ast.Load()))],
+                    orelse=[],
+                ),
+                ast.Return(value=ast.Name(id="x", ctx=ast.Load())),
+            ],
+            decorator_list=[],
+            returns=None,
+            type_comment=None,
+        )
+        unwrap_def = ast.fix_missing_locations(unwrap_def)
+
+        # Minimal "pytree" helpers for loop-carried state:
+        # - Support lists/tuples nesting with leaf nodes as MLIR Values (or wrappers).
+        # - We carry flattened MLIR Values through scf.for_ iter_args/results.
+        tree_helpers_src = """
+def __rocdsl_tree_flatten(x):
+    if isinstance(x, (list, tuple)):
+        flat = []
+        spec = []
+        for e in x:
+            f, s = __rocdsl_tree_flatten(e)
+            flat.extend(f)
+            spec.append(s)
+        return flat, ("seq", isinstance(x, tuple), spec)
+    v = __rocdsl_unwrap(x)
+    if not __rocdsl_is_value(v):
+        raise TypeError(f"loop-carried values must be MLIR Values; got {type(v)}")
+    return [v], ("leaf",)
+
+
+def __rocdsl_tree_unflatten(spec, flat):
+    # Returns (obj, rest_flat)
+    if spec[0] == "leaf":
+        return flat[0], flat[1:]
+    _, is_tuple, subs = spec
+    out = []
+    rest = flat
+    for s in subs:
+        v, rest = __rocdsl_tree_unflatten(s, rest)
+        out.append(v)
+    return (tuple(out) if is_tuple else out), rest
+"""
+        tree_nodes = ast.parse(textwrap.dedent(tree_helpers_src)).body
+        tree_nodes = [ast.fix_missing_locations(n) for n in tree_nodes]
+
+        node.body = injected + [is_value_def, unwrap_def] + tree_nodes + node.body
         return ast.fix_missing_locations(node)
 
     def visit_If(self, node: ast.If):  # noqa: N802
@@ -276,23 +352,372 @@ class _RangeForLowerer(ast.NodeTransformer):
             for n, a in zip(tmp_names, args)
         ]
 
-        # with scf.range_(args...) as <target>: body
-        with_call = ast.Call(
-            func=ast.Attribute(
-                value=ast.Name(id=self.opts.scf_alias, ctx=ast.Load()),
-                attr="range_",
-                ctx=ast.Load(),
-            ),
-            args=[ast.Name(id=n, ctx=ast.Load()) for n in tmp_names],
-            keywords=[],
-        )
-        with_stmt = ast.With(
-            items=[ast.withitem(context_expr=with_call, optional_vars=node.target)],
-            body=node.body,
-            type_comment=None,
-        )
+        # Infer loop-carried variables for common "Python for + reassignment" patterns:
+        #   acc = init
+        #   for i in range(...):
+        #     acc = acc + ...
+        #
+        # If we detect such variables, lower to scf.for_ with iter_args and automatically
+        # add scf.yield_ plus bind results after the loop.
+        def _load_names(n: ast.AST) -> set[str]:
+            out: set[str] = set()
+            for nn in ast.walk(n):
+                if isinstance(nn, ast.Name) and isinstance(nn.ctx, ast.Load):
+                    out.add(nn.id)
+            return out
 
-        lowered = assigns + [with_stmt]
+        def _store_names(n: ast.AST) -> set[str]:
+            out: set[str] = set()
+            for nn in ast.walk(n):
+                if isinstance(nn, ast.Name) and isinstance(nn.ctx, ast.Store):
+                    out.add(nn.id)
+            return out
+
+        def _analyze_stmt_list(stmts: list[ast.stmt], defs_in: set[str]) -> tuple[set[str], set[str], set[str]]:
+            """Return (use_before_def, defs_definite, defs_any)."""
+            ubd: set[str] = set()
+            defs_def = set(defs_in)
+            defs_any: set[str] = set(defs_in)
+
+            for s in stmts:
+                u_s, defs_def, defs_any = _analyze_stmt(s, defs_def, defs_any)
+                ubd |= u_s
+            return ubd, defs_def, defs_any
+
+        def _analyze_stmt(s: ast.stmt, defs_def: set[str], defs_any: set[str]) -> tuple[set[str], set[str], set[str]]:
+            """Analyze one statement.
+
+            - defs_def: names definitely defined before this statement (flow-sensitive)
+            - defs_any: names possibly defined before this statement (for bookkeeping)
+            """
+            ubd: set[str] = set()
+
+            # Helpers
+            def use_expr(expr):
+                nonlocal ubd
+                if expr is None:
+                    return
+                for v in _load_names(expr):
+                    if v not in defs_def:
+                        ubd.add(v)
+
+            if isinstance(s, ast.Assign):
+                use_expr(s.value)
+                defs = set()
+                for t in s.targets:
+                    defs |= _store_names(t)
+                defs_def = defs_def | defs
+                defs_any = defs_any | defs
+                return ubd, defs_def, defs_any
+
+            if isinstance(s, ast.AugAssign):
+                # target is read then written
+                if isinstance(s.target, ast.Name) and s.target.id not in defs_def:
+                    ubd.add(s.target.id)
+                use_expr(s.value)
+                defs = _store_names(s.target)
+                defs_def = defs_def | defs
+                defs_any = defs_any | defs
+                return ubd, defs_def, defs_any
+
+            if isinstance(s, ast.Expr):
+                use_expr(s.value)
+                return ubd, defs_def, defs_any
+
+            if isinstance(s, ast.If):
+                use_expr(s.test)
+                u_then, defs_then_def, defs_then_any = _analyze_stmt_list(list(s.body), set(defs_def))
+                u_else, defs_else_def, defs_else_any = _analyze_stmt_list(list(s.orelse), set(defs_def))
+                ubd |= (u_then | u_else)
+                # definite defs after if: intersection of branch definite defs
+                defs_def_out = defs_def | (defs_then_def & defs_else_def)
+                defs_any_out = defs_any | defs_then_any | defs_else_any
+                return ubd, defs_def_out, defs_any_out
+
+            if isinstance(s, ast.For):
+                # iter expression uses
+                use_expr(s.iter)
+                # loop target is defined within body
+                loop_defs = set(defs_def)
+                if isinstance(s.target, ast.Name):
+                    loop_defs.add(s.target.id)
+                u_body, _, defs_body_any = _analyze_stmt_list(list(s.body), loop_defs)
+                ubd |= u_body
+                # Anything assigned in the loop is "possibly defined" after it (Python semantics),
+                # but not necessarily definitely defined.
+                defs_any = defs_any | defs_body_any
+                return ubd, defs_def, defs_any
+
+            if isinstance(s, ast.With):
+                for item in s.items:
+                    use_expr(item.context_expr)
+                    if item.optional_vars is not None:
+                        defs = _store_names(item.optional_vars)
+                        defs_def |= defs
+                        defs_any |= defs
+                u_body, defs_def, defs_any = _analyze_stmt_list(list(s.body), defs_def)
+                ubd |= u_body
+                return ubd, defs_def, defs_any
+
+            # Fallback: treat as using all loads and defining all stores in a conservative, non-flow-sensitive way.
+            for v in _load_names(s):
+                if v not in defs_def:
+                    ubd.add(v)
+            defs = _store_names(s)
+            defs_def |= defs
+            defs_any |= defs
+            return ubd, defs_def, defs_any
+
+        # Compute use-before-def and defs for the loop body with the induction variable pre-defined.
+        predefs: set[str] = set()
+        target_name = node.target.id if isinstance(node.target, ast.Name) else None
+        if target_name is not None:
+            predefs.add(target_name)
+        ubd_body, _, defs_any_body = _analyze_stmt_list(list(node.body), predefs)
+        defs_any_body.discard(target_name)
+        carry_vars = sorted((ubd_body & defs_any_body))
+
+        if carry_vars:
+            forop_name = self._fresh("forop")
+            # Precompute flattened iter_args + tree specs for each carried var.
+            pre = []
+            flat_names = []
+            spec_names = []
+            for v in carry_vars:
+                flat_n = self._fresh(f"flat_{v}")
+                spec_n = self._fresh(f"spec_{v}")
+                pre.append(
+                    ast.Assign(
+                        targets=[
+                            ast.Tuple(
+                                elts=[
+                                    ast.Name(id=flat_n, ctx=ast.Store()),
+                                    ast.Name(id=spec_n, ctx=ast.Store()),
+                                ],
+                                ctx=ast.Store(),
+                            )
+                        ],
+                        value=ast.Call(
+                            func=ast.Name(id="__rocdsl_tree_flatten", ctx=ast.Load()),
+                            args=[ast.Name(id=v, ctx=ast.Load())],
+                            keywords=[],
+                        ),
+                    )
+                )
+                flat_names.append(flat_n)
+                spec_names.append(spec_n)
+
+            # iter_args = flat0 + flat1 + ...
+            if flat_names:
+                iter_args_expr = ast.Name(id=flat_names[0], ctx=ast.Load())
+                for fn in flat_names[1:]:
+                    iter_args_expr = ast.BinOp(
+                        left=iter_args_expr,
+                        op=ast.Add(),
+                        right=ast.Name(id=fn, ctx=ast.Load()),
+                    )
+            else:
+                iter_args_expr = ast.List(elts=[], ctx=ast.Load())
+
+            iter_args_name = self._fresh("iter_args")
+            pre.append(
+                ast.Assign(
+                    targets=[ast.Name(id=iter_args_name, ctx=ast.Store())],
+                    value=iter_args_expr,
+                )
+            )
+
+            with_call = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id=self.opts.scf_alias, ctx=ast.Load()),
+                    attr="for_",
+                    ctx=ast.Load(),
+                ),
+                args=[ast.Name(id=n, ctx=ast.Load()) for n in tmp_names],
+                keywords=[
+                    ast.keyword(
+                        arg="iter_args",
+                        value=ast.Name(id=iter_args_name, ctx=ast.Load()),
+                    )
+                ],
+            )
+
+            # Prologue in loop body: bind induction var + iter args.
+            prologue = [
+                ast.Assign(
+                    targets=[node.target],
+                    value=ast.Attribute(
+                        value=ast.Name(id=forop_name, ctx=ast.Load()),
+                        attr="induction_variable",
+                        ctx=ast.Load(),
+                    ),
+                )
+            ]
+            # Unflatten inner_iter_args into each carried variable, consuming from a rest list.
+            rest_name = self._fresh("rest")
+            prologue.append(
+                ast.Assign(
+                    targets=[ast.Name(id=rest_name, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Name(id="list", ctx=ast.Load()),
+                        args=[
+                            ast.Attribute(
+                                value=ast.Name(id=forop_name, ctx=ast.Load()),
+                                attr="inner_iter_args",
+                                ctx=ast.Load(),
+                            )
+                        ],
+                        keywords=[],
+                    ),
+                )
+            )
+
+            for v, spec_n in zip(carry_vars, spec_names):
+                obj_n = self._fresh(f"obj_{v}")
+                prologue.append(
+                    ast.Assign(
+                        targets=[
+                            ast.Tuple(
+                                elts=[
+                                    ast.Name(id=obj_n, ctx=ast.Store()),
+                                    ast.Name(id=rest_name, ctx=ast.Store()),
+                                ],
+                                ctx=ast.Store(),
+                            )
+                        ],
+                        value=ast.Call(
+                            func=ast.Name(id="__rocdsl_tree_unflatten", ctx=ast.Load()),
+                            args=[ast.Name(id=spec_n, ctx=ast.Load()), ast.Name(id=rest_name, ctx=ast.Load())],
+                            keywords=[],
+                        ),
+                    )
+                )
+                prologue.append(
+                    ast.Assign(
+                        targets=[ast.Name(id=v, ctx=ast.Store())],
+                        value=ast.Name(id=obj_n, ctx=ast.Load()),
+                    )
+                )
+
+            # Build yield values by flattening each carried var and concatenating.
+            yield_vals_name = self._fresh("yield_vals")
+            yield_build = [
+                ast.Assign(targets=[ast.Name(id=yield_vals_name, ctx=ast.Store())], value=ast.List(elts=[], ctx=ast.Load()))
+            ]
+            for v in carry_vars:
+                flat_tmp = self._fresh(f"flatcur_{v}")
+                spec_tmp = self._fresh(f"speccur_{v}")
+                yield_build.append(
+                    ast.Assign(
+                        targets=[
+                            ast.Tuple(
+                                elts=[ast.Name(id=flat_tmp, ctx=ast.Store()), ast.Name(id=spec_tmp, ctx=ast.Store())],
+                                ctx=ast.Store(),
+                            )
+                        ],
+                        value=ast.Call(
+                            func=ast.Name(id="__rocdsl_tree_flatten", ctx=ast.Load()),
+                            args=[ast.Name(id=v, ctx=ast.Load())],
+                            keywords=[],
+                        ),
+                    )
+                )
+                yield_build.append(
+                    ast.AugAssign(
+                        target=ast.Name(id=yield_vals_name, ctx=ast.Store()),
+                        op=ast.Add(),
+                        value=ast.Name(id=flat_tmp, ctx=ast.Load()),
+                    )
+                )
+
+            yield_stmt = ast.Expr(
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id=self.opts.scf_alias, ctx=ast.Load()),
+                        attr="yield_",
+                        ctx=ast.Load(),
+                    ),
+                    args=[ast.Name(id=yield_vals_name, ctx=ast.Load())],
+                    keywords=[],
+                )
+            )
+
+            with_stmt = ast.With(
+                items=[
+                    ast.withitem(
+                        context_expr=with_call,
+                        optional_vars=ast.Name(id=forop_name, ctx=ast.Store()),
+                    )
+                ],
+                body=prologue + node.body + yield_build + [yield_stmt],
+                type_comment=None,
+            )
+
+            post = []
+            # Unflatten results back into carried vars.
+            post_rest = self._fresh("post_rest")
+            post.append(
+                ast.Assign(
+                    targets=[ast.Name(id=post_rest, ctx=ast.Store())],
+                    value=ast.Call(
+                        func=ast.Name(id="list", ctx=ast.Load()),
+                        args=[
+                            ast.Attribute(
+                                value=ast.Name(id=forop_name, ctx=ast.Load()),
+                                attr="results",
+                                ctx=ast.Load(),
+                            )
+                        ],
+                        keywords=[],
+                    ),
+                )
+            )
+            for v, spec_n in zip(carry_vars, spec_names):
+                obj_n = self._fresh(f"post_obj_{v}")
+                post.append(
+                    ast.Assign(
+                        targets=[
+                            ast.Tuple(
+                                elts=[
+                                    ast.Name(id=obj_n, ctx=ast.Store()),
+                                    ast.Name(id=post_rest, ctx=ast.Store()),
+                                ],
+                                ctx=ast.Store(),
+                            )
+                        ],
+                        value=ast.Call(
+                            func=ast.Name(id="__rocdsl_tree_unflatten", ctx=ast.Load()),
+                            args=[ast.Name(id=spec_n, ctx=ast.Load()), ast.Name(id=post_rest, ctx=ast.Load())],
+                            keywords=[],
+                        ),
+                    )
+                )
+                post.append(
+                    ast.Assign(
+                        targets=[ast.Name(id=v, ctx=ast.Store())],
+                        value=ast.Name(id=obj_n, ctx=ast.Load()),
+                    )
+                )
+
+            lowered = assigns + pre + [with_stmt] + post
+        else:
+            # No loop-carried vars: use simple scf.range_ lowering.
+            with_call = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id=self.opts.scf_alias, ctx=ast.Load()),
+                    attr="range_",
+                    ctx=ast.Load(),
+                ),
+                args=[ast.Name(id=n, ctx=ast.Load()) for n in tmp_names],
+                keywords=[],
+            )
+            with_stmt = ast.With(
+                items=[ast.withitem(context_expr=with_call, optional_vars=node.target)],
+                body=node.body,
+                type_comment=None,
+            )
+            lowered = assigns + [with_stmt]
+
         for n in lowered:
             ast.copy_location(n, node)
         return lowered

@@ -337,13 +337,16 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             vec_a_inits = load_a_split(idx_a_base_div4)
             b_vals_init_raw = load_b_tile(c0)
             
-            # Flatten b_vals for iter_args
+            # Flatten b_vals for loop-carried state
             b_vals_init = b_vals_init_raw
             # b_vals_init = []
             # for b_list in b_vals_init_raw:
             #     b_vals_init.extend(b_list)
-            
-            iter_args = acc_inits + vec_a_inits + b_vals_init
+
+            # Loop-carried state (lists of MLIR Values)
+            accs = acc_inits
+            vec_a_parts = vec_a_inits
+            b_vals = b_vals_init
             
             # Helper to emit tile body
             def emit_tile(k_iv, accs_in, vec_a_in_parts, b_vals_in, is_last_tile=False):
@@ -513,29 +516,12 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             # Main Loop (runs 0 to K-tile_k)
             # Peel off the last iteration
             c_k_main = _arith_mlir.SubIOp(unwrap(c_k), unwrap(c_tile_k)).result
-            
-            with scf.for_(c0, c_k_main, c_tile_k, iter_args=iter_args) as for_op:
-                k_iv = for_op.induction_variable
-                args = for_op.inner_iter_args
-                
-                # Split args
-                num_accs = num_acc_n * m_repeat
-                accs_iter = args[:num_accs]
-                vec_a_iter = args[num_accs : num_accs + num_a_loads]
-                b_vals_iter = args[num_accs + num_a_loads:]
-                
-                accs_next, vec_a_next, b_vals_next, _ = emit_tile(k_iv, accs_iter, vec_a_iter, b_vals_iter, is_last_tile=False)
-                
-                scf.yield_(accs_next + vec_a_next + b_vals_next)
-            
-            results_list = for_op.results
-            num_accs = num_acc_n * m_repeat
-            final_accs_loop = results_list[:num_accs]
-            vec_a_final_loop = results_list[num_accs : num_accs + num_a_loads]
-            b_vals_final_loop = results_list[num_accs + num_a_loads:]
+
+            for k_iv in range(c0, c_k_main, c_tile_k):
+                accs, vec_a_parts, b_vals, _ = emit_tile(k_iv, accs, vec_a_parts, b_vals, is_last_tile=False)
             
             # Epilogue: Run last tile and prefetch scales
-            final_accs, _, _, scales = emit_tile(c_k_main, final_accs_loop, vec_a_final_loop, b_vals_final_loop, is_last_tile=True)
+            final_accs, _, _, scales = emit_tile(c_k_main, accs, vec_a_parts, b_vals, is_last_tile=True)
 
             
             s_b_vals = scales['s_b_vals']

@@ -82,9 +82,9 @@ def test_matmul_shared_working():
                 idx_val = rocir.crd2idx(coord, tile_layout)
                 return idx_val.value if hasattr(idx_val, "value") else idx_val
 
-            with scf.for_(zero.value, num_tiles.value, one.value, iter_args=[acc.value]) as for_tiles:
-                t = for_tiles.induction_variable
-                acc_val = for_tiles.inner_iter_args[0]
+            # Use Python `for` loops: they are lowered to scf.for, and `acc` becomes loop-carried
+            # automatically via reassignment (`acc = acc + ...`).
+            for t in range(num_tiles):
                 k_base = (t * tile_c)
 
                 a_col = (k_base + tx)
@@ -97,23 +97,14 @@ def test_matmul_shared_working():
 
                 gpu.barrier()
 
-                with scf.for_(zero.value, tile_c.value, one.value, iter_args=[acc_val.value]) as for_k:
-                    k_local = for_k.induction_variable
-                    acc_k = for_k.inner_iter_args[0]
-
+                for k_local in range(tile_c):
                     a_smem = As.load([get_tile_idx(ty.value, k_local)])
                     b_smem = Bs.load([get_tile_idx(k_local, tx.value)])
-                    new_acc = (acc_k + a_smem * b_smem)
-
-                    scf.yield_([new_acc.value])
+                    acc = (acc + a_smem * b_smem)
 
                 gpu.barrier()
-                out = for_k.results[0]
-                out_v = out.value if hasattr(out, "value") else out
-                scf.yield_([out_v])
 
-            out = for_tiles.results[0]
-            out_v = out.value if hasattr(out, "value") else out
+            out_v = acc.value if hasattr(acc, "value") else acc
             rocir.memref.store(out_v, C, [row.value, col.value])
 
     m = _MatmulShared()

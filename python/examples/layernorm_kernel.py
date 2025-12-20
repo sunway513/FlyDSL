@@ -206,11 +206,9 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
                         c_k = rocir.const_index(k)
                         idx_k = mlir_arith.AddIOp(unwrap(curr_idx), unwrap(c_k)).result
                         is_valid = mlir_arith.CmpIOp(mlir_arith.CmpIPredicate.ult, unwrap(idx_k), unwrap(c_N)).result
-                        if_store = scf.IfOp(unwrap(is_valid))
-                        with if_store:
-                            v_e = tensor_In[(unwrap(row), unwrap(idx_k))]
-                            tensor_S[(unwrap(c0_idx), unwrap(idx_k))] = unwrap(v_e)
-                            scf.yield_([])
+                            if is_valid:
+                                v_e = tensor_In[(unwrap(row), unwrap(idx_k))]
+                                tensor_S[(unwrap(c0_idx), unwrap(idx_k))] = unwrap(v_e)
 
             gpu.barrier()
 
@@ -244,18 +242,12 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
                             c_k = rocir.const_index(k)
                             idx_k = mlir_arith.AddIOp(unwrap(curr_idx), unwrap(c_k)).result
                             is_valid = mlir_arith.CmpIOp(mlir_arith.CmpIPredicate.ult, unwrap(idx_k), unwrap(c_N)).result
-                            if_load = scf.IfOp(unwrap(is_valid), [elem_type], hasElse=True)
-                            with if_load.then():
+                            if is_valid:
                                 v_e = tensor_S[(unwrap(c0_idx), unwrap(idx_k))]
-                                scf.yield_([unwrap(v_e)])
-                            with if_load.else_():
-                                # dummy (won't be used)
-                                scf.yield_([unwrap(arith.constant(elem_type, 0.0).value)])
-                            v_e = if_load.results[0]
-                            v = unwrap(v_e) if dtype_str == "f32" else mlir_arith.extf(compute_type, unwrap(v_e))
-                            v2 = mlir_arith.MulFOp(unwrap(v), unwrap(v), fastmath=fm_fast).result
-                            thread_sum = mlir_arith.AddFOp(unwrap(thread_sum), unwrap(v), fastmath=fm_fast).result
-                            thread_sumsq = mlir_arith.AddFOp(unwrap(thread_sumsq), unwrap(v2), fastmath=fm_fast).result
+                                v = unwrap(v_e) if dtype_str == "f32" else mlir_arith.extf(compute_type, unwrap(v_e))
+                                v2 = mlir_arith.MulFOp(unwrap(v), unwrap(v), fastmath=fm_fast).result
+                                thread_sum = mlir_arith.AddFOp(unwrap(thread_sum), unwrap(v), fastmath=fm_fast).result
+                                thread_sumsq = mlir_arith.AddFOp(unwrap(thread_sumsq), unwrap(v2), fastmath=fm_fast).result
 
             sum_val = block_reduce_add(thread_sum, s_sum)
             sumsq_val = block_reduce_add(thread_sumsq, s_sumsq)
@@ -333,8 +325,7 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
                         c_k = rocir.const_index(k)
                         idx_k = mlir_arith.AddIOp(unwrap(curr_idx), unwrap(c_k)).result
                         is_valid = mlir_arith.CmpIOp(mlir_arith.CmpIPredicate.ult, unwrap(idx_k), unwrap(c_N)).result
-                        if_store = scf.IfOp(unwrap(is_valid))
-                        with if_store:
+                        if is_valid:
                             x_e = tensor_S[(unwrap(c0_idx), unwrap(idx_k))]
                             g_e = tensor_Gamma[unwrap(idx_k)]
                             b_e = tensor_Beta[unwrap(idx_k)]
@@ -350,7 +341,6 @@ def build_layernorm_module(M: int, N: int, dtype_str: str):
                             ).result
                             y_e = y if dtype_str == "f32" else mlir_arith.truncf(elem_type, unwrap(y))
                             tensor_Out[(unwrap(row), unwrap(idx_k))] = unwrap(y_e)
-                            scf.yield_([])
 
     return _LayerNorm()
 

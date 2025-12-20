@@ -289,38 +289,36 @@ def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n
             # Main Loop: 0 to K-tile_k
             # c_k_main = c_k - c_tile_k_idx
             c_k_main = _arith_mlir.SubIOp(unwrap(c_k), unwrap(c_tile_k)).result
-            
-            iter_args = [acc_init, vec_a_init, vec_b_init]
-            
-            with scf.for_(c_k_idx, c_k_main, c_tile_k, iter_args=iter_args) as for_op:
-                k_curr = for_op.induction_variable
-                acc_iter = for_op.inner_iter_args[0]
-                vec_a_curr = for_op.inner_iter_args[1]
-                vec_b_curr = for_op.inner_iter_args[2]
-                
+
+            # Python `for` + reassignment is auto-lowered into scf.for with iter_args/yield/results.
+            acc_iter = acc_init
+            vec_a_curr = vec_a_init
+            vec_b_curr = vec_b_init
+            for k_curr in range(c_k_idx, c_k_main, c_tile_k):
                 # 1. Store current to LDS
                 vector.StoreOp(vec_a_curr, lds_a, [unwrap(lds_write_idx)])
                 vector.StoreOp(vec_b_curr, lds_b, [unwrap(lds_write_idx)])
-                
+
                 # 2. Prefetch Next
-                # k_next = k_curr + c_tile_k_idx
                 k_next = _arith_mlir.AddIOp(unwrap(k_curr), unwrap(c_tile_k)).result
                 vec_a_next, vec_b_next = load_global(k_next)
-                
+
                 gpu.barrier()
-                
+
                 # 3. Compute
-                acc_new = compute_tile(acc_iter)
-                
+                acc_iter = compute_tile(acc_iter)
+
                 gpu.barrier()
-                
-                scf.yield_([acc_new, vec_a_next, vec_b_next])
-            
+
+                # Carry
+                vec_a_curr = vec_a_next
+                vec_b_curr = vec_b_next
+
             # Epilogue: Last Tile
-            final_acc = for_op.results[0]
-            last_vec_a = for_op.results[1]
-            last_vec_b = for_op.results[2]
-            
+            final_acc = acc_iter
+            last_vec_a = vec_a_curr
+            last_vec_b = vec_b_curr
+
             vector.StoreOp(last_vec_a, lds_a, [unwrap(lds_write_idx)])
             vector.StoreOp(last_vec_b, lds_b, [unwrap(lds_write_idx)])
             

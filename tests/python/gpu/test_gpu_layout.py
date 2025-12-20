@@ -45,7 +45,6 @@ def test_layout_based_transpose():
             if valid:
                 val = rocir.memref.load(Input, [row.value, col.value])
                 rocir.memref.store(val.value, Output, [col.value, row.value])
-                rocir.scf_ext.yield_([])
 
     m = _Transpose()
     assert m.module.operation.verify()
@@ -94,7 +93,6 @@ def test_strided_layout_access():
                 out_idx = (row * out_stride + col).value
                 v = rocir.memref.load(Input, [in_idx])
                 rocir.memref.store(v.value, Output, [out_idx])
-                rocir.scf_ext.yield_([])
 
     m = _StridedCopy()
     assert m.module.operation.verify()

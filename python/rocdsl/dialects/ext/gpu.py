@@ -454,12 +454,6 @@ def kernel(
 ) -> Grid:
     """
     Enables lowering of `for i in range(...)` into `scf.for`.
-
-    Use `range_constexpr(...)` in the loop iterable to explicitly keep Python
-    unrolling semantics (compile-time loop expansion), similar to CuTeDSL:
-
-      for i in range_constexpr(4):
-          ...
     """
     return func(
         f,
