@@ -67,11 +67,11 @@ def test_matmul_with_rocir():
             col_valid = (col < n_c)
             valid = (row_valid & col_valid)
 
-            # Avoid explicit InsertionPoint usage by using scf_ext context managers.
-            with rocir.scf_ext.IfOp(valid.value):
+            if valid:
                 sum_val = arith.f32(0.0)
                 k0 = arith.index(0)
-                with rocir.scf_ext.for_(k0.value, k_c.value, one.value, iter_args=[sum_val.value]) as for_op:
+                # scf_ext.for_ accepts ArithValue wrappers; no need to manually unwrap `.value`.
+                with rocir.scf_ext.for_(k0, k_c, one, iter_args=[sum_val]) as for_op:
                     k = for_op.induction_variable
                     acc = for_op.inner_iter_args[0]
 

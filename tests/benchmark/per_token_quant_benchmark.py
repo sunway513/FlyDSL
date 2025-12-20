@@ -182,7 +182,7 @@ def compile_kernel_for_n(N, gpu_arch=None):
         c_0_idx = arith.index(0)
         is_thread_0 = tid_linear == c_0_idx
 
-        with scf_ext.IfOp(is_thread_0.value):
+        if is_thread_0:
             tensor_scales[bid_x] = final_scale
 
         vec_scale = vector.BroadcastOp(vec_type_f32, final_scale.value).result

@@ -7,9 +7,9 @@ RocDSL executes Python code to build MLIR IR. A plain Python loop like:
 
 is executed by the Python interpreter, effectively *unrolling* IR construction.
 
-Sometimes we want loops written with Python syntax to become IR loops (`scf.for`)
-instead of Python unrolling. This module provides an opt-in AST rewrite that
-transforms:
+Sometimes we want control-flow written with Python syntax to become IR
+control-flow (`scf.for`, `scf.if`) instead of Python unrolling / compile-time
+branch selection. This module provides an opt-in AST rewrite that transforms:
 
   for i in range(bound):
       body(i)
@@ -76,6 +76,11 @@ class _RangeForLowerer(ast.NodeTransformer):
         # Inject imports and helpers at function entry so the transformed code is self-contained.
         injected = [
             ast.ImportFrom(
+                module="_mlir.ir",
+                names=[ast.alias(name="Value", asname=self.opts.value_alias)],
+                level=0,
+            ),
+            ast.ImportFrom(
                 module="rocdsl.dialects.ext",
                 names=[ast.alias(name="scf", asname=self.opts.scf_alias)],
                 level=0,
@@ -87,8 +92,154 @@ class _RangeForLowerer(ast.NodeTransformer):
             ),
         ]
 
-        node.body = injected + node.body
+        # def __rocdsl_is_value(x):
+        #   if isinstance(x, Value): return True
+        #   if hasattr(x, "_value") and isinstance(x._value, Value): return True
+        #   if hasattr(x, "value") and isinstance(x.value, Value): return True
+        #   return False
+        is_value_def = ast.FunctionDef(
+            name=self.opts.is_value_fn,
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg="x")],
+                kwonlyargs=[],
+                kw_defaults=[],
+                defaults=[],
+                vararg=None,
+                kwarg=None,
+            ),
+            body=[
+                ast.If(
+                    test=ast.Call(
+                        func=ast.Name(id="isinstance", ctx=ast.Load()),
+                        args=[
+                            ast.Name(id="x", ctx=ast.Load()),
+                            ast.Name(id=self.opts.value_alias, ctx=ast.Load()),
+                        ],
+                        keywords=[],
+                    ),
+                    body=[ast.Return(value=ast.Constant(True))],
+                    orelse=[],
+                ),
+                ast.If(
+                    test=ast.BoolOp(
+                        op=ast.And(),
+                        values=[
+                            ast.Call(func=ast.Name(id="hasattr", ctx=ast.Load()), args=[ast.Name(id="x", ctx=ast.Load()), ast.Constant("_value")], keywords=[]),
+                            ast.Call(
+                                func=ast.Name(id="isinstance", ctx=ast.Load()),
+                                args=[
+                                    ast.Attribute(value=ast.Name(id="x", ctx=ast.Load()), attr="_value", ctx=ast.Load()),
+                                    ast.Name(id=self.opts.value_alias, ctx=ast.Load()),
+                                ],
+                                keywords=[],
+                            ),
+                        ],
+                    ),
+                    body=[ast.Return(value=ast.Constant(True))],
+                    orelse=[],
+                ),
+                ast.If(
+                    test=ast.BoolOp(
+                        op=ast.And(),
+                        values=[
+                            ast.Call(func=ast.Name(id="hasattr", ctx=ast.Load()), args=[ast.Name(id="x", ctx=ast.Load()), ast.Constant("value")], keywords=[]),
+                            ast.Call(
+                                func=ast.Name(id="isinstance", ctx=ast.Load()),
+                                args=[
+                                    ast.Attribute(value=ast.Name(id="x", ctx=ast.Load()), attr="value", ctx=ast.Load()),
+                                    ast.Name(id=self.opts.value_alias, ctx=ast.Load()),
+                                ],
+                                keywords=[],
+                            ),
+                        ],
+                    ),
+                    body=[ast.Return(value=ast.Constant(True))],
+                    orelse=[],
+                ),
+                ast.Return(value=ast.Constant(False)),
+            ],
+            decorator_list=[],
+            returns=None,
+            type_comment=None,
+        )
+        is_value_def = ast.fix_missing_locations(is_value_def)
+
+        node.body = injected + [is_value_def] + node.body
         return ast.fix_missing_locations(node)
+
+    def visit_If(self, node: ast.If):  # noqa: N802
+        node = self.generic_visit(node)
+
+        # Evaluate condition once.
+        cond_tmp = self._fresh("if_cond")
+        assign_cond = ast.Assign(
+            targets=[ast.Name(id=cond_tmp, ctx=ast.Store())],
+            value=node.test,
+        )
+
+        # if __rocdsl_is_value(cond_tmp):  -> emit scf.IfOp
+        dyn_test = ast.Call(
+            func=ast.Name(id=self.opts.is_value_fn, ctx=ast.Load()),
+            args=[ast.Name(id=cond_tmp, ctx=ast.Load())],
+            keywords=[],
+        )
+
+        has_else = bool(node.orelse)
+        ifop_tmp = self._fresh("ifop")
+        create_ifop = ast.Assign(
+            targets=[ast.Name(id=ifop_tmp, ctx=ast.Store())],
+            value=ast.Call(
+                func=ast.Attribute(value=ast.Name(id=self.opts.scf_alias, ctx=ast.Load()), attr="IfOp", ctx=ast.Load()),
+                args=[ast.Name(id=cond_tmp, ctx=ast.Load())],
+                keywords=[ast.keyword(arg="hasElse", value=ast.Constant(True))] if has_else else [],
+            ),
+        )
+
+        with_then = ast.With(
+            items=[
+                ast.withitem(
+                    context_expr=ast.Call(
+                        func=ast.Attribute(value=ast.Name(id=ifop_tmp, ctx=ast.Load()), attr="then", ctx=ast.Load()),
+                        args=[],
+                        keywords=[],
+                    ),
+                    optional_vars=None,
+                )
+            ],
+            body=node.body,
+            type_comment=None,
+        )
+
+        dyn_body = [create_ifop, with_then]
+        if has_else:
+            with_else = ast.With(
+                items=[
+                    ast.withitem(
+                        context_expr=ast.Call(
+                            func=ast.Attribute(value=ast.Name(id=ifop_tmp, ctx=ast.Load()), attr="else_", ctx=ast.Load()),
+                            args=[],
+                            keywords=[],
+                        ),
+                        optional_vars=None,
+                    )
+                ],
+                body=node.orelse,
+                type_comment=None,
+            )
+            dyn_body.append(with_else)
+
+        # else: keep python if semantics (compile-time selection)
+        py_if = ast.If(
+            test=ast.Name(id=cond_tmp, ctx=ast.Load()),
+            body=node.body,
+            orelse=node.orelse,
+        )
+
+        lowered = [assign_cond, ast.If(test=dyn_test, body=dyn_body, orelse=[py_if])]
+        for n in lowered:
+            ast.copy_location(n, node)
+        return lowered
 
     def visit_For(self, node: ast.For):  # noqa: N802
         node = self.generic_visit(node)

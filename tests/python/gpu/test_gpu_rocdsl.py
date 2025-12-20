@@ -116,10 +116,11 @@ def test_matmul_uses_scf_for_and_rocir_layout():
             _ = rocir.crd2idx(thread_coord, c_layout)
 
             valid = (row < m_c) & (col < n_c)
-            with rocir.scf_ext.IfOp(valid.value):
+            if valid:
                 sum_val = arith.f32(0.0)
                 k0 = arith.index(0)
-                with rocir.scf_ext.for_(k0.value, k_c.value, one.value, iter_args=[sum_val.value]) as for_op:
+                # scf_ext.for_ accepts ArithValue wrappers; no need to manually unwrap `.value`.
+                with rocir.scf_ext.for_(k0, k_c, one, iter_args=[sum_val]) as for_op:
                     k = for_op.induction_variable
                     acc = for_op.inner_iter_args[0]
                     k_v = k.value if hasattr(k, "value") else k

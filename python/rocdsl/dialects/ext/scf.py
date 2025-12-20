@@ -20,6 +20,23 @@ from _mlir.dialects import arith as _arith
 from .arith import constant
 
 
+def _normalize_if_condition(condition):
+    """Best-effort normalization for scf.if conditions.
+
+    Accepts:
+    - MLIR Value
+    - ArithValue-like wrappers with `.value`
+    - Python bool / int (materializes an i1 constant)
+    """
+    if hasattr(condition, "value"):
+        return condition.value
+    if isinstance(condition, bool):
+        return constant(condition).value
+    if isinstance(condition, int):
+        return constant(bool(condition)).value
+    return condition
+
+
 def canonicalize_range(start, stop=None, step=None):
     """Canonicalize range parameters similar to Python range()."""
     if step is None:
@@ -290,6 +307,7 @@ def if_(
     if loc is None:
         loc = Location.unknown()
     
+    condition = _normalize_if_condition(condition)
     results = results or []
     if_op = _scf.IfOp(condition, results, hasElse=hasElse, loc=loc, ip=ip)
     
@@ -327,6 +345,7 @@ class IfOp:
         if loc is None:
             loc = Location.unknown()
         results = results or []
+        condition = _normalize_if_condition(condition)
         self.op = _scf.IfOp(condition, results, hasElse=hasElse, loc=loc, ip=ip)
         self._ip = None
 
