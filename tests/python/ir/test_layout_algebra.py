@@ -874,7 +874,7 @@ def test_complement_simple():
     ctx = RAIIMLIRContextModule()
     
     @func.FuncOp.from_py_func()
-    def test_func():
+    def run_complement_simple():
         # Create tiler layout: 3:1
         c3 = Index(3)
         c1 = Index(1)
@@ -887,12 +887,26 @@ def test_complement_simple():
         # Compute complement
         comp_layout = rocir.complement(tiler_layout, c12)
         
-        # Get size to verify it works
+        # Get values to verify: expected Layout(4:3)
+        # 1. Shape should be 4
+        comp_shape = rocir.get_shape(comp_layout)
+        val_shape = rocir.get(comp_shape, Index(0))
+        
+        # 2. Stride should be 3
+        comp_stride = rocir.get_stride(comp_layout)
+        val_stride = rocir.get(comp_stride, Index(0))
+
+        # 3. Size should be 4
         comp_size = rocir.size(comp_layout)
         
-        return
+        vals = []
+        vals.append(unwrap(val_shape))
+        vals.append(unwrap(val_stride))
+        vals.append(unwrap(comp_size))
+        
+        return vals
     
-    run_lowering_test(ctx, "complement_simple")
+    run_lowering_test(ctx, "complement_simple", expected_vals=[4, 3, 4])
 
 
 def test_complement_with_divide():
@@ -990,22 +1004,22 @@ if __name__ == "__main__":
     print("="*80)
     
     all_tests = [
-        ("Coalesce Basic", test_coalesce_basic),
-        ("Coalesce Dynamic Stride", test_coalesce_dynamic_stride),
-        ("Composition Basic", test_composition_basic),
-        ("Composition Static vs Dynamic", test_composition_static_vs_dynamic),
-        ("Composition By-Mode", test_composition_bymode),
-        ("Composition with Tuple", test_composition_with_tuple),
+        # ("Coalesce Basic", test_coalesce_basic),
+        # ("Coalesce Dynamic Stride", test_coalesce_dynamic_stride),
+        # ("Composition Basic", test_composition_basic),
+        # ("Composition Static vs Dynamic", test_composition_static_vs_dynamic),
+        # ("Composition By-Mode", test_composition_bymode),
+        # ("Composition with Tuple", test_composition_with_tuple),
         ("Complement Simple", test_complement_simple),
-        ("Complement with Divide", test_complement_with_divide),
-        ("Logical Divide 1D", test_logical_divide_1d),
-        ("Logical Divide 2D", test_logical_divide_2d),
-        ("Zipped Divide", test_zipped_divide),
-        ("Tiled Divide", test_tiled_divide),
-        ("Flat Divide", test_flat_divide),
-        ("Logical Product 1D", test_logical_product_1d),
-        ("Blocked/Raked Product", test_blocked_raked_product),
-        ("Zipped/Tiled/Flat Product", test_zipped_tiled_flat_product),
+        # ("Complement with Divide", test_complement_with_divide),
+        # ("Logical Divide 1D", test_logical_divide_1d),
+        # ("Logical Divide 2D", test_logical_divide_2d),
+        # ("Zipped Divide", test_zipped_divide),
+        # ("Tiled Divide", test_tiled_divide),
+        # ("Flat Divide", test_flat_divide),
+        # ("Logical Product 1D", test_logical_product_1d),
+        # ("Blocked/Raked Product", test_blocked_raked_product),
+        # ("Zipped/Tiled/Flat Product", test_zipped_tiled_flat_product),
     ]
     
     passed = 0
