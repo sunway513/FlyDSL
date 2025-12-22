@@ -34,7 +34,10 @@ except ModuleNotFoundError:
 _mlir_libs = _alias("mlir._mlir_libs", "_mlir._mlir_libs")
 dialects = _alias("mlir.dialects", "_mlir.dialects")
 extras = _alias("mlir.extras", "_mlir.extras")
-runtime = _alias("mlir.runtime", "_mlir.runtime")
+try:
+    runtime = _alias("mlir.runtime", "_mlir.runtime")
+except ModuleNotFoundError:
+    runtime = None
 
 # Eagerly alias common dialect modules to avoid importing generated dialect
 # bindings twice under different module names (can crash with

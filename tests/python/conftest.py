@@ -1,8 +1,8 @@
 """Pytest configuration for RocDSL tests.
 
-This test suite now uses RocDSL's embedded MLIR Python bindings (the `_mlir`
-package under `build/python_packages/rocdsl`) and no longer relies on an
-external MLIR Python installation.
+This test suite uses RocDSL's embedded MLIR Python bindings (the `_mlir`
+package staged under `.rocdsl/build/python_packages/rocdsl` by default; legacy
+`build/` also works) and no longer relies on an external MLIR Python install.
 """
 
 import pytest

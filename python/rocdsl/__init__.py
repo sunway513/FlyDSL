@@ -17,7 +17,18 @@ from pathlib import Path
 #   ROCDSL_USE_EMBEDDED_MLIR=1
 _rocdsl_root = Path(__file__).resolve().parents[2]
 if os.environ.get("ROCDSL_USE_EMBEDDED_MLIR", "0") == "1":
-    _python_packages_dir = _rocdsl_root / "build" / "python_packages" / "rocdsl"
+    # Default build layout: `.rocdsl/build` (see build.sh/setup.py), with fallback
+    # to legacy `build/`.
+    _build_dir = os.environ.get("ROCDSL_BUILD_DIR")
+    if _build_dir is None:
+        _build_dir_path = _rocdsl_root / ".rocdsl" / "build"
+        if not _build_dir_path.exists():
+            _build_dir_path = _rocdsl_root / "build"
+    else:
+        _build_dir_path = Path(_build_dir)
+        if not _build_dir_path.is_absolute():
+            _build_dir_path = _rocdsl_root / _build_dir_path
+    _python_packages_dir = _build_dir_path / "python_packages" / "rocdsl"
     if _python_packages_dir.exists():
         _python_packages_str = str(_python_packages_dir)
         if _python_packages_str not in sys.path:
