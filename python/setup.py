@@ -1,4 +1,13 @@
-"""Setup script for RocDSL Python bindings."""
+"""Setup script for RocDSL Python bindings.
+
+NOTE: Prefer installing from repo root:
+  - Editable: `pip install -e .` (or `python setup.py develop`)
+  - Wheel:    `python -m build` (or `python setup.py bdist_wheel`)
+
+The root package includes the embedded `_mlir` runtime from
+`build/python_packages/rocdsl/_mlir`, which this `python/setup.py` does not
+package by itself.
+"""
 
 import os
 from setuptools import setup, find_packages

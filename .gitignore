@@ -1,5 +1,6 @@
 # Build outputs
 build/
+.rocdsl/
 *.log
 
 # MLIR/nanobind generated type stubs (generated during build)
@@ -15,3 +16,9 @@ setup_env.sh
 __pycache__/
 *.pyc
 .cache/
+
+# Editable-install helper symlink (created by setup.py)
+python/_mlir
+
+# Wheels / packaging outputs
+dist/

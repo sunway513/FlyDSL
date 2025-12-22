@@ -2,7 +2,20 @@
 set -ex
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/build"
+
+# Keep all generated artifacts under one directory by default.
+# - You can override with:
+#   ROCDSL_OUT_DIR=.rocdsl   (relative to repo root) or an absolute path
+#   ROCDSL_BUILD_DIR=...     (absolute path to CMake build dir)
+DEFAULT_OUT_DIR="${SCRIPT_DIR}/.rocdsl"
+OUT_DIR="${ROCDSL_OUT_DIR:-${DEFAULT_OUT_DIR}}"
+if [[ "${OUT_DIR}" != /* ]]; then
+  OUT_DIR="${SCRIPT_DIR}/${OUT_DIR}"
+fi
+BUILD_DIR="${ROCDSL_BUILD_DIR:-${OUT_DIR}/build}"
+if [[ "${BUILD_DIR}" != /* ]]; then
+  BUILD_DIR="${SCRIPT_DIR}/${BUILD_DIR}"
+fi
 
 # Set up environment
 if [ -z "$MLIR_PATH" ]; then
@@ -23,7 +36,8 @@ fi
 
 # Build C++ components
 mkdir -p "${BUILD_DIR}" && cd "${BUILD_DIR}"
-cmake .. \
+# NOTE: build dir may be nested (e.g. .rocdsl/build), so `..` may not be repo root.
+cmake "${SCRIPT_DIR}" \
     -DMLIR_DIR="$MLIR_PATH/lib/cmake/mlir" \
     -DBUILD_PYTHON_BINDINGS=ON \
     -DBUILD_RUNTIME=OFF
@@ -107,7 +121,14 @@ echo "✓ Build complete!"
 echo "✓ rocir-opt: ${BUILD_DIR}/bin/rocir-opt"
 echo "✓ Python bindings built with embedded MLIR dependencies"
 echo ""
-echo "Python package location: ${PYTHON_PACKAGE_DIR}"
+echo "Embedded MLIR runtime location: ${PYTHON_PACKAGE_DIR}/_mlir"
 echo ""
-echo "To use Python bindings, set:"
-echo "  export PYTHONPATH=${PYTHON_PACKAGE_DIR}:\$PYTHONPATH"
+echo "Recommended (no manual PYTHONPATH):"
+echo "  cd ${SCRIPT_DIR} && python3 -m pip install -e ."
+echo ""
+echo "Build a wheel:"
+echo "  cd ${SCRIPT_DIR} && python3 setup.py bdist_wheel"
+echo "  # wheel will be under: ${SCRIPT_DIR}/dist/"
+echo ""
+echo "Fallback (no install):"
+echo "  export PYTHONPATH=${PYTHON_PACKAGE_DIR}:${SCRIPT_DIR}/python:${SCRIPT_DIR}:\$PYTHONPATH"

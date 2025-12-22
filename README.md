@@ -10,7 +10,7 @@ and a Python API (`rocdsl`) for constructing and running kernels.
   - Core abstractions: `!rocir.shape`, `!rocir.stride`, `!rocir.layout`, `!rocir.coord`
   - Algebra ops: composition/product/divide/partition + coordinate mapping ops
 - **Python bindings** (`python/rocdsl/`) with an embedded MLIR python package
-  - No external `mlir` python wheel is required: MLIR python bindings are built and staged into `build/python_packages/rocdsl/_mlir`
+  - No external `mlir` python wheel is required: MLIR python bindings are built and staged into `.rocdsl/build/python_packages/rocdsl/_mlir` (default; legacy `build/` also works)
 - **GPU lowering** to HSACO via MLIR GPU → ROCDL pipeline
 - **Tools**: `rocir-opt` for pass testing and IR experimentation
 
@@ -62,9 +62,9 @@ Or use the helper script (clones ROCm llvm-project and builds MLIR):
 
 After a successful build, you will have:
 
-- `build/bin/rocir-opt`
+- `.rocdsl/build/bin/rocir-opt` (default; legacy `build/bin/rocir-opt` also works)
 - Python package root at:
-  - `build/python_packages/rocdsl/`
+  - `.rocdsl/build/python_packages/rocdsl/`
   - This contains:
     - `rocdsl/` (your Python API)
     - `_mlir/` (embedded MLIR python bindings)
@@ -72,16 +72,16 @@ After a successful build, you will have:
 
 ## Using the Python bindings
 
-Always point `PYTHONPATH` at the build-staged package:
 
 ```bash
-export PYTHONPATH="$(pwd)/build/python_packages/rocdsl:${PYTHONPATH}"
+python3 -m pip install -e .
 ```
 
-If you see dynamic loader errors for MLIR shared libraries, also set:
+Build a wheel (default output under `.rocdsl/dist/`):
 
 ```bash
-export LD_LIBRARY_PATH="${MLIR_PATH:-$(pwd)/../llvm-project/buildmlir}/lib:${LD_LIBRARY_PATH}"
+python3 setup.py bdist_wheel
+ls dist/
 ```
 
 ## Run tests

@@ -3,16 +3,22 @@
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
+# Locate the build directory (default: .rocdsl/build; fallback: build/).
+BUILD_DIR="${ROCDSL_BUILD_DIR:-${SCRIPT_DIR}/.rocdsl/build}"
+if [ ! -d "${BUILD_DIR}" ] && [ -d "${SCRIPT_DIR}/build" ]; then
+  BUILD_DIR="${SCRIPT_DIR}/build"
+fi
+
 # Prefer the new tool location (LLVM_RUNTIME_OUTPUT_INTDIR = build/bin),
 # but keep a fallback for older build layouts.
-ROCIR_OPT="${SCRIPT_DIR}/build/bin/rocir-opt"
+ROCIR_OPT="${BUILD_DIR}/bin/rocir-opt"
 if [ ! -x "${ROCIR_OPT}" ]; then
-  ROCIR_OPT="${SCRIPT_DIR}/build/tools/rocir-opt/rocir-opt"
+  ROCIR_OPT="${BUILD_DIR}/tools/rocir-opt/rocir-opt"
 fi
 if [ ! -x "${ROCIR_OPT}" ]; then
-  if [ -d "${SCRIPT_DIR}/build" ]; then
+  if [ -d "${BUILD_DIR}" ]; then
     echo "rocir-opt not found. Building it..."
-    cmake --build "${SCRIPT_DIR}/build" --target rocir-opt -j"$(nproc)" || {
+    cmake --build "${BUILD_DIR}" --target rocir-opt -j"$(nproc)" || {
       echo "Error: failed to build rocir-opt"
       exit 1
     }
@@ -31,13 +37,14 @@ echo "Rocir Test Suite"
 echo "========================================================================"
 echo ""
 
-# Set up Python path for embedded MLIR bindings only (no external MLIR python).
-# - build/python_packages/rocdsl: contains `_mlir/`, plus `rocdsl/` and `mlir` shim
-# - python/: source tree for development convenience
-export PYTHONPATH="${SCRIPT_DIR}/build/python_packages/rocdsl:${SCRIPT_DIR}/python:${SCRIPT_DIR}:${PYTHONPATH}"
+# Prefer an installed package if present; otherwise fall back to PYTHONPATH.
+PYTHON_PACKAGE_ROOT="${BUILD_DIR}/python_packages/rocdsl"
+if python3 -c "import rocdsl, _mlir; import mlir.ir" >/dev/null 2>&1; then
+  echo "Using installed Python packages (rocdsl/_mlir) - no PYTHONPATH override."
+else
+  export PYTHONPATH="${PYTHON_PACKAGE_ROOT}:${SCRIPT_DIR}/python:${SCRIPT_DIR}:${PYTHONPATH}"
+fi
 
-# Make sure any legacy env doesn't accidentally leak an external mlir package.
-unset MLIR_PATH
 
 #=============================================================================
 MLIR_TEST_COUNT=0
