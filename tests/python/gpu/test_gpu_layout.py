@@ -8,7 +8,6 @@ from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.dialects.ext import rocir
 from rocdsl.dialects.ext.arith import Index
 import _mlir.extras.types as T
-from _mlir import ir
 
 
 def test_layout_based_transpose():
@@ -43,11 +42,9 @@ def test_layout_based_transpose():
             _ = output_layout
 
             valid = (row < M_c) & (col < N_c)
-            if_op = rocir.scf_ext.IfOp(valid.value)
-            with ir.InsertionPoint(if_op.then_block):
+            if valid:
                 val = rocir.memref.load(Input, [row.value, col.value])
                 rocir.memref.store(val.value, Output, [col.value, row.value])
-                rocir.scf_ext.yield_([])
 
     m = _Transpose()
     assert m.module.operation.verify()
@@ -91,13 +88,11 @@ def test_strided_layout_access():
             _ = out_layout
 
             valid = (row < M_c) & (col < N_c)
-            if_op = rocir.scf_ext.IfOp(valid.value)
-            with ir.InsertionPoint(if_op.then_block):
+            if valid:
                 in_idx = (row * in_stride + col).value
                 out_idx = (row * out_stride + col).value
                 v = rocir.memref.load(Input, [in_idx])
                 rocir.memref.store(v.value, Output, [out_idx])
-                rocir.scf_ext.yield_([])
 
     m = _StridedCopy()
     assert m.module.operation.verify()

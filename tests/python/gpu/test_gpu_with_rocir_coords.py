@@ -8,9 +8,8 @@ import os
 from rocdsl.dialects.ext import rocir
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from tests.utils import compile_to_hsaco
-from _mlir import ir
 from _mlir.dialects import memref
-from rocdsl.dialects.ext import arith, scf
+from rocdsl.dialects.ext import arith
 import _mlir.extras.types as T
 import pytest
 try:
@@ -68,30 +67,16 @@ def test_matmul_with_rocir():
             col_valid = (col < n_c)
             valid = (row_valid & col_valid)
 
-            # NOTE: Use scf_ext.IfOp instead of the scf.if_ helper; the helper can
-            # leave an insertion-point/terminator state that conflicts with the
-            # implicit gpu.return insertion in @rocir.kernel lowering.
-            if_op = rocir.scf_ext.IfOp(valid.value)
-            with ir.InsertionPoint(if_op.then_block):
+            if valid:
                 sum_val = arith.f32(0.0)
-                k0 = arith.index(0)
-                for_op = scf.ForOp(k0.value, k_c.value, one.value, [sum_val.value])
-            with ir.InsertionPoint(for_op.body):
-                k = for_op.induction_variable
-                acc = for_op.inner_iter_args[0]
+                for k in range(k_c):
+                    k_v = k.value if hasattr(k, "value") else k
+                    a_val = memref.load(A, [row.value, k_v])
+                    b_val = memref.load(B, [k_v, col.value])
+                    sum_val = sum_val + (a_val * b_val)
 
-                k_val = k.value if hasattr(k, "value") else k
-                a_val = memref.load(A, [row.value, k_val])
-                b_val = memref.load(B, [k_val, col.value])
-
-                new_acc = acc + (a_val * b_val)
-                scf.yield_([new_acc.value])
-
-            with ir.InsertionPoint(if_op.then_block):
-                result = for_op.results[0]
-                result_val = result.value if hasattr(result, "value") else result
-                memref.store(result_val, C, [row.value, col.value])
-                rocir.scf_ext.yield_([])
+                out_v = sum_val.value if hasattr(sum_val, "value") else sum_val
+                memref.store(out_v, C, [row.value, col.value])
 
     print("\n Generated MLIR with rocir coordinate operations:")
     print("- rocir.make_shape: Defines matrix dimensions")

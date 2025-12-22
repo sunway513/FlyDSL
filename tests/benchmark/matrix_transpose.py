@@ -7,13 +7,13 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from rocdsl.compiler.context import RAIIMLIRContextModule
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.dialects.ext import gpu, rocir, arith, scf
+from rocdsl.dialects.ext.python_control_flow import lower_range_for_loops, range_constexpr
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 from _mlir import ir
 from _mlir.dialects import memref, vector
-from _mlir.ir import F32Type, InsertionPoint, IntegerType
+from _mlir.ir import F32Type, IntegerType
 from _mlir.dialects import arith as std_arith
 from _mlir.dialects import scf as std_scf
 import _mlir.extras.types as T
@@ -65,26 +65,14 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
         f"Config: Block={BLOCK_X}x{BLOCK_Y}, Iters/thread={ITERS}, Smem={BLOCK_TILE}x{BLOCK_TILE+PAD}"
     )
 
-    # Compile kernel
-    ctx = RAIIMLIRContextModule(allow_unregistered_dialects=True)
-    gpu.set_container_module(ctx.module)
+    # Compile kernel (Flyx-style MlirModule)
     gpu_arch = get_hip_arch()
-    allocator = SmemAllocator(ctx, arch=gpu_arch)
-    f32_type = ir.F32Type.get()
-    tile_smem_decl = allocator.allocate_array(f32_type, SMEM_SIZE)
+    allocator = SmemAllocator(None, arch=gpu_arch)
+    _state = {}
 
-    @gpu.module("transpose_kernels", ['#rocdl.target<abi = "500">'])
-    def gpu_mod():
-        allocator.finalize()
-
-    ip = ir.InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
-    ip.__enter__()
-
-    # Use flat 1D memrefs as kernel parameters
-    @gpu.func(emit=True)
-    def matrix_transpose(A: T.memref(M * N, T.f32()), B: T.memref(N * M, T.f32())):
+    def _matrix_transpose_arith_impl(A, B):
         base_ptr = allocator.get_base()
-        smem = tile_smem_decl(base_ptr).get()
+        smem = _state["tile_smem_decl"](base_ptr).get()
 
         bx = gpu.block_id("x")
         by = gpu.block_id("y")
@@ -105,7 +93,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
         tid = ty * arith.index(BLOCK_X) + tx
 
         # Phase 1: Global A -> Smem (Coalesced)
-        for i in range(ITERS):
+        for i in range_constexpr(ITERS):
             i_c = arith.index(i)
             vec_index = tid + i_c * block_threads_c
             tile_linear = vec_index * vec_width_c
@@ -119,11 +107,9 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = global_col < n_c
             col_end_valid = (global_col + vec_width_c) <= n_c
             valid_load = row_valid & col_valid & col_end_valid
-            cond_val = valid_load.value if hasattr(valid_load, "value") else valid_load
-            if_op = scf.IfOp(cond_val)
-            with ir.InsertionPoint(if_op.then_block):
+            if valid_load:
                 vals = []
-                for t in range(VEC_SIZE):
+                for t in range_constexpr(VEC_SIZE):
                     t_c = arith.index(t)
                     g_idx = global_row * n_c + global_col + t_c
                     val_op = memref.load(
@@ -141,12 +127,11 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
                 vector.store(
                     vec_val, smem, [s_idx.value if hasattr(s_idx, "value") else s_idx]
                 )
-                scf.yield_([])
 
         gpu.barrier()
 
         # Phase 2: Smem -> Global B (Transpose)
-        for i in range(ITERS):
+        for i in range_constexpr(ITERS):
             i_c = arith.index(i)
             vec_index = tid + i_c * block_threads_c
             tile_linear = vec_index * vec_width_c
@@ -160,11 +145,9 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = base_col_b < m_c
             col_end_valid = (base_col_b + vec_width_c) <= m_c
             valid_store = row_valid & col_valid & col_end_valid
-            cond_val = valid_store.value if hasattr(valid_store, "value") else valid_store
-            if_op = scf.IfOp(cond_val)
-            with ir.InsertionPoint(if_op.then_block):
+            if valid_store:
                 vals = []
-                for t in range(VEC_SIZE):
+                for t in range_constexpr(VEC_SIZE):
                     t_c = arith.index(t)
                     s_idx = (col_off + t_c) * smem_stride_c + row_off
                     val_op = memref.load(
@@ -184,11 +167,28 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
                     B,
                     [g_idx_b.value if hasattr(g_idx_b, "value") else g_idx_b],
                 )
-                scf.yield_([])
 
-    ip.__exit__(None, None, None)
+    _matrix_transpose_arith_impl = lower_range_for_loops(_matrix_transpose_arith_impl)
 
-    hsaco = compile_to_hsaco(ctx.module, kernel_name="matrix_transpose")
+    class _TransposeArith(rocir.MlirModule):
+        GPU_MODULE_NAME = "transpose_kernels"
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+
+        def init_gpu_module(self):
+            _state["tile_smem_decl"] = allocator.allocate_array(T.f32(), SMEM_SIZE)
+            allocator.finalize()
+
+        # Use flat 1D memrefs as kernel parameters
+        @rocir.kernel
+        def matrix_transpose(
+            self,
+            A: lambda: T.memref(M * N, T.f32()),
+            B: lambda: T.memref(N * M, T.f32()),
+        ):
+            _matrix_transpose_arith_impl(A, B)
+
+    m = _TransposeArith()
+    hsaco = compile_to_hsaco(m.module, kernel_name="matrix_transpose")
     print(f"\nCompiled to HSACO: {len(hsaco)} bytes")
     print(f"Shared memory: {SMEM_SIZE * 4} bytes per block")
 
@@ -315,28 +315,14 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
         + f"Smem={BLOCK_TILE}x{BLOCK_TILE+PAD}, Buffer Load Enabled"
     )
 
-    ctx = RAIIMLIRContextModule(allow_unregistered_dialects=True)
-    gpu.set_container_module(ctx.module)
-
     # Import buffer operations
     from rocdsl.dialects.ext import buffer_ops
 
-    @gpu.module("transpose_kernels_buffer_load", ['#rocdl.target<abi = "500">'])
-    def gpu_mod():
-        pass
+    gpu_arch = get_hip_arch()
+    _state = {}
 
-    ip = InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
-    ip.__enter__()
-
-    # Shared memory definition
-    smem_type = T.memref(SMEM_SIZE, T.f32(), memory_space=gpu.lds_space())
-    memref.global_(sym_name="tile_smem_buffer_load", type_=smem_type, alignment=16)
-
-    @gpu.func(emit=True)
-    def matrix_transpose_buffer_load(
-        A: T.memref(M * N, T.f32()), B: T.memref(N * M, T.f32())
-    ):
-        smem = memref.get_global(smem_type, "tile_smem_buffer_load")
+    def _matrix_transpose_buffer_load_impl(A, B):
+        smem = memref.get_global(_state["smem_type"], "tile_smem_buffer_load")
 
         tx = rocir.thread_idx("x")
         ty = rocir.thread_idx("y")
@@ -423,17 +409,34 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
                 vec_val, b_rsrc, base_row_b, base_col_b, m_c, mask=mask_val
             )
 
-    ip.__exit__(None, None, None)
+    class _TransposeBufferLoad(rocir.MlirModule):
+        GPU_MODULE_NAME = "transpose_kernels_buffer_load"
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+
+        def init_gpu_module(self):
+            # Shared memory definition
+            _state["smem_type"] = T.memref(SMEM_SIZE, T.f32(), memory_space=gpu.lds_space())
+            memref.global_(sym_name="tile_smem_buffer_load", type_=_state["smem_type"], alignment=16)
+
+        @rocir.kernel
+        def matrix_transpose_buffer_load(
+            self,
+            A: lambda: T.memref(M * N, T.f32()),
+            B: lambda: T.memref(N * M, T.f32()),
+        ):
+            _matrix_transpose_buffer_load_impl(A, B)
+
+    m = _TransposeBufferLoad()
 
     print("  Running optimization pipeline...")
     # Try simpler pipeline for buffer ops (avoid aggressive canonicalization)
     try:
-        optimized = run_pipeline(ctx.module, Pipeline().cse())
+        optimized = run_pipeline(m.module, Pipeline().cse())
     except Exception as e:
         print(
             f"  Warning: Pipeline with CSE failed ({e}), trying without optimization..."
         )
-        optimized = ctx.module
+        optimized = m.module
 
     hsaco = compile_to_hsaco(optimized, kernel_name="matrix_transpose_buffer_load")
     print(f"\nCompiled to HSACO: {len(hsaco)} bytes")
@@ -562,35 +565,16 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
         + f"Smem={BLOCK_TILE}x{BLOCK_TILE+PAD}"
     )
 
-    ctx = RAIIMLIRContextModule(allow_unregistered_dialects=True)
-    gpu.set_container_module(ctx.module)
+    gpu_arch = get_hip_arch()
+    _state = {}
 
-    @gpu.module("transpose_kernels_rocir", ['#rocdl.target<abi = "500">'])
-    def gpu_mod():
-        pass
-
-    ip = InsertionPoint.at_block_begin(gpu_mod.regions[0].blocks[0])
-    ip.__enter__()
-
-    # Shared memory definition
-    SMEM_SIZE = BLOCK_TILE * (BLOCK_TILE + PAD)
-    smem_type = T.memref(SMEM_SIZE, T.f32(), memory_space=gpu.lds_space())
-    memref.global_(sym_name="tile_smem_rocir", type_=smem_type, alignment=16)
-
-    @gpu.func(emit=True)
-    def matrix_transpose_rocir(
-        A: T.memref(M * N, T.f32()), B: T.memref(N * M, T.f32())
-    ):
+    def _matrix_transpose_rocir_impl(A, B):
         # Helpers to keep the kernel code readable.
         def v(x):
             """Unwrap ArithValue (or similar wrappers) to an MLIR Value."""
             return x.value if hasattr(x, "value") else x
 
-        def if_(pred):
-            """Create scf.if with a possibly wrapped i1 predicate."""
-            return scf.IfOp(v(pred))
-
-        smem = memref.get_global(smem_type, "tile_smem_rocir")
+        smem = memref.get_global(_state["smem_type"], "tile_smem_rocir")
 
         tensor_A = rocir.TensorView(A, shape=(M * N,))
         tensor_smem = rocir.TensorView(smem, shape=(BLOCK_TILE * (BLOCK_TILE + PAD),))
@@ -622,9 +606,11 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
         )
         a_layout = rocir.make_layout((m_c, n_c), stride=(n_c, one_c))
         b_layout = rocir.make_layout((n_c, m_c), stride=(m_c, one_c))
-        smem_layout = rocir.make_layout((block_tile_c, smem_stride_c), stride=(smem_stride_c, one_c))
+        smem_layout = rocir.make_layout(
+            (block_tile_c, smem_stride_c), stride=(smem_stride_c, one_c)
+        )
 
-        for i in range(VEC_PER_THREAD):
+        for i in range_constexpr(VEC_PER_THREAD):
             i_c = arith.index(i)
             vec_index = tid + i_c * block_threads_c
             tile_linear = vec_index * vec_width_c
@@ -632,7 +618,7 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
             tile_coord = rocir.idx2crd(tile_linear, tile_layout)
             row_off = rocir.get(tile_coord, i0)
             col_off = rocir.get(tile_coord, i1)
-            
+
             global_row = by * block_tile_c + row_off
             global_col = bx * block_tile_c + col_off
 
@@ -640,10 +626,9 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = global_col < n_c
             col_end_valid = (global_col + vec_width_c) <= n_c
             valid_load = row_valid & col_valid & col_end_valid
-            if_op = if_(valid_load)
-            with ir.InsertionPoint(if_op.then_block):
+            if valid_load:
                 vals = []
-                for t in range(VEC_WIDTH):
+                for t in range_constexpr(VEC_WIDTH):
                     t_c = arith.index(t)
                     a_coord = rocir.make_coord(global_row, global_col + t_c)
                     g_idx = rocir.crd2idx(a_coord, a_layout)
@@ -654,18 +639,17 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
                 s_coord = rocir.make_coord(row_off, col_off)
                 s_idx = rocir.crd2idx(s_coord, smem_layout)
                 vector.store(vec_val, smem, [v(s_idx)])
-                scf.yield_([])
 
         gpu.barrier()
 
-        for i in range(VEC_PER_THREAD):
+        for i in range_constexpr(VEC_PER_THREAD):
             i_c = arith.index(i)
             vec_index = tid + i_c * block_threads_c
             tile_linear = vec_index * vec_width_c
             tile_coord = rocir.idx2crd(tile_linear, tile_layout)
             row_off = rocir.get(tile_coord, i0)
             col_off = rocir.get(tile_coord, i1)
-            
+
             base_row_b = bx * block_tile_c + row_off
             base_col_b = by * block_tile_c + col_off
 
@@ -673,10 +657,9 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
             col_valid = base_col_b < m_c
             col_end_valid = (base_col_b + vec_width_c) <= m_c
             valid_store = row_valid & col_valid & col_end_valid
-            if_op = if_(valid_store)
-            with ir.InsertionPoint(if_op.then_block):
+            if valid_store:
                 vals = []
-                for t in range(VEC_WIDTH):
+                for t in range_constexpr(VEC_WIDTH):
                     t_c = arith.index(t)
                     s_coord = rocir.make_coord(col_off + t_c, row_off)
                     s_idx = rocir.crd2idx(s_coord, smem_layout)
@@ -687,12 +670,30 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
                 b_coord = rocir.make_coord(base_row_b, base_col_b)
                 g_idx_b = rocir.crd2idx(b_coord, b_layout)
                 vector.store(vec_val, B, [v(g_idx_b)])
-                scf.yield_([])
 
-    ip.__exit__(None, None, None)
+    _matrix_transpose_rocir_impl = lower_range_for_loops(_matrix_transpose_rocir_impl)
+
+    class _TransposeRocir(rocir.MlirModule):
+        GPU_MODULE_NAME = "transpose_kernels_rocir"
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+
+        def init_gpu_module(self):
+            # Shared memory definition
+            _state["smem_type"] = T.memref(SMEM_SIZE, T.f32(), memory_space=gpu.lds_space())
+            memref.global_(sym_name="tile_smem_rocir", type_=_state["smem_type"], alignment=16)
+
+        @rocir.kernel
+        def matrix_transpose_rocir(
+            self,
+            A: lambda: T.memref(M * N, T.f32()),
+            B: lambda: T.memref(N * M, T.f32()),
+        ):
+            _matrix_transpose_rocir_impl(A, B)
+
+    m = _TransposeRocir()
 
     print("  Running optimization pipeline...")
-    optimized = run_pipeline(ctx.module, Pipeline().canonicalize().cse())
+    optimized = run_pipeline(m.module, Pipeline().canonicalize().cse())
 
     hsaco = compile_to_hsaco(optimized, kernel_name="matrix_transpose_rocir")
     print(f"\nCompiled to HSACO: {len(hsaco)} bytes")

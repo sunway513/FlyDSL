@@ -453,8 +453,7 @@ def kernel(
     **kwargs,
 ) -> Grid:
     """
-    Enables lowering of `for i in range(...)` into `scf.for` when bounds are MLIR Values,
-    while preserving Python unrolling for pure int bounds.
+    Enables lowering of `for i in range(...)` into `scf.for`.
     """
     return func(
         f,

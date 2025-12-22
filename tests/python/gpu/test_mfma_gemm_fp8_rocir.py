@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
 from rocdsl.runtime.hip_util import hip_check, get_hip_arch
 import rocdsl.dialects.ext.rocir as rocir
+from rocdsl.dialects.ext.python_control_flow import range_constexpr
 from rocdsl.utils import SmemAllocator
 from tests.utils import compile_to_hsaco, pertoken_quant
 from tests.test_common import run_perftest, verify_output
@@ -240,7 +241,7 @@ def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n
             # --- HELPER: Compute Tile ---
             def compute_tile(acc_in):
                 acc_curr = acc_in
-                for ki in range(0, tile_k, mfma_k):
+                for ki in range_constexpr(0, tile_k, mfma_k):
                     col_lds = ki + col_offset_base
                     
                     # A LDS Index (uses layout_lds which has stride padding)
@@ -288,39 +289,36 @@ def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n
             # Main Loop: 0 to K-tile_k
             # c_k_main = c_k - c_tile_k_idx
             c_k_main = _arith_mlir.SubIOp(unwrap(c_k), unwrap(c_tile_k)).result
-            
-            iter_args = [acc_init, vec_a_init, vec_b_init]
-            
-            for_op = scf.ForOp(c_k_idx, c_k_main, c_tile_k, iter_args)
-            with ir.InsertionPoint(for_op.body):
-                k_curr = for_op.induction_variable
-                acc_iter = for_op.inner_iter_args[0]
-                vec_a_curr = for_op.inner_iter_args[1]
-                vec_b_curr = for_op.inner_iter_args[2]
-                
+
+            # Python `for` + reassignment is auto-lowered into scf.for with iter_args/yield/results.
+            acc_iter = acc_init
+            vec_a_curr = vec_a_init
+            vec_b_curr = vec_b_init
+            for k_curr in range(c_k_idx, c_k_main, c_tile_k):
                 # 1. Store current to LDS
                 vector.StoreOp(vec_a_curr, lds_a, [unwrap(lds_write_idx)])
                 vector.StoreOp(vec_b_curr, lds_b, [unwrap(lds_write_idx)])
-                
+
                 # 2. Prefetch Next
-                # k_next = k_curr + c_tile_k_idx
                 k_next = _arith_mlir.AddIOp(unwrap(k_curr), unwrap(c_tile_k)).result
                 vec_a_next, vec_b_next = load_global(k_next)
-                
+
                 gpu.barrier()
-                
+
                 # 3. Compute
-                acc_new = compute_tile(acc_iter)
-                
+                acc_iter = compute_tile(acc_iter)
+
                 gpu.barrier()
-                
-                scf.yield_([acc_new, vec_a_next, vec_b_next])
-            
+
+                # Carry
+                vec_a_curr = vec_a_next
+                vec_b_curr = vec_b_next
+
             # Epilogue: Last Tile
-            final_acc = for_op.results[0]
-            last_vec_a = for_op.results[1]
-            last_vec_b = for_op.results[2]
-            
+            final_acc = acc_iter
+            last_vec_a = vec_a_curr
+            last_vec_b = vec_b_curr
+
             vector.StoreOp(last_vec_a, lds_a, [unwrap(lds_write_idx)])
             vector.StoreOp(last_vec_b, lds_b, [unwrap(lds_write_idx)])
             
@@ -340,7 +338,7 @@ def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n
             row_base_g = bx_tile_m + row_wave_base
             col_base_g = by_tile_n + col_wave_base
             
-            for i in range(4):
+            for i in range_constexpr(4):
                 val = vector.ExtractOp(final_acc, [], [i]).result
                 
                 # Row offset = (lane_div_16 * 4) + i
