@@ -36,7 +36,7 @@ rocDSL/
 - **Build tools**: `cmake`, C++ compiler, and optionally `ninja` (faster).
 - **Python**: Python 3 + `pip`.
   - `build_llvm.sh` installs `nanobind`, `numpy`, `pybind11`.
-  - `python/requirements.txt` exists for auxiliary deps (`pybind11`, `hip-python`).
+  - `python/requirements.txt` exists for auxiliary deps (`numpy`, `torch`) for runtime data initialize and result check.
 
 ## Build
 
