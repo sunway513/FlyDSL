@@ -42,7 +42,9 @@ PYTHON_PACKAGE_ROOT="${BUILD_DIR}/python_packages/rocdsl"
 if python3 -c "import rocdsl, _mlir; import mlir.ir" >/dev/null 2>&1; then
   echo "Using installed Python packages (rocdsl/_mlir) - no PYTHONPATH override."
 else
-  export PYTHONPATH="${PYTHON_PACKAGE_ROOT}:${SCRIPT_DIR}/python:${SCRIPT_DIR}:${PYTHONPATH}"
+  # Prefer in-tree Python sources for `rocdsl/`, while still providing the embedded
+  # `_mlir` runtime/extensions from the build tree.
+  export PYTHONPATH="${SCRIPT_DIR}/python:${PYTHON_PACKAGE_ROOT}:${SCRIPT_DIR}:${PYTHONPATH}"
 fi
 
 

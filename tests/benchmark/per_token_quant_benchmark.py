@@ -30,8 +30,8 @@ import argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import ctypes
 import numpy as np
+import pytest
 
 try:
     import torch
@@ -40,19 +40,22 @@ try:
 
     HAS_AITER = True
 except ImportError:
+    torch = None
     HAS_AITER = False
 
-from hip import hip
-from rocdsl.dialects.ext import arith, gpu, rocir, block_reduce_ops, scf as scf_ext
+if torch is None or not torch.cuda.is_available():
+    pytest.skip("CUDA/ROCm not available. Skipping GPU benchmarks.", allow_module_level=True)
+
+import rocdsl
+from rocdsl.dialects.ext import arith, rocir, block_reduce_ops, scf as scf_ext
 from rocdsl.dialects.ext.gpu import lds_space
-from rocdsl.runtime.hip_util import hip_check, get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 from rocdsl.utils import SmemAllocator
 from _mlir.dialects import (
     vector,
     memref,
 )
 import _mlir.extras.types as T
-from utils import compile_to_hsaco
 from test_common import run_perftest
 
 class KernelCompilationCache:
@@ -74,7 +77,7 @@ class KernelCompilationCache:
 
 def compile_kernel_for_n(N, gpu_arch=None):
     if gpu_arch is None:
-        gpu_arch = get_hip_arch()
+        gpu_arch = get_rocm_arch()
     
     NUM_WARPS = 4
     BLOCK_SIZE = 64 * NUM_WARPS
@@ -218,7 +221,7 @@ def compile_kernel_for_n(N, gpu_arch=None):
 
     class _Quant(rocir.MlirModule):
         GPU_MODULE_NAME = "quant_mod"
-        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}">']
 
         def init_gpu_module(self):
             _state["red_buffer_decl"] = allocator.allocate_array(T.f32(), 64)
@@ -235,8 +238,25 @@ def compile_kernel_for_n(N, gpu_arch=None):
         ):
             _quant_kernel_impl(input, output, scales)
 
+        @rocir.jit
+        def __call__(
+            self: rocir.T.i64,
+            input: lambda: T.memref(M_compile * N, T.f16()),
+            output: lambda: T.memref(M_compile * N, T.i8()),
+            scales: lambda: T.memref(M_compile, T.f32()),
+            m_in: lambda: T.index(),
+        ):
+            c1 = arith.index(1).value
+            bx = arith.index(BLOCK_SIZE).value
+            rocir.gpu_ext.LaunchFuncOp(
+                [self.GPU_MODULE_NAME, "quant_kernel"],
+                grid_size=(m_in, c1, c1),
+                block_size=(bx, c1, c1),
+                kernel_operands=[input, output, scales],
+            )
+
     m = _Quant()
-    hsaco = compile_to_hsaco(m.module, kernel_name="quant_kernel")
+    exe = rocdsl.compile(m)
     
     config = {
         'N': N,
@@ -247,16 +267,16 @@ def compile_kernel_for_n(N, gpu_arch=None):
         'ITERS': ITERS,
     }
     
-    return hsaco, config
+    return exe, config
 
 
-def benchmark_per_token_quant(M=4096, N=8192, hsaco=None, config=None):
+def benchmark_per_token_quant(M=4096, N=8192, exe=None, config=None):
     """Run Per-Token Quantization benchmark.
     
     Args:
         M: Number of tokens
         N: Hidden dimension
-        hsaco: Pre-compiled HSACO bytes (optional)
+        exe: Pre-compiled executor (optional)
         config: Config dict from compile_kernel_for_n (optional)
     
     Returns:
@@ -267,14 +287,14 @@ def benchmark_per_token_quant(M=4096, N=8192, hsaco=None, config=None):
     print("=" * 80)
 
     # Compile if not provided
-    if hsaco is None or config is None:
-        gpu_arch = get_hip_arch()
-        print(f"Detected HIP Arch: {gpu_arch}")
+    if exe is None or config is None:
+        gpu_arch = get_rocm_arch()
+        print(f"Detected ROCm Arch: {gpu_arch}")
         print("Compiling MLIR module...")
-        hsaco, config = compile_kernel_for_n(N, gpu_arch)
-        print(f"Compiled to HSACO: {len(hsaco)} bytes")
+        exe, config = compile_kernel_for_n(N, gpu_arch)
+        print("Compiled via rocdsl.compile")
     else:
-        print(f"Using pre-compiled kernel ({len(hsaco)} bytes)")
+        print("Using pre-compiled executor")
     
     # Extract config
     NUM_WARPS = config['NUM_WARPS']
@@ -307,50 +327,16 @@ def benchmark_per_token_quant(M=4096, N=8192, hsaco=None, config=None):
     input_size_bytes = M * N * 2
     output_size_bytes = M * N * 1
     scales_size_bytes = M * 4
+    input_torch = torch.from_numpy(input_data_fp16).to(device="cuda")
+    output_torch = torch.empty((M, N), device="cuda", dtype=torch.int8)
+    scales_torch = torch.empty((M,), device="cuda", dtype=torch.float32)
 
-    d_input = hip_check(hip.hipMalloc(input_size_bytes))
-    d_output = hip_check(hip.hipMalloc(output_size_bytes))
-    d_scales = hip_check(hip.hipMalloc(scales_size_bytes))
-
-    hip_check(
-        hip.hipMemcpy(
-            d_input,
-            input_data_fp16.ctypes.data,
-            input_size_bytes,
-            hip.hipMemcpyKind.hipMemcpyHostToDevice,
-        )
-    )
-
-    hip_module = hip_check(hip.hipModuleLoadData(hsaco))
-    kernel_func = hip_check(hip.hipModuleGetFunction(hip_module, b"quant_kernel"))
-
-    arg_ptrs = [
-        ctypes.c_void_p(int(d_input)),
-        ctypes.c_void_p(int(d_output)),
-        ctypes.c_void_p(int(d_scales)),
-    ]
-    args_array = (ctypes.c_void_p * len(arg_ptrs))(
-        *[ctypes.addressof(p) for p in arg_ptrs]
-    )
-
-    def hip_kernel_launch():
-        hip.hipModuleLaunchKernel(
-            kernel_func,
-            M,
-            1,
-            1,
-            BLOCK_SIZE,
-            1,
-            1,
-            sharedMemBytes=0,
-            stream=None,
-            kernelParams=args_array,
-            extra=None,
-        )
-        hip.hipDeviceSynchronize()
+    def kernel_launch():
+        exe(input_torch, output_torch, scales_torch, M)
+        torch.cuda.synchronize()
 
     print("Running benchmark...")
-    _, avg_us = run_perftest(hip_kernel_launch, num_iters=20, num_warmup=2)
+    _, avg_us = run_perftest(kernel_launch, num_iters=20, num_warmup=2)
     
     # Calculate metrics
     bandwidth_gbs = total_bytes_rw / (avg_us / 1e6) / 1e9
@@ -364,25 +350,8 @@ def benchmark_per_token_quant(M=4096, N=8192, hsaco=None, config=None):
         "total_bytes": total_bytes_rw,
     }
 
-    output_host = np.zeros((M, N), dtype=np.int8)
-    scales_host = np.zeros(M, dtype=np.float32)
-
-    hip_check(
-        hip.hipMemcpy(
-            output_host.ctypes.data,
-            d_output,
-            output_size_bytes,
-            hip.hipMemcpyKind.hipMemcpyDeviceToHost,
-        )
-    )
-    hip_check(
-        hip.hipMemcpy(
-            scales_host.ctypes.data,
-            d_scales,
-            scales_size_bytes,
-            hip.hipMemcpyKind.hipMemcpyDeviceToHost,
-        )
-    )
+    output_host = output_torch.cpu().numpy()
+    scales_host = scales_torch.cpu().numpy()
 
     scale_diff = np.max(np.abs(scales_host - per_token_scale))
     output_diff = np.max(
@@ -396,17 +365,10 @@ def benchmark_per_token_quant(M=4096, N=8192, hsaco=None, config=None):
     print(f"\nBandwidth: {bandwidth_gbs:.2f} GB/s")
     print(f"  {results}")
 
-    hip_check(hip.hipFree(d_input))
-    hip_check(hip.hipFree(d_output))
-    hip_check(hip.hipFree(d_scales))
-    hip_check(hip.hipModuleUnload(hip_module))
-
     if HAS_AITER:
         print("\n" + "=" * 80)
         print("Benchmarking Reference Implementation (aiter)")
         print("=" * 80)
-
-        input_torch = torch.from_numpy(input_data_fp16).cuda()
 
         def launch_aiter():
             per_token_quant_hip(input_torch)
@@ -463,7 +425,7 @@ def test_benchmark_per_token_quant():
     """Pytest wrapper for per-token quantization benchmark."""
     print("\n" + "=" * 80)
     print("ROCm GPU Benchmark - Per-Token Quantization")
-    print(f"GPU: {get_hip_arch()}")
+    print(f"GPU: {get_rocm_arch()}")
     print("=" * 80)
     assert (
         benchmark_per_token_quant()
@@ -509,7 +471,7 @@ if __name__ == "__main__":
             print(f"\n⚠ {len(unique_ns)} different N values detected: {unique_ns}")
             print(f"  Will compile once per N value (total {len(unique_ns)} compilations)")
         
-        gpu_arch = get_hip_arch()
+        gpu_arch = get_rocm_arch()
         results = []
         cache = KernelCompilationCache()
         
@@ -522,15 +484,15 @@ if __name__ == "__main__":
             
             # Compile kernel for this N (only once)
             print(f"Compiling kernel for N={n_val}...")
-            hsaco, config, was_cached = cache.get_or_compile(
+            exe, config, was_cached = cache.get_or_compile(
                 n_val,
                 lambda: compile_kernel_for_n(n_val, gpu_arch)
             )
             
             if was_cached:
-                print(f"✓ Using cached kernel ({len(hsaco)} bytes)")
+                print("✓ Using cached executor")
             else:
-                print(f"✓ Compiled to HSACO: {len(hsaco)} bytes")
+                print("✓ Compiled")
             
             # Run all tests with this N using the compiled kernel
             for M, N in n_tests:
@@ -538,7 +500,7 @@ if __name__ == "__main__":
                 print(f"Test {len(results)+1}/{len(test_configs)}: M={M}, N={N}")
                 print(f"{'='*80}")
                 
-                success = benchmark_per_token_quant(M=M, N=N, hsaco=hsaco, config=config)
+                success = benchmark_per_token_quant(M=M, N=N, exe=exe, config=config)
                 
                 results.append({
                     'M': M,

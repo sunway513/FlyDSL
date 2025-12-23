@@ -7,22 +7,18 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import rocdsl
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
-from rocdsl.dialects.ext import gpu, rocir, arith, scf
+from rocdsl.dialects.ext import gpu, rocir, arith
 from rocdsl.dialects.ext.python_control_flow import lower_range_for_loops, range_constexpr
-from rocdsl.runtime.hip_util import hip_check, get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 from _mlir import ir
 from _mlir.dialects import memref, vector
 from _mlir.ir import F32Type, IntegerType
-from _mlir.dialects import arith as std_arith
-from _mlir.dialects import scf as std_scf
 import _mlir.extras.types as T
-from hip import hip
 import numpy as np
-import ctypes
+import torch
 
-# Import benchmark utilities from shared tests/utils.py
-from utils import compile_to_hsaco
 from rocdsl.utils import SmemAllocator
 
 
@@ -66,7 +62,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
     )
 
     # Compile kernel
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
     allocator = SmemAllocator(None, arch=gpu_arch)
     _state = {}
 
@@ -172,7 +168,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
 
     class _TransposeArith(rocir.MlirModule):
         GPU_MODULE_NAME = "transpose_kernels"
-        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}">']
 
         def init_gpu_module(self):
             _state["tile_smem_decl"] = allocator.allocate_array(T.f32(), SMEM_SIZE)
@@ -187,28 +183,35 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
         ):
             _matrix_transpose_arith_impl(A, B)
 
+        @rocir.jit
+        def __call__(
+            self: rocir.T.i64,
+            A: lambda: T.memref(M * N, T.f32()),
+            B: lambda: T.memref(N * M, T.f32()),
+        ):
+            c1 = arith.index(1).value
+            gx = arith.index((N + BLOCK_TILE - 1) // BLOCK_TILE).value
+            gy = arith.index((M + BLOCK_TILE - 1) // BLOCK_TILE).value
+            bx = arith.index(BLOCK_X).value
+            by = arith.index(BLOCK_Y).value
+            rocir.gpu_ext.LaunchFuncOp(
+                [self.GPU_MODULE_NAME, "matrix_transpose"],
+                grid_size=(gx, gy, c1),
+                block_size=(bx, by, c1),
+                kernel_operands=[A, B],
+            )
+
     m = _TransposeArith()
-    hsaco = compile_to_hsaco(m.module, kernel_name="matrix_transpose")
-    print(f"\nCompiled to HSACO: {len(hsaco)} bytes")
+    run_pipeline(m.module, Pipeline().canonicalize().cse())
+    exe = rocdsl.compile(m)
     print(f"Shared memory: {SMEM_SIZE * 4} bytes per block")
 
     # Allocate device memory
     np.random.seed(123)
     a_host_2d = np.random.randn(M, N).astype(np.float32)
     a_host = a_host_2d.flatten("C")
-    b_host = np.zeros(N * M, dtype=np.float32)
-
-    d_a = hip_check(hip.hipMalloc(M * N * 4))
-    d_b = hip_check(hip.hipMalloc(M * N * 4))
-
-    hip_check(
-        hip.hipMemcpy(
-            d_a, a_host.ctypes.data, M * N * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice
-        )
-    )
-
-    hip_module = hip_check(hip.hipModuleLoadData(hsaco))
-    kernel_func = hip_check(hip.hipModuleGetFunction(hip_module, b"matrix_transpose"))
+    a_dev = torch.tensor(a_host, device="cuda", dtype=torch.float32)
+    b_dev = torch.empty((N * M,), device="cuda", dtype=torch.float32)
 
     # Grid: each block processes BLOCK_TILE x BLOCK_TILE
     grid_x = (N + BLOCK_TILE - 1) // BLOCK_TILE
@@ -217,27 +220,10 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
     print(f"Grid: ({grid_x}, {grid_y}), Block: ({BLOCK_X}, {BLOCK_Y})")
     print(f"Total threads: {grid_x * grid_y * BLOCK_X * BLOCK_Y:,}")
 
-    arg_ptrs = [ctypes.c_void_p(int(d_a)), ctypes.c_void_p(int(d_b))]
-    args = (ctypes.c_void_p * len(arg_ptrs))(*[ctypes.addressof(p) for p in arg_ptrs])
-
     # Define kernel launch function
     def launch_kernel():
-        hip_check(
-            hip.hipModuleLaunchKernel(
-                kernel_func,
-                grid_x,
-                grid_y,
-                1,  # grid dimensions
-                BLOCK_X,
-                BLOCK_Y,
-                1,  # block dimensions
-                0,  # shared memory bytes (static allocation via memref.global_)
-                None,  # stream
-                args,
-                None,
-            )
-        )
-        hip_check(hip.hipDeviceSynchronize())
+        exe(a_dev, b_dev)
+        torch.cuda.synchronize()
 
     # Run benchmark
     from tests.test_common import run_perftest
@@ -245,11 +231,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
     _, avg_us = run_perftest(launch_kernel, num_iters=20, num_warmup=2)
 
     # Verify correctness
-    hip_check(
-        hip.hipMemcpy(
-            b_host.ctypes.data, d_b, M * N * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost
-        )
-    )
+    b_host = b_dev.cpu().numpy()
     b_result_2d = b_host.reshape(N, M, order="C")
     expected_2d = a_host_2d.T
     error = np.max(np.abs(b_result_2d - expected_2d))
@@ -272,11 +254,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
 
     print(f"\n  Performance:")
     print(f"  Average Time: {avg_ms:.3f} ms")
-    print(f"  Bandwidth: {bandwidth_gbs:.2f} GB/s")
-
-    hip_check(hip.hipFree(d_a))
-    hip_check(hip.hipFree(d_b))
-    hip_check(hip.hipModuleUnload(hip_module))
+    print(f"Bandwidth: {bandwidth_gbs:.2f} GB/s")
 
     return error < 1e-5, results
 
@@ -318,7 +296,7 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
     # Import buffer operations
     from rocdsl.dialects.ext import buffer_ops
 
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
     _state = {}
 
     def _matrix_transpose_buffer_load_impl(A, B):
@@ -411,7 +389,7 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
 
     class _TransposeBufferLoad(rocir.MlirModule):
         GPU_MODULE_NAME = "transpose_kernels_buffer_load"
-        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}">']
 
         def init_gpu_module(self):
             # Shared memory definition
@@ -426,6 +404,24 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
         ):
             _matrix_transpose_buffer_load_impl(A, B)
 
+        @rocir.jit
+        def __call__(
+            self: rocir.T.i64,
+            A: lambda: T.memref(M * N, T.f32()),
+            B: lambda: T.memref(N * M, T.f32()),
+        ):
+            c1 = arith.index(1).value
+            gx = arith.index((N + BLOCK_TILE - 1) // BLOCK_TILE).value
+            gy = arith.index((M + BLOCK_TILE - 1) // BLOCK_TILE).value
+            bx = arith.index(THREADS_PER_BLOCK_X).value
+            by = arith.index(THREADS_PER_BLOCK_Y).value
+            rocir.gpu_ext.LaunchFuncOp(
+                [self.GPU_MODULE_NAME, "matrix_transpose_buffer_load"],
+                grid_size=(gx, gy, c1),
+                block_size=(bx, by, c1),
+                kernel_operands=[A, B],
+            )
+
     m = _TransposeBufferLoad()
 
     print("  Running optimization pipeline...")
@@ -438,28 +434,14 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
         )
         optimized = m.module
 
-    hsaco = compile_to_hsaco(optimized, kernel_name="matrix_transpose_buffer_load")
-    print(f"\nCompiled to HSACO: {len(hsaco)} bytes")
+    exe = rocdsl.compile(optimized)
     print(f"Shared memory: {SMEM_SIZE * 4} bytes per block")
 
     np.random.seed(123)
     a_host_2d = np.random.randn(M, N).astype(np.float32)
     a_host = a_host_2d.flatten("C")
-    b_host = np.zeros(N * M, dtype=np.float32)
-
-    d_a = hip_check(hip.hipMalloc(M * N * 4))
-    d_b = hip_check(hip.hipMalloc(M * N * 4))
-
-    hip_check(
-        hip.hipMemcpy(
-            d_a, a_host.ctypes.data, M * N * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice
-        )
-    )
-
-    hip_module = hip_check(hip.hipModuleLoadData(hsaco))
-    kernel_func = hip_check(
-        hip.hipModuleGetFunction(hip_module, b"matrix_transpose_buffer_load")
-    )
+    a_dev = torch.tensor(a_host, device="cuda", dtype=torch.float32)
+    b_dev = torch.empty((N * M,), device="cuda", dtype=torch.float32)
 
     grid_x = (N + BLOCK_TILE - 1) // BLOCK_TILE
     grid_y = (M + BLOCK_TILE - 1) // BLOCK_TILE
@@ -471,35 +453,14 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
         f"Total threads: {grid_x * grid_y * THREADS_PER_BLOCK_X * THREADS_PER_BLOCK_Y:,}"
     )
 
-    arg_ptrs = [ctypes.c_void_p(int(d_a)), ctypes.c_void_p(int(d_b))]
-    args = (ctypes.c_void_p * len(arg_ptrs))(*[ctypes.addressof(p) for p in arg_ptrs])
-
     def launch_kernel():
-        hip_check(
-            hip.hipModuleLaunchKernel(
-                kernel_func,
-                grid_x,
-                grid_y,
-                1,
-                THREADS_PER_BLOCK_X,
-                THREADS_PER_BLOCK_Y,
-                1,
-                0,
-                None,
-                args,
-                None,
-            )
-        )
-        hip_check(hip.hipDeviceSynchronize())
+        exe(a_dev, b_dev)
+        torch.cuda.synchronize()
 
     # Run benchmark
     _, avg_us = _run_perftest_import(launch_kernel, num_iters=20, num_warmup=2)
 
-    hip_check(
-        hip.hipMemcpy(
-            b_host.ctypes.data, d_b, M * N * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost
-        )
-    )
+    b_host = b_dev.cpu().numpy()
     b_result_2d = b_host.reshape(N, M, order="C")
     expected_2d = a_host_2d.T
     error = np.max(np.abs(b_result_2d - expected_2d))
@@ -522,11 +483,7 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
 
     print(f"\n  Performance:")
     print(f"  Average Time: {avg_ms:.3f} ms")
-    print(f"  Bandwidth: {bandwidth_gbs:.2f} GB/s")
-
-    hip_check(hip.hipFree(d_a))
-    hip_check(hip.hipFree(d_b))
-    hip_check(hip.hipModuleUnload(hip_module))
+    print(f"Bandwidth: {bandwidth_gbs:.2f} GB/s")
 
     return error < 1e-5, results
 
@@ -565,7 +522,7 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
         + f"Smem={BLOCK_TILE}x{BLOCK_TILE+PAD}"
     )
 
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
     _state = {}
 
     def _matrix_transpose_rocir_impl(A, B):
@@ -675,7 +632,7 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
 
     class _TransposeRocir(rocir.MlirModule):
         GPU_MODULE_NAME = "transpose_kernels_rocir"
-        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}">']
 
         def init_gpu_module(self):
             # Shared memory definition
@@ -690,33 +647,37 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
         ):
             _matrix_transpose_rocir_impl(A, B)
 
+        @rocir.jit
+        def __call__(
+            self: rocir.T.i64,
+            A: lambda: T.memref(M * N, T.f32()),
+            B: lambda: T.memref(N * M, T.f32()),
+        ):
+            c1 = arith.index(1).value
+            gx = arith.index((N + BLOCK_TILE - 1) // BLOCK_TILE).value
+            gy = arith.index((M + BLOCK_TILE - 1) // BLOCK_TILE).value
+            bx = arith.index(THREADS_PER_BLOCK_X).value
+            by = arith.index(THREADS_PER_BLOCK_Y).value
+            rocir.gpu_ext.LaunchFuncOp(
+                [self.GPU_MODULE_NAME, "matrix_transpose_rocir"],
+                grid_size=(gx, gy, c1),
+                block_size=(bx, by, c1),
+                kernel_operands=[A, B],
+            )
+
     m = _TransposeRocir()
 
     print("  Running optimization pipeline...")
     optimized = run_pipeline(m.module, Pipeline().canonicalize().cse())
 
-    hsaco = compile_to_hsaco(optimized, kernel_name="matrix_transpose_rocir")
-    print(f"\nCompiled to HSACO: {len(hsaco)} bytes")
+    exe = rocdsl.compile(optimized)
     print(f"Shared memory: {SMEM_SIZE * 4} bytes per block")
 
     np.random.seed(123)
     a_host_2d = np.random.randn(M, N).astype(np.float32)
     a_host = a_host_2d.flatten("C")
-    b_host = np.zeros(N * M, dtype=np.float32)
-
-    d_a = hip_check(hip.hipMalloc(M * N * 4))
-    d_b = hip_check(hip.hipMalloc(M * N * 4))
-
-    hip_check(
-        hip.hipMemcpy(
-            d_a, a_host.ctypes.data, M * N * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice
-        )
-    )
-
-    hip_module = hip_check(hip.hipModuleLoadData(hsaco))
-    kernel_func = hip_check(
-        hip.hipModuleGetFunction(hip_module, b"matrix_transpose_rocir")
-    )
+    a_dev = torch.tensor(a_host, device="cuda", dtype=torch.float32)
+    b_dev = torch.empty((N * M,), device="cuda", dtype=torch.float32)
 
     grid_x = (N + BLOCK_TILE - 1) // BLOCK_TILE
     grid_y = (M + BLOCK_TILE - 1) // BLOCK_TILE
@@ -728,32 +689,15 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
         f"Total threads: {grid_x * grid_y * THREADS_PER_BLOCK_X * THREADS_PER_BLOCK_Y:,}"
     )
 
-    arg_ptrs = [ctypes.c_void_p(int(d_a)), ctypes.c_void_p(int(d_b))]
-    args = (ctypes.c_void_p * len(arg_ptrs))(*[ctypes.addressof(p) for p in arg_ptrs])
-
     def launch_kernel():
-        hip_check(
-            hip.hipModuleLaunchKernel(
-                kernel_func,
-                grid_x,
-                grid_y,
-                1,
-                THREADS_PER_BLOCK_X,
-                THREADS_PER_BLOCK_Y,
-                1,
-                0,
-                None,
-                args,
-                None,
-            )
-        )
-        hip_check(hip.hipDeviceSynchronize())
+        exe(a_dev, b_dev)
+        torch.cuda.synchronize()
 
     # Run benchmark
     _, avg_us = run_perftest(launch_kernel, num_iters=20, num_warmup=2)
     
-    hip_check(hip.hipMemcpy(b_host.ctypes.data, d_b, M * N * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
-    b_result_2d = b_host.reshape(N, M, order='C')
+    b_host = b_dev.cpu().numpy()
+    b_result_2d = b_host.reshape(N, M, order="C")
     expected_2d = a_host_2d.T
     error = np.max(np.abs(b_result_2d - expected_2d))
 
@@ -775,11 +719,7 @@ def benchmark_matrix_transpose_rocir(TILE_SIZE=4, BLOCK_TILE=32):
 
     print(f"\n  Performance:")
     print(f"  Average Time: {avg_ms:.3f} ms")
-    print(f"  Bandwidth: {bandwidth_gbs:.2f} GB/s")
-
-    hip_check(hip.hipFree(d_a))
-    hip_check(hip.hipFree(d_b))
-    hip_check(hip.hipModuleUnload(hip_module))
+    print(f"Bandwidth: {bandwidth_gbs:.2f} GB/s")
 
     return error < 1e-5, results
 
@@ -810,7 +750,7 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 80)
     print("ROCm GPU Benchmark - Matrix Transpose Comparison")
-    print(f"GPU: {get_hip_arch()}")
+    print(f"GPU: {get_rocm_arch()}")
 
     results_arith = None
     results_rocir = None

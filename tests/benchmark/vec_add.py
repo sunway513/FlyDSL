@@ -6,23 +6,23 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+import rocdsl
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
-from rocdsl.dialects.ext import gpu, rocir, arith
-from rocdsl.runtime.hip_util import hip_check, get_hip_arch
+from rocdsl.dialects.ext import rocir
+from rocdsl.dialects.ext import arith
+from rocdsl.runtime.device import get_rocm_arch
 from _mlir.ir import F32Type, IntegerType
-from _mlir.dialects import arith as std_arith
 import _mlir.extras.types as T
-from hip import hip
 import numpy as np
-import ctypes
+import pytest
 
 try:
     import torch
 except ImportError:
     torch = None
+if torch is None or not torch.cuda.is_available():
+    pytest.skip("CUDA/ROCm not available. Skipping GPU benchmarks.", allow_module_level=True)
 
-# Import benchmark utilities from shared tests/utils.py
-from utils import compile_to_hsaco
 from tests.test_common import run_perftest
 
 
@@ -43,15 +43,16 @@ def create_vec_add_kernel(
     TILE_ELEMS = THREADS_PER_BLOCK * TILE_SIZE
     ITERS_PER_THREAD = TILE_SIZE // VEC_WIDTH
 
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
+    num_blocks = (size + TILE_ELEMS - 1) // TILE_ELEMS
 
     class _VecAdd(rocir.MlirModule):
         GPU_MODULE_NAME = "vec_kernels"
-        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}", abi = "500">']
+        GPU_MODULE_TARGETS = [f'#rocdl.target<chip = "{gpu_arch}">']
 
         @rocir.kernel
         def vec_add(
-            self,
+            self: rocir.T.i64,
             A: lambda: T.memref(size, dtype.get()),
             B: lambda: T.memref(size, dtype.get()),
             C: lambda: T.memref(size, dtype.get()),
@@ -150,6 +151,23 @@ def create_vec_add_kernel(
 
             rocir.copy(tiled_copy_C, frgC, thrC, pred=frgPred)
 
+        @rocir.jit
+        def __call__(
+            self: rocir.T.i64,
+            A: lambda: T.memref(size, dtype.get()),
+            B: lambda: T.memref(size, dtype.get()),
+            C: lambda: T.memref(size, dtype.get()),
+        ):
+            c1 = arith.index(1).value
+            gx = arith.index(num_blocks).value
+            bx = arith.index(THREADS_PER_BLOCK).value
+            rocir.gpu_ext.LaunchFuncOp(
+                [self.GPU_MODULE_NAME, "vec_add"],
+                grid_size=(gx, c1, c1),
+                block_size=(bx, c1, c1),
+                kernel_operands=[A, B, C],
+            )
+
     return _VecAdd().module
 
 
@@ -217,8 +235,7 @@ def benchmark_vector_add(tile_size: int = 4):
     module = create_vec_add_kernel(SIZE, tile_size=TILE_SIZE, dtype=F32Type)
     print("  Running canonicalize + CSE pipeline...")
     optimized = run_pipeline(module, Pipeline().canonicalize().cse())
-    hsaco = compile_to_hsaco(optimized, kernel_name="vec_add")
-    print(f"  Compiled to HSACO: {len(hsaco)} bytes")
+    exe = rocdsl.compile(optimized)
     
     threads_per_block = THREADS_PER_BLOCK
     num_blocks = (SIZE + TILE_ELEMS - 1) // TILE_ELEMS
@@ -236,38 +253,16 @@ def benchmark_vector_add(tile_size: int = 4):
     # Allocate device memory
     a_host = np.random.randn(SIZE).astype(np.float32)
     b_host = np.random.randn(SIZE).astype(np.float32)
-    c_host = np.zeros(SIZE, dtype=np.float32)
-    
-    d_a = hip_check(hip.hipMalloc(SIZE * 4))
-    d_b = hip_check(hip.hipMalloc(SIZE * 4))
-    d_c = hip_check(hip.hipMalloc(SIZE * 4))
-    
-    hip_check(hip.hipMemcpy(d_a, a_host.ctypes.data, SIZE * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice))
-    hip_check(hip.hipMemcpy(d_b, b_host.ctypes.data, SIZE * 4, hip.hipMemcpyKind.hipMemcpyHostToDevice))
-    
-    hip_module = hip_check(hip.hipModuleLoadData(hsaco))
-    kernel_func = hip_check(hip.hipModuleGetFunction(hip_module, b"vec_add"))
-    
-    arg_ptrs = [ctypes.c_void_p(int(d_a)), ctypes.c_void_p(int(d_b)), ctypes.c_void_p(int(d_c))]
-    args = (ctypes.c_void_p * len(arg_ptrs))(*[ctypes.addressof(p) for p in arg_ptrs])
-    
-    grid_dims = (num_blocks, 1, 1)
-    block_dims = (threads_per_block, 1, 1)
+    a_dev = torch.tensor(a_host, device="cuda", dtype=torch.float32)
+    b_dev = torch.tensor(b_host, device="cuda", dtype=torch.float32)
+    c_dev = torch.empty_like(a_dev)
 
-    def hip_kernel_launch():
-        hip.hipModuleLaunchKernel(
-            kernel_func,
-            *grid_dims,
-            *block_dims,
-            sharedMemBytes=0,
-            stream=None,
-            kernelParams=args,
-            extra=None,
-        )
-        hip.hipDeviceSynchronize()
+    def kernel_launch():
+        exe(a_dev, b_dev, c_dev)
+        torch.cuda.synchronize()
 
     # Run benchmark
-    _, avg_us = run_perftest(hip_kernel_launch, num_iters=20, num_warmup=2)
+    _, avg_us = run_perftest(kernel_launch, num_iters=20, num_warmup=2)
     
     total_bytes = 3 * SIZE * 4
     bandwidth_gbs = total_bytes / (avg_us / 1e6) / 1e9
@@ -282,7 +277,7 @@ def benchmark_vector_add(tile_size: int = 4):
     }
     
     # Verify correctness
-    hip_check(hip.hipMemcpy(c_host.ctypes.data, d_c, SIZE * 4, hip.hipMemcpyKind.hipMemcpyDeviceToHost))
+    c_host = c_dev.cpu().numpy()
     expected = a_host + b_host
     error = np.max(np.abs(c_host - expected))
     
@@ -304,12 +299,6 @@ def benchmark_vector_add(tile_size: int = 4):
         print(f"  PyTorch BW: {torch_results['bandwidth_gbs']:.2f} GB/s")
         print(f"  Bandwidth ratio (RocDSL / PyTorch): {bw_ratio:.2f}x")
     
-    # Cleanup
-    hip_check(hip.hipFree(d_a))
-    hip_check(hip.hipFree(d_b))
-    hip_check(hip.hipFree(d_c))
-    hip_check(hip.hipModuleUnload(hip_module))
-    
     return error < 1e-5
 
 # Pytest test function
@@ -317,7 +306,7 @@ def test_benchmark_vector_add():
     """Pytest wrapper for vector addition benchmark."""
     print("\n" + "="*80)
     print("ROCm GPU Benchmark - Vector Addition with Rocir Layout")
-    print(f"GPU: {get_hip_arch()}")
+    print(f"GPU: {get_rocm_arch()}")
     print("="*80)
     assert benchmark_vector_add(), "Vector addition benchmark failed correctness check"
 
@@ -333,7 +322,7 @@ if __name__ == "__main__":
     
     print("\n" + "="*80)
     print("ROCm GPU Benchmark - Vector Addition with Rocir Layout")
-    print(f"GPU: {get_hip_arch()}")
+    print(f"GPU: {get_rocm_arch()}")
     print("="*80)
     
     result = benchmark_vector_add(tile_size=args.tile)

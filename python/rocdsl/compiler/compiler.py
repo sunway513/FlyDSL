@@ -31,7 +31,6 @@ def _build_pipeline_str(*, chip: str) -> str:
     # - We request bare pointers for host+kernel to keep the executor argument marshaling simple.
     return (
         "builtin.module("
-        "rocir-coord-lowering,"
         "rocir-to-standard,"
         "trivial-dce,"
         "canonicalize,"
