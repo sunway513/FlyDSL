@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Literal, Optional, Sequence, Union
 
@@ -36,17 +39,46 @@ def _build_pipeline_str(*, chip: str) -> str:
         "canonicalize,"
         "cse,"
         "gpu-kernel-outlining{data-layout-str=},"
-        "gpu.module("
-        "convert-scf-to-cf,"
-        "convert-gpu-to-rocdl{chipset=gfx000 index-bitwidth=0 runtime=unknown use-bare-ptr-memref-call-conv=true},"
-        "reconcile-unrealized-casts"
-        "),"
+        "gpu.module(convert-scf-to-cf),"
+        "gpu.module(convert-gpu-to-rocdl{chipset=gfx000 index-bitwidth=0 runtime=unknown use-bare-ptr-memref-call-conv=true}),"
+        "gpu.module(reconcile-unrealized-casts),"
         f"rocdl-attach-target{{O=2 abi=600 chip={chip} correct-sqrt=true daz=false fast=false features= finite-only=false module= triple=amdgcn-amd-amdhsa unsafe-math=false wave64=true}},"
         "gpu-to-llvm{intersperse-sizes-for-kernels=false use-bare-pointers-for-host=true use-bare-pointers-for-kernels=true},"
         "reconcile-unrealized-casts,"
         "gpu-module-to-binary{format=fatbin opts= section= toolkit=}"
         ")"
     )
+
+
+def _pipeline_stages(*, chip: str) -> list[tuple[str, str]]:
+    """Pipeline stages for optional IR dumping.
+
+    Each entry is (dump_stage_name, pipeline_fragment) where pipeline_fragment is the
+    content inside `builtin.module(...)` for PassManager.parse.
+    """
+    return [
+        ("02_rocir_to_standard", "rocir-to-standard"),
+        ("03_trivial_dce", "trivial-dce"),
+        ("04_canonicalize", "canonicalize"),
+        ("05_cse", "cse"),
+        ("06_gpu_kernel_outlining", "gpu-kernel-outlining{data-layout-str=}"),
+        ("07_gpu_convert_scf_to_cf", "gpu.module(convert-scf-to-cf)"),
+        (
+            "08_gpu_convert_gpu_to_rocdl",
+            "gpu.module(convert-gpu-to-rocdl{chipset=gfx000 index-bitwidth=0 runtime=unknown use-bare-ptr-memref-call-conv=true})",
+        ),
+        ("09_gpu_reconcile_unrealized_casts", "gpu.module(reconcile-unrealized-casts)"),
+        (
+            "10_rocdl_attach_target",
+            f"rocdl-attach-target{{O=2 abi=600 chip={chip} correct-sqrt=true daz=false fast=false features= finite-only=false module= triple=amdgcn-amd-amdhsa unsafe-math=false wave64=true}}",
+        ),
+        (
+            "11_gpu_to_llvm",
+            "gpu-to-llvm{intersperse-sizes-for-kernels=false use-bare-pointers-for-host=true use-bare-pointers-for-kernels=true}",
+        ),
+        ("12_reconcile_unrealized_casts", "reconcile-unrealized-casts"),
+        ("13_gpu_module_to_binary", "gpu-module-to-binary{format=fatbin opts= section= toolkit=}"),
+    ]
 
 
 def _override_gpu_module_targets(module: ir.Module, *, chip: str) -> None:
@@ -69,6 +101,48 @@ def _override_gpu_module_targets(module: ir.Module, *, chip: str) -> None:
         return ir.WalkResult.ADVANCE
 
     module.operation.walk(_cb)
+
+
+def _env_truthy(name: str, default: str = "0") -> bool:
+    v = os.environ.get(name, default)
+    return str(v).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _dump_ir(stage: str, *, dump_dir: Path, asm: str) -> Path:
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    out = dump_dir / f"{stage}.mlir"
+    out.write_text(asm, encoding="utf-8")
+    return out
+
+
+def _sanitize_path_component(s: str) -> str:
+    # Keep it human-readable but filesystem-safe.
+    s = str(s).strip()
+    if not s:
+        return "unknown"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+
+
+def _infer_kernel_names_from_asm(asm: str) -> list[str]:
+    # MLIR assembly prints GPU kernels as:
+    #   gpu.func @kernel_name(...) kernel {
+    #
+    # The argument list can include `loc(...)` which contains parentheses, so avoid
+    # regex matching the full `(...)` range; just parse line-wise.
+    names: list[str] = []
+    for line in asm.splitlines():
+        if "gpu.func @" not in line:
+            continue
+        if " kernel" not in line:
+            continue
+        try:
+            after = line.split("gpu.func @", 1)[1]
+        except Exception:
+            continue
+        name = after.split("(", 1)[0].strip()
+        if name:
+            names.append(name)
+    return names
 
 
 def compile(
@@ -95,9 +169,29 @@ def compile(
     ctx = mlir_module.context
     ensure_rocir_python_extensions(ctx)
 
+    dump_enabled = _env_truthy("ROCDSL_DUMP_IR", "0")
+    dump_root_dir = Path(os.environ.get("ROCDSL_DUMP_DIR", "my_ir_dumps")).resolve()
+    dump_prefix_base = (
+        getattr(rocdsl_module_or_ir, "GPU_MODULE_NAME", None)
+        or getattr(rocdsl_module_or_ir, "__name__", None)
+        or getattr(getattr(rocdsl_module_or_ir, "__class__", None), "__name__", None)
+        or "module"
+    )
+
     # Parse a fresh module for compilation so callers can print/reuse their builder module.
     with ctx:
         asm = mlir_module.operation.get_asm(enable_debug_info=True)
+        dump_dir = dump_root_dir
+        if dump_enabled:
+            kernel_names = _infer_kernel_names_from_asm(asm)
+            # If there's exactly one gpu kernel in the module, use it for the subdir.
+            # Otherwise fall back to the higher-level module name.
+            kernel_dir = kernel_names[0] if len(kernel_names) == 1 else dump_prefix_base
+            dump_dir = dump_root_dir / _sanitize_path_component(kernel_dir)
+            print(f"[rocdsl.compile] ROCDSL_DUMP_IR=1 dir={dump_dir}")
+        if dump_enabled:
+            out = _dump_ir("00_input", dump_dir=dump_dir, asm=asm)
+            print(f"[rocdsl.compile] dump 00_input -> {out}")
         module = ir.Module.parse(asm, context=ctx)
 
     chip = get_rocm_arch()
@@ -106,9 +200,26 @@ def compile(
 
     with ctx:
         _override_gpu_module_targets(module, chip=chip)
-        pm = PassManager.parse(pipeline, context=ctx)
-        pm.enable_verifier(bool(verify))
-        pm.run(module.operation)
+        if dump_enabled:
+            out = _dump_ir(
+                "01_target_overridden",
+                dump_dir=dump_dir,
+                asm=module.operation.get_asm(enable_debug_info=True),
+            )
+            print(f"[rocdsl.compile] dump 01_target_overridden -> {out}")
+        if dump_enabled:
+            # When dumping is enabled, run the pipeline in stages so each intermediate
+            # module state is captured to a file.
+            for stage_name, frag in _pipeline_stages(chip=chip):
+                pm = PassManager.parse(f"builtin.module({frag})", context=ctx)
+                pm.enable_verifier(bool(verify))
+                pm.run(module.operation)
+                out = _dump_ir(stage_name, dump_dir=dump_dir, asm=module.operation.get_asm(enable_debug_info=True))
+                print(f"[rocdsl.compile] dump {stage_name} -> {out}")
+        else:
+            pm = PassManager.parse(pipeline, context=ctx)
+            pm.enable_verifier(bool(verify))
+            pm.run(module.operation)
         if print_final_module:
             print(module)
 
