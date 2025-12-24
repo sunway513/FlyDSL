@@ -203,7 +203,7 @@ def benchmark_matrix_transpose_arith(TILE_SIZE=4, BLOCK_TILE=32):
 
     m = _TransposeArith()
     run_pipeline(m.module, Pipeline().canonicalize().cse())
-    exe = flir.compile(m)
+    exe = pyflir.compile(m)
     print(f"Shared memory: {SMEM_SIZE * 4} bytes per block")
 
     # Allocate device memory
@@ -434,7 +434,7 @@ def benchmark_matrix_transpose_buffer_load(TILE_SIZE=4, BLOCK_TILE=32):
         )
         optimized = m.module
 
-    exe = flir.compile(optimized)
+    exe = pyflir.compile(optimized)
     print(f"Shared memory: {SMEM_SIZE * 4} bytes per block")
 
     np.random.seed(123)
@@ -670,7 +670,7 @@ def benchmark_matrix_transpose_flir(TILE_SIZE=4, BLOCK_TILE=32):
     print("  Running optimization pipeline...")
     optimized = run_pipeline(m.module, Pipeline().canonicalize().cse())
 
-    exe = flir.compile(optimized)
+    exe = pyflir.compile(optimized)
     print(f"Shared memory: {SMEM_SIZE * 4} bytes per block")
 
     np.random.seed(123)

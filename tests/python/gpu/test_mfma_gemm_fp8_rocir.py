@@ -426,7 +426,7 @@ def test_mfma_gemm_flir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n=
             gpu_func_op.attributes["gpu.kernel"] = ir.UnitAttr.get()
     
     print("Compiling...")
-    exe = flir.compile(m)
+    exe = pyflir.compile(m)
     print("✓ Compiled")
 
     print("Executing kernel...")

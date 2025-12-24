@@ -39,7 +39,7 @@ def run_test(M, N, dtype_str):
     
     try:
         m = build_softmax_module(M, N, dtype_str)
-        exe = flir.compile(m)
+        exe = pyflir.compile(m)
     except Exception as e:
         print(f"❌ Compilation Failed: {e}")
         import traceback

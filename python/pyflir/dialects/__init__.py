@@ -1,3 +1,3 @@
 """FLIR dialects"""
 
-# Dialects are available via `flir.dialects.ext` and `mlir.dialects`.
+# Dialects are available via `pyflir.dialects.ext` and `_mlir.dialects`.

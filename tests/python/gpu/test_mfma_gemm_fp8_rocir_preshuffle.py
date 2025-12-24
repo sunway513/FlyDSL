@@ -603,7 +603,7 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
     except Exception as e:
         print(f"Warning: Could not register Flir dialect: {e}")
 
-    exe = flir.compile(m)
+    exe = pyflir.compile(m)
     print("✓ Compiled")
     
     grid_x = M // tile_m

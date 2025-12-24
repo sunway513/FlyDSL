@@ -45,7 +45,7 @@ PYTHON_PACKAGE_ROOT="${BUILD_DIR}/python_packages/pyflir"
 if [ ! -d "${PYTHON_PACKAGE_ROOT}" ] && [ -d "${BUILD_DIR}/python_packages/rocdsl" ]; then
   PYTHON_PACKAGE_ROOT="${BUILD_DIR}/python_packages/rocdsl"
 fi
-if python3 -c "import pyflir, _mlir; import mlir.ir" >/dev/null 2>&1; then
+if python3 -c "import pyflir, _mlir; import _mlir.ir" >/dev/null 2>&1; then
   echo "Using installed Python packages (pyflir/_mlir) - no PYTHONPATH override."
 else
   # Prefer in-tree Python sources for `pyflir/`, while still providing the embedded

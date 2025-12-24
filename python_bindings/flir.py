@@ -1,7 +1,7 @@
 """Flir Dialect for MLIR Python Bindings"""
 
-from mlir import ir
-from mlir.dialects._ods_common import _cext as _ods_cext
+from _mlir import ir
+from _mlir.dialects._ods_common import _cext as _ods_cext
 
 # Import generated ops
 from _flir_ops_gen import *

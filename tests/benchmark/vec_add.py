@@ -235,7 +235,7 @@ def benchmark_vector_add(tile_size: int = 4):
     module = create_vec_add_kernel(SIZE, tile_size=TILE_SIZE, dtype=F32Type)
     print("  Running canonicalize + CSE pipeline...")
     optimized = run_pipeline(module, Pipeline().canonicalize().cse())
-    exe = flir.compile(optimized)
+    exe = pyflir.compile(optimized)
     
     threads_per_block = THREADS_PER_BLOCK
     num_blocks = (SIZE + TILE_ELEMS - 1) // TILE_ELEMS

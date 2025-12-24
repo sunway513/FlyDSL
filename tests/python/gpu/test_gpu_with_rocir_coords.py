@@ -91,7 +91,7 @@ def test_matmul_with_flir():
 
     m_mod = _Coords()
     print("Compiling...")
-    exe = flir.compile(m_mod)
+    exe = pyflir.compile(m_mod)
     print(" Compiled\n")
 
     # Run computation: C[row, col] = row * N + col

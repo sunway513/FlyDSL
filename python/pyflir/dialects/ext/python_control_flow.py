@@ -81,12 +81,12 @@ class _RangeForLowerer(ast.NodeTransformer):
                 level=0,
             ),
             ast.ImportFrom(
-                module="flir.dialects.ext",
+                module="pyflir.dialects.ext",
                 names=[ast.alias(name="scf", asname=self.opts.scf_alias)],
                 level=0,
             ),
             ast.ImportFrom(
-                module="flir.dialects.ext.python_control_flow",
+                module="pyflir.dialects.ext.python_control_flow",
                 names=[ast.alias(name="range_constexpr", asname="range_constexpr")],
                 level=0,
             ),

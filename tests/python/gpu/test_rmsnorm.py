@@ -48,7 +48,7 @@ def run_test(M: int, N: int, dtype: str = "f32") -> bool:
 
     ctx = build_rmsnorm_module(M, N, dtype)
     try:
-        exe = flir.compile(ctx)
+        exe = pyflir.compile(ctx)
     except Exception as e:
         print(f"Compilation failed: {e}")
         print(ctx.module)

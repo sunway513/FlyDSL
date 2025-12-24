@@ -211,8 +211,8 @@ def get_or_compile_kernel(dtype=F32Type):
         
         # Create kernel with MAX dimensions
         m = create_elementwise_add_kernel(MAX_M, MAX_N, dtype)
-        print(f"[FLIR INFO] Compiling via flir.compile...")
-        _compiled_kernel_exe = flir.compile(m)
+        print(f"[FLIR INFO] Compiling via pyflir.compile...")
+        _compiled_kernel_exe = pyflir.compile(m)
     else:
         print(f"[FLIR INFO] Reusing SHARED kernel (max: {MAX_M}x{MAX_N})")
     
@@ -244,7 +244,7 @@ def test_compile_and_run(M, N, dtype=F32Type, benchmark=False, iterations=100):
     else:
         print(f"\n[FLIR INFO] Requested shape {M}x{N} exceeds shared max {MAX_M}x{MAX_N}; compiling exact-shape kernel.")
         m = create_elementwise_add_kernel(M, N, dtype)
-        exe = flir.compile(m)
+        exe = pyflir.compile(m)
         compile_M, compile_N = M, N
     
     # Prepare data

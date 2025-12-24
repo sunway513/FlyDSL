@@ -240,7 +240,7 @@ This condensed snippet mirrors `tests/benchmark/vecAdd.py`, highlighting how til
 ```python
 from pyflir.compiler.context import RAIIMLIRContextModule
 from pyflir.dialects.ext import gpu, flir
-import mlir.extras.types as T
+import _mlir.extras.types as T
 
 THREADS = 256
 TILE = 8

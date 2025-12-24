@@ -68,7 +68,7 @@ echo "Copying Python sources..."
 cmake --build . --target FlirPythonModules.sources.MLIRPythonSources.Core.Python -j$(nproc) || { echo "Failed to build MLIR core python sources"; exit 1; }
 cmake --build . --target FlirPythonModules.sources.MLIRPythonSources.Core.Python.Extras -j$(nproc) || true
 
-# Upstream dialect wrappers (mlir.dialects.*) used by tests/utilities
+# Upstream dialect wrappers (_mlir.dialects.*) used by tests/utilities
 cmake --build . --target FlirPythonModules.sources.MLIRPythonSources.Dialects.builtin -j$(nproc) || true
 cmake --build . --target FlirPythonModules.sources.MLIRPythonSources.Dialects.builtin.ops_gen -j$(nproc) || true
 cmake --build . --target FlirPythonModules.sources.MLIRPythonSources.Dialects.arith -j$(nproc) || true

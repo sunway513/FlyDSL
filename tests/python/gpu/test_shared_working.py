@@ -120,7 +120,7 @@ def test_matmul_shared_working():
             )
 
     m = _MatmulShared()
-    exe = flir.compile(m)
+    exe = pyflir.compile(m)
 
     np.random.seed(42)
     a_host = np.random.randn(M, K).astype(np.float32) * 0.01

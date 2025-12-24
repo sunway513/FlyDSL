@@ -256,7 +256,7 @@ def compile_kernel_for_n(N, gpu_arch=None):
             )
 
     m = _Quant()
-    exe = flir.compile(m)
+    exe = pyflir.compile(m)
     
     config = {
         'N': N,
