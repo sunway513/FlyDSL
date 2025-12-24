@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ROCIR_LAYOUT_ALGEBRA_H
-#define ROCIR_LAYOUT_ALGEBRA_H
+#ifndef FLIR_LAYOUT_ALGEBRA_H
+#define FLIR_LAYOUT_ALGEBRA_H
 
 #include "flir/FlirDialect.h"
 #include "mlir/Support/LogicalResult.h"
@@ -28,7 +28,7 @@ FailureOr<LayoutType> inferLogicalDivideType(MLIRContext *ctx, LayoutType layout
 
 } // namespace mlir::flir
 
-#endif // ROCIR_LAYOUT_ALGEBRA_H
+#endif // FLIR_LAYOUT_ALGEBRA_H
 
 
 

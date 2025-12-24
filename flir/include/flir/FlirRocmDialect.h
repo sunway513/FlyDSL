@@ -1,5 +1,5 @@
-#ifndef ROCIR_ROCM_DIALECT_H
-#define ROCIR_ROCM_DIALECT_H
+#ifndef FLIR_ROCM_DIALECT_H
+#define FLIR_ROCM_DIALECT_H
 
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
@@ -11,5 +11,5 @@
 #define GET_TYPEDEF_CLASSES
 #include "flir/FlirRocmTypes.h.inc"
 
-#endif // ROCIR_ROCM_DIALECT_H
+#endif // FLIR_ROCM_DIALECT_H
 

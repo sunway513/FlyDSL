@@ -1,5 +1,5 @@
-#ifndef ROCIR_TYPES_H
-#define ROCIR_TYPES_H
+#ifndef FLIR_TYPES_H
+#define FLIR_TYPES_H
 
 #include "mlir/IR/Types.h"
 #include "mlir/IR/TypeSupport.h"
@@ -262,5 +262,5 @@ struct DenseMapInfo<mlir::flir::detail::LayoutTypeStorage::KeyTy> {
 };
 } // namespace llvm
 
-#endif // ROCIR_TYPES_H
+#endif // FLIR_TYPES_H
 

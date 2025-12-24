@@ -4,7 +4,7 @@
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # Locate the build directory (default: .flir/build; fallback: build/).
-BUILD_DIR="${FLIR_BUILD_DIR:-${ROCDSL_BUILD_DIR:-${SCRIPT_DIR}/.flir/build}}"
+BUILD_DIR="${FLIR_BUILD_DIR:-${FLIR_BUILD_DIR:-${SCRIPT_DIR}/.flir/build}}"
 if [ ! -d "${BUILD_DIR}" ] && [ -d "${SCRIPT_DIR}/build" ]; then
   BUILD_DIR="${SCRIPT_DIR}/build"
 fi

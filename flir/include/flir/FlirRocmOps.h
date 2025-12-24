@@ -1,5 +1,5 @@
-#ifndef ROCIR_ROCM_OPS_H
-#define ROCIR_ROCM_OPS_H
+#ifndef FLIR_ROCM_OPS_H
+#define FLIR_ROCM_OPS_H
 
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Dialect.h"
@@ -9,5 +9,5 @@
 #define GET_OP_CLASSES
 #include "flir/FlirRocmOps.h.inc"
 
-#endif // ROCIR_ROCM_OPS_H
+#endif // FLIR_ROCM_OPS_H
 

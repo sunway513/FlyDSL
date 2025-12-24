@@ -32,7 +32,7 @@ if not torch.cuda.is_available():
 import numpy as np
 
 from gpu_common import bf16_to_fp32_cpu
-from examples.softmax_kernel import build_softmax_module, KERNEL_NAME as SOFTMAX_KERNEL_NAME
+from samples.softmax_kernel import build_softmax_module, KERNEL_NAME as SOFTMAX_KERNEL_NAME
 
 def run_test(M, N, dtype_str):
     print(f"\nTesting Softmax (Vectorized): M={M}, N={N}, dtype={dtype_str}")

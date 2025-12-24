@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef PYTHON_BINDINGS_ROCIR_OPS
-#define PYTHON_BINDINGS_ROCIR_OPS
+#ifndef PYTHON_BINDINGS_FLIR_OPS
+#define PYTHON_BINDINGS_FLIR_OPS
 
 include "flir/FlirOps.td"
 
-#endif // PYTHON_BINDINGS_ROCIR_OPS
+#endif // PYTHON_BINDINGS_FLIR_OPS

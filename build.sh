@@ -8,12 +8,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   FLIR_OUT_DIR=.flir   (relative to repo root) or an absolute path
 #   FLIR_BUILD_DIR=...     (absolute path to CMake build dir)
 DEFAULT_OUT_DIR="${SCRIPT_DIR}/.flir"
-# Backward compatible: honor legacy ROCDSL_OUT_DIR/ROCDSL_BUILD_DIR if FLIR_* not set.
-OUT_DIR="${FLIR_OUT_DIR:-${ROCDSL_OUT_DIR:-${DEFAULT_OUT_DIR}}}"
+# Backward compatible: honor legacy FLIR_OUT_DIR/FLIR_BUILD_DIR if FLIR_* not set.
+OUT_DIR="${FLIR_OUT_DIR:-${FLIR_OUT_DIR:-${DEFAULT_OUT_DIR}}}"
 if [[ "${OUT_DIR}" != /* ]]; then
   OUT_DIR="${SCRIPT_DIR}/${OUT_DIR}"
 fi
-BUILD_DIR="${FLIR_BUILD_DIR:-${ROCDSL_BUILD_DIR:-${OUT_DIR}/build}}"
+BUILD_DIR="${FLIR_BUILD_DIR:-${FLIR_BUILD_DIR:-${OUT_DIR}/build}}"
 if [[ "${BUILD_DIR}" != /* ]]; then
   BUILD_DIR="${SCRIPT_DIR}/${BUILD_DIR}"
 fi

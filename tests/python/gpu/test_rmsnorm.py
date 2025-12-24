@@ -33,7 +33,7 @@ import numpy as np
 import time
 
 from gpu_common import EPS, bf16_to_fp32_cpu, fp32_to_bf16_rne_cpu
-from examples.rmsnorm_kernel import (
+from samples.rmsnorm_kernel import (
     build_rmsnorm_module,
     KERNEL_NAME as RMSNORM_KERNEL_NAME,
     BLOCK_THREADS,

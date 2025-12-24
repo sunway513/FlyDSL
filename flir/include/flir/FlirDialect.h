@@ -1,5 +1,5 @@
-#ifndef ROCIR_DIALECT_H
-#define ROCIR_DIALECT_H
+#ifndef FLIR_DIALECT_H
+#define FLIR_DIALECT_H
 
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
@@ -100,4 +100,4 @@ public:
 #include "flir/FlirDialect.h.inc"
 
 // Include generated operation declarations
-#endif // ROCIR_DIALECT_H
+#endif // FLIR_DIALECT_H

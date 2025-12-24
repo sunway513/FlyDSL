@@ -1,7 +1,7 @@
 //===- FlirOps.td - flir operation definitions ------------*- tablegen -*-===//
 
-#ifndef ROCIR_OPS
-#define ROCIR_OPS
+#ifndef FLIR_OPS
+#define FLIR_OPS
 
 include "flir/FlirDialect.td"
 include "mlir/IR/OpBase.td"
@@ -542,7 +542,7 @@ def Flir_FlatDivideOp : Flir_Op<"flat_divide", []> {
   ];
 }
 
-#endif // ROCIR_OPS
+#endif // FLIR_OPS
 
 
 //===----------------------------------------------------------------------===//

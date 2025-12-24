@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ROCIR_ROCM_OPS
-#define ROCIR_ROCM_OPS
+#ifndef FLIR_ROCM_OPS
+#define FLIR_ROCM_OPS
 
 include "flir/FlirRocmDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -616,4 +616,4 @@ def FlirRocm_LaneIdOp : FlirRocm_OpBase<"lane_id", [Pure]> {
   let assemblyFormat = "attr-dict `:` type($result)";
 }
 
-#endif // ROCIR_ROCM_OPS
+#endif // FLIR_ROCM_OPS

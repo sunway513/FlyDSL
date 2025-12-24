@@ -17,15 +17,15 @@ from pathlib import Path
 # If you explicitly want to use the embedded MLIR runtime, set:
 #   FLIR_USE_EMBEDDED_MLIR=1
 # For backward compatibility (pre-rename), we also honor:
-#   ROCDSL_USE_EMBEDDED_MLIR=1
+#   FLIR_USE_EMBEDDED_MLIR=1
 _flir_root = Path(__file__).resolve().parents[2]
 _use_embedded = os.environ.get("FLIR_USE_EMBEDDED_MLIR")
 if _use_embedded is None:
-    _use_embedded = os.environ.get("ROCDSL_USE_EMBEDDED_MLIR", "0")
+    _use_embedded = os.environ.get("FLIR_USE_EMBEDDED_MLIR", "0")
 if _use_embedded == "1":
     # Default build layout: `.flir/build` (see build.sh/setup.py), with fallback
     # to legacy `build/`.
-    _build_dir = os.environ.get("FLIR_BUILD_DIR") or os.environ.get("ROCDSL_BUILD_DIR")
+    _build_dir = os.environ.get("FLIR_BUILD_DIR") or os.environ.get("FLIR_BUILD_DIR")
     if _build_dir is None:
         _build_dir_path = _flir_root / ".flir" / "build"
         if not _build_dir_path.exists():

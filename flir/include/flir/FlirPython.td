@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ROCIR_PYTHON
-#define ROCIR_PYTHON
+#ifndef FLIR_PYTHON
+#define FLIR_PYTHON
 
 include "flir/FlirOps.td"
 include "flir/FlirRocmOps.td"
 
-#endif // ROCIR_PYTHON
+#endif // FLIR_PYTHON

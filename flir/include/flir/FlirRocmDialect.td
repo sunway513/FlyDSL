@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ROCIR_ROCM_DIALECT
-#define ROCIR_ROCM_DIALECT
+#ifndef FLIR_ROCM_DIALECT
+#define FLIR_ROCM_DIALECT
 
 include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
@@ -318,4 +318,4 @@ def FlirRocm_LdsConfigAttr : FlirRocm_Attr<"LdsConfig", "lds_config"> {
 class FlirRocm_OpBase<string mnemonic, list<Trait> traits = []>
     : FlirRocm_Op<mnemonic, traits>;
 
-#endif // ROCIR_ROCM_DIALECT
+#endif // FLIR_ROCM_DIALECT

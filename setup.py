@@ -32,8 +32,8 @@ DEFAULT_BUILD_DIR_REL = DEFAULT_OUT_DIR_REL / "build"
 # - You can override with:
 #   FLIR_OUT_DIR=.flir          (relative to repo root)
 #   FLIR_BUILD_DIR=.flir/build  (relative to repo root)
-_out_dir_env = os.environ.get("FLIR_OUT_DIR") or os.environ.get("ROCDSL_OUT_DIR")
-_build_dir_env = os.environ.get("FLIR_BUILD_DIR") or os.environ.get("ROCDSL_BUILD_DIR")
+_out_dir_env = os.environ.get("FLIR_OUT_DIR") or os.environ.get("FLIR_OUT_DIR")
+_build_dir_env = os.environ.get("FLIR_BUILD_DIR") or os.environ.get("FLIR_BUILD_DIR")
 if _build_dir_env:
     BUILD_DIR_REL = Path(_build_dir_env)
 elif _out_dir_env:
@@ -82,7 +82,7 @@ def _assert_embedded_mlir_exists() -> None:
     # For runtime, FLIR expects the embedded MLIR runtime under `_mlir/`.
     # This is built by the repo build (CMake) and staged under build/python_packages/pyflir.
     # Default to ALWAYS rebuilding unless the user opts out.
-    rebuild_mode = (os.environ.get("FLIR_REBUILD") or os.environ.get("ROCDSL_REBUILD") or "1").strip().lower()
+    rebuild_mode = (os.environ.get("FLIR_REBUILD") or os.environ.get("FLIR_REBUILD") or "1").strip().lower()
     # Semantics:
     # - 1 (default):    always run ./build.sh before installing
     # - auto:           run ./build.sh iff embedded runtime is missing

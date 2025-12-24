@@ -1,7 +1,7 @@
 //===- FlirDialect.td - Flir dialect definition ---------*- tablegen -*-===//
 
-#ifndef ROCIR_DIALECT
-#define ROCIR_DIALECT
+#ifndef FLIR_DIALECT
+#define FLIR_DIALECT
 
 include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
@@ -25,4 +25,4 @@ def Flir_Dialect : Dialect {
   }];
 }
 
-#endif // ROCIR_DIALECT
+#endif // FLIR_DIALECT

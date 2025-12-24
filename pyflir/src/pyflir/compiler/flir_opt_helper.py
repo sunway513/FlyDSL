@@ -10,7 +10,7 @@ from _mlir.ir import Module as ir_Module
 from pyflir.compiler.pipeline import Pipeline, FLIRCompilerError
 
 # Legacy constant for backward compatibility (coord lowering is part of flir-to-standard now)
-_ROCIR_COORD_LOWERING_PIPELINE = "builtin.module(flir-to-standard)"
+_FLIR_COORD_LOWERING_PIPELINE = "builtin.module(flir-to-standard)"
 
 
 def apply_flir_coord_lowering(module: ir_Module) -> ir_Module:

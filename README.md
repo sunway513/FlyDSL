@@ -1,8 +1,9 @@
-# FLIR
+# FLIR （**F**lexible **L**ayout **I**ntermediate **R**epresentation）
 
-> **F**lexible **L**ayout **I**ntermediate **R**epresentation — MLIR-based compiler infrastructure for high performance ROCm kernels.
+>  A modular MLIR compiler stack for high‑performance GPU kernels.
 
-FLIR provides a custom layout-algebra IR (the `flir` dialect), a lowering pipeline to GPU/ROCDL, and a Python API (`pyflir`) for constructing and running kernels.
+FLIR is an end‑to‑end, MLIR‑native compiler stack for GPU kernels.
+At its core is the `flir` dialect—a first‑class layout IR for expressing tiling, partitioning, and data movement—paired with a composable lowering pipeline to GPU/ROCDL and a Python front‑end (`pyflir`) for authoring and compiling kernels.
 
 ## Overview
 
@@ -12,9 +13,9 @@ FLIR provides a custom layout-algebra IR (the `flir` dialect), a lowering pipeli
 - **Python bindings** (`pyflir/src/pyflir/`) with an embedded MLIR python package
   - No external `mlir` python wheel is required: MLIR python bindings are built and staged into `.flir/build/python_packages/pyflir/_mlir` (default; legacy `build/` also works)
 - **Python package source**: `pyflir/src/pyflir/`
-- **Examples**: `examples/` (Python scripts)
 - **GPU lowering** to HSACO via MLIR GPU → ROCDL pipeline
 - **Tools**: `flir-opt` for pass testing and IR experimentation
+- **Samples**: `samples/` (Python scripts)
 
 ### Repository layout
 
@@ -24,11 +25,11 @@ FLIR/
 ├── build_llvm.sh              # build/prepare llvm-project (optional helper)
 ├── build.sh                   # build FLIR + python bindings (recommended)
 ├── run_tests.sh               # run MLIR + Python tests
-├── examples/                  # Python examples (importable as `examples.*`)
 ├── flir/                      # C++ sources (include/, lib/, tools/)
 ├── pyflir/                    # Python sources (src/pyflir) + python-only docs/reqs
 ├── python_bindings/           # CMake targets for python extensions/bindings
-└── tests/                     # mlir + python tests/benchmarks
+├── tests/                     # mlir + python tests/benchmarks
+└── samples/                   # Python samples (importable as `samples.*`)
 ```
 
 ## Getting started
@@ -193,15 +194,18 @@ Easy-to-use compilation pipeline:
 from pyflir.compiler.pipeline import Pipeline
 
 # Build and run optimization pipeline
-pipeline = Pipeline() \
-    .flir_to_standard() \
-    .canonicalize() \
-    .cse() \
-    .rocdl_attach_target(chip="gfx942") \
-    .Gpu(Pipeline().convert_gpu_to_rocdl(runtime="HIP")) \
-    .gpu_to_llvm() \
-    .lower_to_llvm() \
+pipeline = (
+    Pipeline()
+    .flir_to_standard()
+    .canonicalize()
+    .cse()
+    .rocdl_attach_target(chip="gfx942")
+    # convert-gpu-to-rocdl must run under gpu.module
+    .Gpu(Pipeline().convert_gpu_to_rocdl(runtime="HIP"))
+    .gpu_to_llvm()
+    .lower_to_llvm()
     .gpu_module_to_binary(format="bin")
+)
 
 binary_module = pipeline.run(module)
 ```
@@ -259,7 +263,7 @@ gpu.set_container_module(ctx.module)
 def mod():
     pass
 
-@gpu.func(emit=True)
+@flir.kernel
 def vecAdd(A: T.memref(20480000, T.f32()),
            B: T.memref(20480000, T.f32()),
            C: T.memref(20480000, T.f32())):
