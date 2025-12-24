@@ -11,7 +11,7 @@ import os
 
 import rocdsl
 from rocdsl.dialects.ext import rocir
-from rocdsl.runtime.hip_util import get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 from rocdsl.dialects.ext import arith
 import _mlir.extras.types as T
 import pytest
@@ -112,7 +112,7 @@ def test_matmul_with_rocir():
 if __name__ == "__main__":
     print("="*80)
     print("Rocir Coordinate Operations in GPU Kernels")
-    print(f"GPU: {get_hip_arch()}")
+    print(f"GPU: {get_rocm_arch()}")
     print("="*80)
 
     result = test_matmul_with_rocir()
@@ -124,7 +124,7 @@ if __name__ == "__main__":
         print("Rocir layout algebra integrated into GPU kernel")
         print("Coordinate operations (make_coord, make_layout, crd2idx)")
         print("Lowered to arithmetic via rocir-opt subprocess")
-        print(f"Compiled and executed on {get_hip_arch()}")
+        print(f"Compiled and executed on {get_rocm_arch()}")
         sys.exit(0)
     else:
         print("⚠️ TEST FAILED")

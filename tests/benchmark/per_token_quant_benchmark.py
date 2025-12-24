@@ -366,57 +366,68 @@ def benchmark_per_token_quant(M=4096, N=8192, exe=None, config=None):
     print(f"  {results}")
 
     if HAS_AITER:
-        print("\n" + "=" * 80)
-        print("Benchmarking Reference Implementation (aiter)")
-        print("=" * 80)
+        # `aiter` is an optional reference backend. In practice it may be built
+        # against a different PyTorch/ROCm ABI than the active environment,
+        # leading to runtime linker errors (ImportError/OSError/undefined symbol).
+        # Treat that as "reference unavailable" instead of failing the RocDSL
+        # correctness benchmark.
+        try:
+            print("\n" + "=" * 80)
+            print("Benchmarking Reference Implementation (aiter)")
+            print("=" * 80)
 
-        def launch_aiter():
-            per_token_quant_hip(input_torch)
+            def launch_aiter():
+                per_token_quant_hip(input_torch)
+                torch.cuda.synchronize()
+
+            _, aiter_avg_us = run_perftest(launch_aiter, num_iters=20, num_warmup=2)
+
+            aiter_bandwidth_gbs = total_bytes_rw / (aiter_avg_us / 1e6) / 1e9
+            aiter_avg_ms = aiter_avg_us / 1000
+
+            aiter_results = {
+                "avg_ms": aiter_avg_ms,
+                "avg_us": aiter_avg_us,
+                "bandwidth_gbs": aiter_bandwidth_gbs,
+                "size": total_elements,
+                "total_bytes": total_bytes_rw,
+            }
+
+            output_torch, scale_torch = per_token_quant_hip(input_torch)
             torch.cuda.synchronize()
 
-        _, aiter_avg_us = run_perftest(launch_aiter, num_iters=20, num_warmup=2)
-        
-        aiter_bandwidth_gbs = total_bytes_rw / (aiter_avg_us / 1e6) / 1e9
-        aiter_avg_ms = aiter_avg_us / 1000
-        
-        aiter_results = {
-            "avg_ms": aiter_avg_ms,
-            "avg_us": aiter_avg_us,
-            "bandwidth_gbs": aiter_bandwidth_gbs,
-            "size": total_elements,
-            "total_bytes": total_bytes_rw,
-        }
+            output_ref_torch = output_torch.cpu().numpy()
+            scale_ref_torch = scale_torch.squeeze().cpu().numpy()
 
-        output_torch, scale_torch = per_token_quant_hip(input_torch)
-        torch.cuda.synchronize()
+            scale_diff_ref = np.max(np.abs(scale_ref_torch - per_token_scale))
+            output_diff_ref = np.max(
+                np.abs(output_ref_torch.astype(np.float32) - output_ref.astype(np.float32))
+            )
 
-        output_ref_torch = output_torch.cpu().numpy()
-        scale_ref_torch = scale_torch.squeeze().cpu().numpy()
+            print(f"\n  Reference Correctness Check:")
+            print(f"  Max Scale Diff:  {scale_diff_ref:.2e}")
+            print(f"  Max Output Diff: {output_diff_ref:.2e}")
 
-        scale_diff_ref = np.max(np.abs(scale_ref_torch - per_token_scale))
-        output_diff_ref = np.max(
-            np.abs(output_ref_torch.astype(np.float32) - output_ref.astype(np.float32))
-        )
+            rocdsl_time = results["avg_ms"]
+            aiter_time = aiter_results["avg_ms"]
+            speedup = aiter_time / rocdsl_time
 
-        print(f"\n  Reference Correctness Check:")
-        print(f"  Max Scale Diff:  {scale_diff_ref:.2e}")
-        print(f"  Max Output Diff: {output_diff_ref:.2e}")
-
-        rocdsl_time = results["avg_ms"]
-        aiter_time = aiter_results["avg_ms"]
-        speedup = aiter_time / rocdsl_time
-
-        print(f"\n" + "=" * 80)
-        print(f"Performance Comparison:")
-        print(
-            f"  RocDSL:     {rocdsl_time:7.3f} ms  ({results['bandwidth_gbs']:8.2f} GB/s)"
-        )
-        print(
-            f"  Reference:  {aiter_time:7.3f} ms  ({aiter_results['bandwidth_gbs']:8.2f} GB/s)"
-        )
-        # Avoid printing another "Bandwidth:" line here; run_tests.sh greps for "Bandwidth:".
-        print(f"  Speedup:    {speedup:7.2f}x")
-        print("=" * 80)
+            print(f"\n" + "=" * 80)
+            print(f"Performance Comparison:")
+            print(
+                f"  RocDSL:     {rocdsl_time:7.3f} ms  ({results['bandwidth_gbs']:8.2f} GB/s)"
+            )
+            print(
+                f"  Reference:  {aiter_time:7.3f} ms  ({aiter_results['bandwidth_gbs']:8.2f} GB/s)"
+            )
+            # Avoid printing another "Bandwidth:" line here; run_tests.sh greps for "Bandwidth:".
+            print(f"  Speedup:    {speedup:7.2f}x")
+            print("=" * 80)
+        except Exception as e:
+            print("\n" + "=" * 80)
+            print("Benchmarking Reference Implementation (aiter)")
+            print("=" * 80)
+            print(f"SKIPPED: aiter reference backend is unavailable in this environment: {e}")
 
     return output_diff <= 1.0
 

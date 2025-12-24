@@ -22,7 +22,7 @@ import rocdsl
 from rocdsl.dialects.ext import rocir
 from rocdsl.dialects.ext.python_control_flow import range_constexpr
 from rocdsl.dialects.ext.arith import Index
-from rocdsl.runtime.hip_util import get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 from _mlir.ir import F16Type, F32Type, IntegerType
 from _mlir.dialects import arith
 import _mlir.extras.types as T
@@ -230,7 +230,7 @@ def test_compile_and_run(M, N, dtype=F32Type, benchmark=False, iterations=100):
     print("RocDSL Elementwise Addition Test")
     print(f"Tensor dimensions: [{M}, {N}]")
     print(f"Element type: {dtype}")
-    print(f"GPU: {get_hip_arch()}")
+    print(f"GPU: {get_rocm_arch()}")
     print("="*80)
     
     # Kernel selection:

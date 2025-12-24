@@ -15,7 +15,7 @@ import rocdsl
 import torch
 
 from rocdsl.dialects.ext import arith, rocir
-from rocdsl.runtime.hip_util import get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 from rocdsl.utils import SmemAllocator
 
 if not torch.cuda.is_available():
@@ -27,7 +27,7 @@ TILE_SIZE = 16
 
 
 def test_matmul_shared_working():
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
     allocator = SmemAllocator(None, arch=gpu_arch)
     _state = {}
 

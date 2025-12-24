@@ -1,7 +1,7 @@
 """Shared utilities for GPU testing, compilation, and benchmarking."""
 
 from rocdsl.compiler.pipeline import Pipeline, run_pipeline
-from rocdsl.runtime.hip_util import get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 from _mlir import ir
 import os
 import torch
@@ -140,7 +140,7 @@ def _compile_to_hsaco_impl(mlir_module, kernel_name="kernel", waves_per_eu: Opti
     dump_stage(lowered_module, "02c_trivial_dce")
     
     # Get the current GPU architecture
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
     
     # Build pipeline step by step for intermediate dumps
     # Stage 1: Canonicalize

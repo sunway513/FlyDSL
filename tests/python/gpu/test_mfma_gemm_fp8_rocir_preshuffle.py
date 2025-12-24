@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 
-from rocdsl.runtime.hip_util import get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 import rocdsl
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.dialects.ext.python_control_flow import range_constexpr
@@ -66,7 +66,7 @@ def test_mfma_fp8_rocir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
     print("="*80)
     print(f"MFMA FP8 GEMM Test (Tile: {tile_m}x{tile_n}x{tile_k}) [Torch Optimized]")
     print("="*80)
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
     def _f8():
         return ir.Float8E4M3FNType.get()
     

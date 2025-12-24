@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 
-from rocdsl.runtime.hip_util import get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 import rocdsl
 import rocdsl.dialects.ext.rocir as rocir
 from rocdsl.dialects.ext.python_control_flow import range_constexpr
@@ -80,7 +80,7 @@ def test_mfma_gemm_rocir(dtype_config, M=1024, N=1024, K=1280, tile_m=32, tile_n
         vec_load_size = 16  # Load 16 FP16 elements (32 bytes)
         dtype_name = "fp16"
     
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
     print(f"Detected HIP Arch: {gpu_arch}")
     print(f"MFMA K dimension: {mfma_k}, Tile K: {tile_k}")
     

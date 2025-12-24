@@ -10,7 +10,7 @@ import os
 from rocdsl.dialects.ext import rocir
 from rocdsl.dialects.ext.python_control_flow import range_constexpr
 from . import reduce as reduce_utils
-from rocdsl.runtime.hip_util import get_hip_arch
+from rocdsl.runtime.device import get_rocm_arch
 from rocdsl.utils import SmemAllocator
 from _mlir import ir
 from _mlir.ir import InsertionPoint
@@ -44,7 +44,7 @@ llvm = rocir.llvm            # raw dialect module
 
 
 def build_softmax_module(M, N, dtype_str="f32"):
-    gpu_arch = get_hip_arch()
+    gpu_arch = get_rocm_arch()
 
     # Kernel Config
     # Adaptive Block Size
