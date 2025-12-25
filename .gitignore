@@ -1,5 +1,7 @@
 # Build outputs
 build/
+.flir/
+## Legacy build outputs (pre-rename)
 .rocdsl/
 *.log
 
@@ -19,6 +21,11 @@ __pycache__/
 
 # Editable-install helper symlink (created by setup.py)
 python/_mlir
+pyflir/src/_mlir
+
+# setuptools metadata from editable installs
+*.egg-info/
+pyflir/src/*.egg-info/
 
 # Wheels / packaging outputs
 dist/
