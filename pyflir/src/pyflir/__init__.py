@@ -43,14 +43,7 @@ if _repo_root is None:
 # external MLIR python runtime (mlir_core), leading to crashes like:
 #   LLVM ERROR: Option 'basic' already exists!
 #
-# If you explicitly want to use the embedded MLIR runtime, set:
-#   FLIR_USE_EMBEDDED_MLIR=1
-# For backward compatibility (pre-rename), we also honor:
-#   FLIR_USE_EMBEDDED_MLIR=1
 _flir_root = _repo_root
-_use_embedded = os.environ.get("FLIR_USE_EMBEDDED_MLIR")
-if _use_embedded is None:
-    _use_embedded = os.environ.get("FLIR_USE_EMBEDDED_MLIR", "0")
 
 def _resolve_embedded_python_packages_dir() -> Path | None:
     """Return the repo build's python_packages/<project> directory, if it exists."""
@@ -65,8 +58,8 @@ def _resolve_embedded_python_packages_dir() -> Path | None:
         if not _build_dir_path.is_absolute():
             _build_dir_path = _flir_root / _build_dir_path
 
-    # New layout: python_packages/pyflir (and legacy python_packages/flir, python_packages/rocdsl).
-    for _name in ("pyflir", "flir", "rocdsl"):
+    # New layout: python_packages/pyflir (and legacy python_packages/flir).
+    for _name in ("pyflir", "flir"):
         _p = _build_dir_path / "python_packages" / _name
         if _p.exists():
             return _p
@@ -98,9 +91,7 @@ def _ensure_mlir_runtime_on_path(force: bool) -> None:
         sys.path.insert(0, _python_packages_str)
 
 
-# If the user explicitly requests the embedded MLIR runtime, always add it.
-# Otherwise, only add it when `_mlir` isn't importable (common with PEP660 editable installs).
-_ensure_mlir_runtime_on_path(force=(_use_embedded == "1"))
+_ensure_mlir_runtime_on_path(force=True)
 
 # Lazy import dialects and passes to avoid requiring MLIR when only using runtime
 def __getattr__(name):
