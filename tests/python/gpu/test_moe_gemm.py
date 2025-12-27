@@ -37,6 +37,7 @@ from pyflir.dialects.ext import arith, gpu, buffer_ops, math as mlir_math
 from _mlir.dialects import arith as _arith_mlir
 import _mlir.dialects.rocdl as rocdl
 import _mlir.extras.types as T
+from pyflir.lang.ir.types import T as I
 
 # Optional: use aiter's exact routing/sorting implementation (matches `aiter/op_tests/test_moe_2stage.py`).
 # Some environments ship aiter python but miss required JIT .so dependencies; we fall back gracefully.
@@ -49,8 +50,7 @@ except Exception:
     HAS_AITER = False
 
 from tests.python.gpu.mfma_fp8_preshuffle_pipeline import (
-    compute_split_load_lens,
-    load_fp8_tile_split_dwordx4,
+    make_preshuffle_b_layout,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -275,7 +275,7 @@ def _pad_sorted_buffers_to_full_blocks(
 
 
 @pytest.mark.parametrize("tokens, model_dim, inter_dim, experts, topk, tile_m, tile_n, tile_k, doweight_stage1", [
-    (256, 4096, 2048, 17, 9, 64, 256, 128, False),
+    (256, 4096, 2048, 17, 9, 64, 128, 128, False),
 ])
 def test_moe_stage1(
     tokens: int,
@@ -391,10 +391,15 @@ def test_moe_stage1(
     elems_x_per_tile = tile_m * tile_k
     elems_per_thread_x = elems_x_per_tile // total_threads
     bytes_per_thread_x = elems_per_thread_x  # fp8
-    x_split_lens = compute_split_load_lens(bytes_per_thread_x, max_bytes_per_load=16)
-    num_x_loads = len(x_split_lens)
+    # Keep MoE stage1 X gmem->LDS pipeline consistent with the optimized GEMM kernel:
+    # split into <=16B pieces and use `flir.copy(load-only)` for buffer_load_dwordx4.
+    # (Compute the split lens inside the kernel so the code matches GEMM structure.)
 
-    pad_k = 8
+    # CK-style LDS128 mode (same idea as test_preshuffle_gemm.py):
+    # - LDS stride == tile_k (no extra padding) + XOR16 swizzle
+    # - Use ds_{read,write}_b128 (16B) and extract 8B halves for MFMA steps
+    _ck_lds128 = os.environ.get("FLIR_CK_LDS128", "1") in ("1", "true", "True", "YES", "yes")
+    pad_k = 0 if _ck_lds128 else 8
     lds_stride = tile_k + pad_k
 
     class _MOE1(flir.MlirModule):
@@ -404,15 +409,15 @@ def test_moe_stage1(
         ]
 
         def init_gpu_module(self):
-            _state["lds_x_decl"] = allocator.allocate_array(ir.Float8E4M3FNType.get(), tile_m * lds_stride)
+            _state["lds_x_decl"] = allocator.allocate_array(I.f8, tile_m * lds_stride)
             allocator.finalize()
 
         @flir.kernel
         def kernel(
             self: flir.T.i64,
             arg_out: lambda: T.memref(size_out, T.f16()),
-            arg_x: lambda: T.memref(size_x, ir.Float8E4M3FNType.get()),
-            arg_w: lambda: T.memref(size_w, ir.Float8E4M3FNType.get()),
+            arg_x: lambda: T.memref(size_x, I.f8),
+            arg_w: lambda: T.memref(size_w, I.f8),
             arg_scale_x: lambda: T.memref(tokens, T.f32()),
             arg_scale_w: lambda: T.memref(experts * (2 * inter_dim), T.f32()),
             arg_sorted_token_ids: lambda: T.memref(size_sorted, T.i32()),
@@ -422,12 +427,18 @@ def test_moe_stage1(
             inter_in: lambda: T.index(),
             k_in: lambda: T.index(),
         ):
-            f8 = ir.Float8E4M3FNType.get()
-            f32 = ir.F32Type.get()
-            i32 = ir.IntegerType.get_signless(32)
-            vec4_f32 = ir.VectorType.get([4], f32)
-            vec8_f8 = ir.VectorType.get([8], f8)
-            vec1_i64 = ir.VectorType.get([1], ir.IntegerType.get_signless(64))
+            # Compile-time experiment knobs (read once in Python, used to gate IR emission).
+            _no_epilogue = os.environ.get("FLIR_MOE_NO_EPILOGUE", "0") in ("1", "true", "True", "YES", "yes")
+
+            f8 = I.f8
+            f32 = I.f32
+            i32 = I.i32
+            i64 = I.i64
+            vec4_f32 = I.vec(4, f32)
+            vec8_f8 = I.vec(8, f8)
+            vec16_f8 = I.vec(16, f8)
+            vec1_i64 = I.vec(1, i64)
+            vec2_i64 = I.vec(2, i64)
 
             c0 = arith.constant(0, index=True)
             c4 = arith.constant(4, index=True)
@@ -457,24 +468,11 @@ def test_moe_stage1(
             # Layouts
             layout_x = flir.make_layout((tokens_in, k_in), stride=(k_in, 1))
 
-            # B preshuffle layout (match GEMM preshuffle layout):
-            # Shape: (N0, K0, KLane, NLane, KPack) = (N/16, K/64, 4, 16, 16)
-            c_n_total = unwrap(arith.constant(experts * (2 * inter_dim), index=True))
+            # B preshuffle layout: match GEMM test helper exactly.
+            c_n_total = arith.constant(experts * (2 * inter_dim), index=True)
+            b_layout = make_preshuffle_b_layout(flir, _arith_mlir, c_n=unwrap(c_n_total), c_k=unwrap(k_in))
+            layout_b = b_layout.layout_b
             c_k0 = _arith_mlir.DivUIOp(unwrap(k_in), unwrap(c64)).result
-            c_n0 = _arith_mlir.DivUIOp(unwrap(c_n_total), unwrap(c16)).result
-            stride_n0 = _arith_mlir.MulIOp(unwrap(c_k0), unwrap(c1024)).result
-
-            stride_b = (
-                stride_n0,  # n0
-                c1024,      # k0
-                c256,       # k1 (KLane)
-                c16,        # n1
-                c1,         # k2
-            )
-            layout_b = flir.make_layout(
-                (c_n0, c_k0, arith.constant(4, index=True), c16, c16),
-                stride=stride_b,
-            )
 
             shape_lds = flir.make_shape(tile_m, tile_k)
             stride_lds = flir.make_stride(lds_stride, 1)
@@ -483,6 +481,17 @@ def test_moe_stage1(
             tx = gpu.thread_id("x")
             bx = gpu.block_id("x")  # tile along sorted M
             by = gpu.block_id("y")  # tile along inter_dim
+
+            # Common constants/atoms (hoisted): keep IR small like GEMM.
+            # CK-style XOR16 swizzle parameter (constant, power-of-two in our configs).
+            k_blocks16 = arith.constant(tile_k // 16, index=True)
+            atom_x_s16 = flir.make_copy_atom(f8, vector_size=16)
+            atom_x_s8 = flir.make_copy_atom(f8, vector_size=8)
+            atom_x_g2r16 = flir.make_copy_atom(f8, vector_size=16)
+            atom_x_g2r8 = flir.make_copy_atom(f8, vector_size=8)
+            layout_tx_wave_lane = flir.make_layout((4, 64), stride=(64, 1))
+            layout_lane16 = flir.make_layout((4, 16), stride=(16, 1))
+            layout_lin_rowcol = flir.make_layout((tile_m, tile_k), stride=(tile_k, 1))
 
             base_ptr = allocator.get_base()
             lds_x = _state["lds_x_decl"](base_ptr).get()
@@ -502,12 +511,12 @@ def test_moe_stage1(
             inter2_idx = arith.constant(2 * inter_dim, index=True)
             expert_off_idx = _arith_mlir.MulIOp(unwrap(expert_idx), unwrap(inter2_idx)).result  # index
 
-            # Thread -> (row_a_local, col_a_local)
-            tx_idx = unwrap(tx)
+            # Thread -> (row_a_local, col_a_local) via layout algebra (GEMM-style).
             vec_len_val = arith.constant(bytes_per_thread_x, index=True)
-            linear_id = _arith_mlir.MulIOp(unwrap(tx_idx), unwrap(vec_len_val)).result
-            row_a_local = _arith_mlir.DivUIOp(unwrap(linear_id), unwrap(c_tile_k)).result
-            col_a_local = _arith_mlir.RemUIOp(unwrap(linear_id), unwrap(c_tile_k)).result
+            linear_id = _arith_mlir.MulIOp(unwrap(tx), unwrap(vec_len_val)).result
+            coord_rc = flir.idx2crd(unwrap(linear_id), layout_lin_rowcol)
+            row_a_local = flir.get(coord_rc, 0)
+            col_a_local = flir.get(coord_rc, 1)
 
             bx_m = _arith_mlir.MulIOp(unwrap(bx), unwrap(arith.constant(tile_m, index=True))).result
             sorted_row = _arith_mlir.AddIOp(unwrap(bx_m), unwrap(row_a_local)).result
@@ -529,20 +538,71 @@ def test_moe_stage1(
             idx_x = flir.crd2idx(coord_x, layout_x)
             idx_x_div4 = _arith_mlir.DivUIOp(unwrap(idx_x), unwrap(c4)).result
 
-            # A loads split (global dwordx4), masked by valid_t
-            def load_x_split(idx_div4):
-                return load_fp8_tile_split_dwordx4(
-                    buffer_ops, flir, _arith_mlir, rsrc=x_rsrc, idx_div4=idx_div4, lens=x_split_lens, i32_type=i32, mask=valid_t
+            # ---- X gmem->reg prefetch (GEMM-style) ----
+            max_bytes_per_load = 16
+            num_x_loads = (bytes_per_thread_x + max_bytes_per_load - 1) // max_bytes_per_load
+            vec_x_parts_lens = []
+            remaining_bytes = bytes_per_thread_x
+            for _ in range_constexpr(num_x_loads):
+                curr_bytes = min(remaining_bytes, max_bytes_per_load)
+                vec_x_parts_lens.append(curr_bytes)
+                remaining_bytes -= curr_bytes
+
+            vec2_i32 = I.vec(2, i32)
+            vec4_i32 = I.vec(4, i32)
+
+            def load_x_part(idx_i32, extent: int):
+                """Load `extent` fp8 bytes from X (gmem) into a vector via buffer_load backend.
+
+                `idx_i32` is an i32-element (dword) offset (not bytes).
+                """
+                x_view = flir.TensorView(
+                    arg_x,
+                    (extent,),
+                    strides=(1,),
+                    base_indices=(unwrap(idx_i32),),
+                    element_type=f8,
+                )
+                atom = atom_x_g2r16 if extent == 16 else atom_x_g2r8
+                return flir.copy(
+                    atom,
+                    x_view,
+                    None,
+                    pred=valid_t,
+                    alignment=extent,
+                    return_vector=True,
+                    src_buffer_resource=x_rsrc,
+                    src_buffer_offset_in_bytes=False,
                 )
 
-            vec_x_parts = load_x_split(unwrap(idx_x_div4))
+            vec_x_inits = []
+            curr_load_off = 0
+            for i in range_constexpr(num_x_loads):
+                curr_bytes = vec_x_parts_lens[i]
+                off_i32 = arith.constant(curr_load_off // 4, index=True)
+                idx_i32 = idx_x_div4 + off_i32
+                x_f8 = load_x_part(idx_i32, curr_bytes)
+                if curr_bytes == 16:
+                    vec_x_inits.append(vector.BitCastOp(vec4_i32, x_f8).result)
+                elif curr_bytes == 8:
+                    vec_x_inits.append(vector.BitCastOp(vec2_i32, x_f8).result)
+                else:
+                    vec_x_inits.append(x_f8)
+                curr_load_off += curr_bytes
 
-            wave_id = tx / 64
-            lane_id = tx % 64
-            lane_mod_16 = lane_id % 16
-            lane_div_16 = lane_id / 16
+            vec_x_parts = vec_x_inits
 
-            row_x_lds = lane_mod_16
+            # tx -> wave/lane (GEMM-style decomposition).
+            coord_wl = flir.idx2crd(unwrap(tx), layout_tx_wave_lane)
+            wave_id = flir.get(coord_wl, 0)
+            lane_id = flir.get(coord_wl, 1)
+            coord_l16 = flir.idx2crd(lane_id, layout_lane16)
+            lane_div_16 = flir.get(coord_l16, 0)
+            lane_mod_16 = flir.get(coord_l16, 1)
+
+            # Match GEMM naming/pattern: row in LDS is lane_mod_16, and col base is lane_div_16*16.
+            row_a_lds = lane_mod_16
+            col_offset_base = flir.crd2idx(flir.make_coord(lane_div_16, 0), layout_lane16)
 
             # Dynamic N tiling within block (same as existing kernels)
             by_n = _arith_mlir.MulIOp(unwrap(by), unwrap(arith.constant(tile_n, index=True))).result
@@ -553,13 +613,17 @@ def test_moe_stage1(
             wave_mod_4 = _arith_mlir.RemUIOp(unwrap(wave_id), unwrap(c4)).result
             n_tile_base = _arith_mlir.MulIOp(unwrap(wave_mod_4), unwrap(c_n_per_wave)).result
 
-            # Precompute n_blk/n_intra for gate and up rows (index computations)
+            # Precompute n_blk/n_intra for gate and up rows (GEMM-style: idx2crd/get)
             n_intra_gate = []
             n_blk_gate = []
             n_intra_up = []
             n_blk_up = []
             col_g_list = []
+            valid_col_list = []
             inter_idx = arith.constant(inter_dim, index=True)
+            # layout for (row -> (blk,intra)) where intra is 0..15
+            c_n0 = _arith_mlir.DivUIOp(unwrap(c_n_total), unwrap(c16)).result
+            layout_n_blk_intra = flir.make_layout((c_n0, 16), stride=(16, 1))
             for ni in range_constexpr(num_acc_n):
                 offset = arith.constant(ni * 16, index=True)
                 col_g = _arith_mlir.AddIOp(unwrap(by_n), unwrap(n_tile_base)).result
@@ -570,40 +634,58 @@ def test_moe_stage1(
                 row_gate = _arith_mlir.AddIOp(unwrap(expert_off_idx), unwrap(col_g)).result
                 row_up = _arith_mlir.AddIOp(unwrap(row_gate), unwrap(inter_idx)).result
 
-                n_intra_gate.append(_arith_mlir.RemUIOp(unwrap(row_gate), unwrap(c16)).result)
-                n_blk_gate.append(_arith_mlir.DivUIOp(unwrap(row_gate), unwrap(c16)).result)
-                n_intra_up.append(_arith_mlir.RemUIOp(unwrap(row_up), unwrap(c16)).result)
-                n_blk_up.append(_arith_mlir.DivUIOp(unwrap(row_up), unwrap(c16)).result)
+                coord_gate = flir.idx2crd(unwrap(row_gate), layout_n_blk_intra)
+                n_blk_gate.append(flir.get(coord_gate, 0))
+                n_intra_gate.append(flir.get(coord_gate, 1))
+
+                coord_up = flir.idx2crd(unwrap(row_up), layout_n_blk_intra)
+                n_blk_up.append(flir.get(coord_up, 0))
+                n_intra_up.append(flir.get(coord_up, 1))
+
+                valid_col_list.append(
+                    _arith_mlir.CmpIOp(
+                        _arith_mlir.CmpIPredicate.ult, unwrap(col_g), unwrap(inter_idx)
+                    ).result
+                )
 
             m_repeat = tile_m // 16
             k_unroll = tile_k // 32
 
-            # CK-style xor-with-modulo swizzle on K (16B granularity)
-            def swizzle_idx(row_idx, col_idx):
-                k_blocks16 = arith.constant(tile_k // 16, index=True)
-                row_mod = _arith_mlir.RemUIOp(unwrap(row_idx), unwrap(k_blocks16)).result
-                xor_mask = _arith_mlir.MulIOp(unwrap(row_mod), unwrap(c16)).result
-                return _arith_mlir.XOrIOp(unwrap(col_idx), unwrap(xor_mask)).result
+            # --- B Load Logic (K32) - match GEMM style exactly ---
+            layout_k0_kpack64 = flir.make_layout((c_k0, 64), stride=(64, 1))
+            layout_half8 = flir.make_layout((2, 8), stride=(8, 1))
+            atom_b_g2r = flir.make_copy_atom(f8, vector_size=8)
 
-            # Load one 8B (i64) B pack for one MFMA(x32) step (inline, GEMM-style).
             def load_b_pack(base_k, ki_step, ni, blk_list, intra_list):
-                k0_base = _arith_mlir.DivUIOp(unwrap(base_k), unwrap(c64)).result
-                k0 = _arith_mlir.AddIOp(unwrap(k0_base), unwrap(arith.constant(ki_step // 2, index=True))).result
+                coord_k = flir.idx2crd(unwrap(base_k), layout_k0_kpack64)
+                k0_base = flir.get(coord_k, 0)
+                k0 = k0_base + (ki_step // 2)
                 k1 = lane_div_16  # 0..3
                 half = ki_step % 2
-                k2_base = arith.constant(half * 8, index=True)
+                half_val = arith.constant(half, index=True)
+                k2_base = flir.crd2idx(flir.make_coord(unwrap(half_val), 0), layout_half8)
 
-                coord_b = flir.make_coord(
-                    unwrap(blk_list[ni]),
-                    unwrap(k0),
-                    unwrap(k1),
-                    unwrap(intra_list[ni]),
-                    unwrap(k2_base),
-                )
+                n_intra = intra_list[ni]
+                n_blk = blk_list[ni]
+                coord_b = flir.make_coord(n_blk, k0, k1, n_intra, k2_base)
                 idx_bytes = flir.crd2idx(coord_b, layout_b)
-                idx_i32 = _arith_mlir.DivUIOp(unwrap(idx_bytes), unwrap(c4)).result
-                b8 = buffer_ops.buffer_load(w_rsrc, idx_i32, vec_width=2, dtype=i32)
-                b_vec64 = vector.BitCastOp(vec1_i64, b8).result
+
+                b_view = flir.TensorView(
+                    arg_w,
+                    (8,),
+                    strides=(1,),
+                    base_indices=(unwrap(idx_bytes),),
+                    element_type=f8,
+                )
+                b8_f8 = flir.copy(
+                    atom_b_g2r,
+                    b_view,
+                    None,
+                    alignment=8,
+                    return_vector=True,
+                    src_buffer_resource=w_rsrc,
+                )
+                b_vec64 = vector.BitCastOp(vec1_i64, b8_f8).result
                 return vector.ExtractOp(b_vec64, static_position=[0], dynamic_position=[]).result
 
             acc_gate = [acc_init] * (num_acc_n * m_repeat)
@@ -614,23 +696,31 @@ def test_moe_stage1(
                 store_off = 0
                 for pi in range_constexpr(num_x_loads):
                     val_vec = vec_x_in_parts[pi]
-                    curr_bytes = x_split_lens[pi]
-                    curr_i32 = curr_bytes // 4
+                    curr_bytes = vec_x_parts_lens[pi]
+                    # Match GEMM address pattern exactly.
+                    col_0 = col_a_local + store_off
+                    col_swz = flir.swizzle_xor16(row_a_local, col_0, k_blocks16)
+                    coord_store_0 = flir.make_coord(row_a_local, col_swz)
+                    idx_0 = flir.crd2idx(coord_store_0, layout_lds)
 
-                    col0 = _arith_mlir.AddIOp(unwrap(col_a_local), unwrap(arith.constant(store_off, index=True))).result
-                    col_sw = swizzle_idx(row_a_local, col0)
-                    coord_s = flir.make_coord(unwrap(row_a_local), unwrap(col_sw))
-                    idx_s = flir.crd2idx(coord_s, layout_lds)
-
-                    if curr_i32 == 4:
-                        vec16_f8 = ir.VectorType.get([16], f8)
+                    if curr_bytes == 16:
                         v16 = vector.BitCastOp(vec16_f8, val_vec).result
-                        vector.StoreOp(v16, lds_x, [unwrap(idx_s)])
+                        s_view = flir.TensorView(
+                            lds_x, (16,), strides=(1,), base_indices=(idx_0,), element_type=f8
+                        )
+                        flir.copy(atom_x_s16, v16, s_view, alignment=16 if _ck_lds128 else None)
+                    elif curr_bytes == 8:
+                        v8 = vector.BitCastOp(vec8_f8, val_vec).result
+                        s_view = flir.TensorView(
+                            lds_x, (8,), strides=(1,), base_indices=(idx_0,), element_type=f8
+                        )
+                        flir.copy(atom_x_s8, v8, s_view, alignment=8 if _ck_lds128 else None)
                     else:
-                        vec8 = ir.VectorType.get([8], f8)
-                        v2 = vector.ShuffleOp(val_vec, val_vec, [0, 1]).result
-                        v8 = vector.BitCastOp(vec8, v2).result
-                        vector.StoreOp(v8, lds_x, [unwrap(idx_s)])
+                        # Rare fallback: keep as fp8 vector and rely on scalar stores.
+                        s_view = flir.TensorView(
+                            lds_x, (curr_bytes,), strides=(1,), base_indices=(idx_0,), element_type=f8
+                        )
+                        flir.copy(atom_x_s8, val_vec, s_view)
                     store_off += curr_bytes
 
                 gpu.barrier()
@@ -639,14 +729,25 @@ def test_moe_stage1(
                 if not is_last:
                     next_k = _arith_mlir.AddIOp(unwrap(k_iv), unwrap(c_tile_k)).result
                     next_k_div4 = _arith_mlir.DivUIOp(unwrap(next_k), unwrap(c4)).result
-                    next_idx = _arith_mlir.AddIOp(unwrap(idx_x_div4), unwrap(next_k_div4)).result
-                    vec_x_next = load_x_split(next_idx)
+                    vec_x_next = []
+                    curr_load_off2 = 0
+                    for i in range_constexpr(num_x_loads):
+                        curr_bytes = vec_x_parts_lens[i]
+                        off_i32 = arith.constant(curr_load_off2 // 4, index=True)
+                        idx_i32 = idx_x_div4 + next_k_div4 + off_i32
+                        x_f8 = load_x_part(idx_i32, curr_bytes)
+                        if curr_bytes == 16:
+                            vec_x_next.append(vector.BitCastOp(vec4_i32, x_f8).result)
+                        elif curr_bytes == 8:
+                            vec_x_next.append(vector.BitCastOp(vec2_i32, x_f8).result)
+                        else:
+                            vec_x_next.append(x_f8)
+                        curr_load_off2 += curr_bytes
 
                 gate_list = list(acc_gate_in)
                 up_list = list(acc_up_in)
 
                 # Inline MFMA hot loop (match fast GEMM K32 pattern: ki_step outer -> mi inner).
-                col_offset_base = _arith_mlir.MulIOp(unwrap(lane_div_16), unwrap(c16)).result
                 c0_i32 = arith.i32(0)._value
 
                 for ki_step in range_constexpr(k_unroll):
@@ -657,24 +758,39 @@ def test_moe_stage1(
                         b_gate_packs.append(load_b_pack(k_iv, ki_step, ni, n_blk_gate, n_intra_gate))
                         b_up_packs.append(load_b_pack(k_iv, ki_step, ni, n_blk_up, n_intra_up))
 
-                    ki64 = (ki_step // 2) * 64
-                    ki64_val = arith.constant(ki64, index=True)
                     half = ki_step % 2
-                    half_off = arith.constant(half * 8, index=True)
-                    col_base = _arith_mlir.AddIOp(unwrap(col_offset_base), unwrap(ki64_val)).result
+                    ki64 = (ki_step // 2) * 64
+                    col_base = col_offset_base + ki64
 
                     for mi in range_constexpr(m_repeat):
                         mi_val = arith.constant(mi * 16, index=True)
-                        curr_row = _arith_mlir.AddIOp(unwrap(row_x_lds), unwrap(mi_val)).result
+                        curr_row_a_lds = row_a_lds + mi_val
 
-                        col_base_sw = swizzle_idx(curr_row, col_base)
-                        col_sw = _arith_mlir.AddIOp(unwrap(col_base_sw), unwrap(half_off)).result
-                        coord_a = flir.make_coord(unwrap(curr_row), unwrap(col_sw))
-                        idx_a = flir.crd2idx(coord_a, layout_lds)
-
-                        loaded_a8 = vector.LoadOp(vec8_f8, lds_x, [unwrap(idx_a)]).result
-                        a_vec64 = vector.BitCastOp(vec1_i64, loaded_a8).result
-                        a_pack = vector.ExtractOp(a_vec64, static_position=[0], dynamic_position=[]).result
+                        # Read X from LDS using the same (row,col)->(row,col') xor swizzle as the store.
+                        col_base_swizzled = flir.swizzle_xor16(curr_row_a_lds, col_base, k_blocks16)
+                        if _ck_lds128:
+                            # Base is 16B-aligned; read 16B then pick low/high 8B for this MFMA step.
+                            coord_a16 = flir.make_coord(curr_row_a_lds, col_base_swizzled)
+                            idx_a16 = flir.crd2idx(coord_a16, layout_lds)
+                            loaded_a16 = vector.LoadOp(
+                                vec16_f8, lds_x, [arith.ArithValue(idx_a16).value]
+                            ).result
+                            a_vec128 = vector.BitCastOp(vec2_i64, loaded_a16).result
+                            a_pack = vector.ExtractOp(
+                                a_vec128, static_position=[half], dynamic_position=[]
+                            ).result
+                        else:
+                            # Legacy: read only the needed 8B half.
+                            col_swizzled = col_base_swizzled + half * 8
+                            coord_a = flir.make_coord(curr_row_a_lds, col_swizzled)
+                            idx_a = flir.crd2idx(coord_a, layout_lds)
+                            loaded_a8 = vector.LoadOp(
+                                vec8_f8, lds_x, [arith.ArithValue(idx_a).value]
+                            ).result
+                            a_vec64 = vector.BitCastOp(vec1_i64, loaded_a8).result
+                            a_pack = vector.ExtractOp(
+                                a_vec64, static_position=[0], dynamic_position=[]
+                            ).result
 
                         for ni in range_constexpr(num_acc_n):
                             acc_idx = mi * num_acc_n + ni
@@ -709,8 +825,52 @@ def test_moe_stage1(
                 acc_gate, acc_up, vec_x_parts = emit_tile(k_iv, acc_gate, acc_up, vec_x_parts, is_last=False)
             acc_gate, acc_up, _ = emit_tile(c_k_main, acc_gate, acc_up, vec_x_parts, is_last=True)
 
+            if _no_epilogue:
+                # Minimal "no-epilogue" sink to prevent DCE of the MFMA core:
+                # write one fp16 value per accumulator vector (gate+up) into a compact prefix of `out`.
+                # This avoids all routing/scale/activation work while keeping the main loop intact.
+                tx_i32 = _arith_mlir.IndexCastOp(i32, unwrap(tx)).result
+                c256_i32 = arith.i32(256)._value
+                c_up_base = arith.i32(256 * (m_repeat * num_acc_n))._value
+
+                for mi in range_constexpr(m_repeat):
+                    for ni in range_constexpr(num_acc_n):
+                        acc_idx = mi * num_acc_n + ni
+                        slot_i32 = arith.i32(acc_idx * 256)._value
+
+                        # Gate: store element 0
+                        vg = vector.ExtractOp(acc_gate[acc_idx], [], [0]).result
+                        vg_f16 = _arith_mlir.TruncFOp(T.f16(), unwrap(vg)).result
+                        idx_gate = _arith_mlir.AddIOp(unwrap(tx_i32), unwrap(slot_i32)).result
+                        buffer_ops.buffer_store(vg_f16, out_rsrc, idx_gate)
+
+                        # Up: store element 0 at an offset
+                        vu = vector.ExtractOp(acc_up[acc_idx], [], [0]).result
+                        vu_f16 = _arith_mlir.TruncFOp(T.f16(), unwrap(vu)).result
+                        idx_up = _arith_mlir.AddIOp(unwrap(idx_gate), unwrap(c_up_base)).result
+                        buffer_ops.buffer_store(vu_f16, out_rsrc, idx_up)
+
+                return
+
             # Store epilogue to out[t, slot, inter]
             # Recompute token/slot for each output row this lane writes.
+            #
+            # GEMM-style prefetch: scale_w depends only on (expert,row) and `col_g` (ni),
+            # not on token/slot. Hoist it out of the MI/II loops.
+            sw_gate_vals = []
+            sw_up_vals = []
+            for ni in range_constexpr(num_acc_n):
+                col_g = col_g_list[ni]
+                valid_col = valid_col_list[ni]
+                row_gate_idx = _arith_mlir.AddIOp(unwrap(expert_off_idx), unwrap(col_g)).result
+                row_up_idx = _arith_mlir.AddIOp(unwrap(row_gate_idx), unwrap(inter_idx)).result
+                sw_gate_vals.append(
+                    buffer_ops.buffer_load(sw_rsrc, row_gate_idx, vec_width=1, dtype=f32, mask=valid_col)
+                )
+                sw_up_vals.append(
+                    buffer_ops.buffer_load(sw_rsrc, row_up_idx, vec_width=1, dtype=f32, mask=valid_col)
+                )
+
             for mi in range_constexpr(m_repeat):
                 mi_base = arith.constant(mi * 16, index=True)
                 for ii in range_constexpr(4):
@@ -731,19 +891,12 @@ def test_moe_stage1(
 
                     for ni in range_constexpr(num_acc_n):
                         col_g = col_g_list[ni]
-                        # bounds: col_g < inter_dim
-                        valid_col = _arith_mlir.CmpIOp(_arith_mlir.CmpIPredicate.ult, unwrap(col_g), unwrap(inter_idx)).result
+                        valid_col = valid_col_list[ni]
                         valid_store = _arith_mlir.AndIOp(unwrap(valid2), unwrap(valid_col)).result
 
                         col_i32 = _arith_mlir.IndexCastOp(i32, unwrap(col_g)).result
-                        # For scale lookups we want linear row indices in [0, experts*2*inter_dim),
-                        # and `buffer_load` will cast index->i32 if needed.
-                        row_gate_idx = _arith_mlir.AddIOp(unwrap(expert_off_idx), unwrap(col_g)).result
-                        row_up_idx = _arith_mlir.AddIOp(unwrap(row_gate_idx), unwrap(inter_idx)).result
-                        row_gate = row_gate_idx
-                        row_up = row_up_idx
-                        sw_gate = buffer_ops.buffer_load(sw_rsrc, row_gate, vec_width=1, dtype=f32, mask=valid_store)
-                        sw_up = buffer_ops.buffer_load(sw_rsrc, row_up, vec_width=1, dtype=f32, mask=valid_store)
+                        sw_gate = sw_gate_vals[ni]
+                        sw_up = sw_up_vals[ni]
 
                         acc_idx = mi * num_acc_n + ni
                         vg = vector.ExtractOp(acc_gate[acc_idx], [], [ii]).result
@@ -773,8 +926,8 @@ def test_moe_stage1(
         def __call__(
             self: flir.T.i64,
             arg_out: lambda: T.memref(size_out, T.f16()),
-            arg_x: lambda: T.memref(size_x, ir.Float8E4M3FNType.get()),
-            arg_w: lambda: T.memref(size_w, ir.Float8E4M3FNType.get()),
+            arg_x: lambda: T.memref(size_x, I.f8),
+            arg_w: lambda: T.memref(size_w, I.f8),
             arg_scale_x: lambda: T.memref(tokens, T.f32()),
             arg_scale_w: lambda: T.memref(experts * (2 * inter_dim), T.f32()),
             arg_sorted_token_ids: lambda: T.memref(size_sorted, T.i32()),
@@ -784,14 +937,13 @@ def test_moe_stage1(
             inter_in: lambda: T.index(),
             k_in: lambda: T.index(),
         ):
-            c1 = arith.constant(1, index=True).value
-            bdx = arith.constant(256, index=True).value
-            gx = arith.constant(size_expert_ids, index=True).value
-            gy = arith.constant(inter_dim // tile_n, index=True).value
+            bdx = 256
+            gx = size_expert_ids
+            gy = inter_dim // tile_n
             flir.gpu_ext.LaunchFuncOp(
                 ["mfma_moe1", "kernel"],
-                grid_size=(gx, gy, c1),
-                block_size=(bdx, c1, c1),
+                grid_size=(gx, gy, 1),
+                block_size=(bdx, 1, 1),
                 kernel_operands=[
                     unwrap(arg_out),
                     unwrap(arg_x),
@@ -827,6 +979,13 @@ def test_moe_stage1(
         num_warmup=2,
     )
     torch.cuda.synchronize()
+
+    if os.environ.get("FLIR_MOE_NO_EPILOGUE", "0") in ("1", "true", "True", "YES", "yes"):
+        # No-epilogue mode writes synthetic values; skip correctness/CK comparison.
+        flops = 2 * tokens * topk * (2 * inter_dim) * model_dim
+        tflops = flops / (us / 1e6) / 1e12
+        print(f"[no-epilogue] MoE stage1: {us:.1f} us, {tflops:.2f} TFLOPS")
+        return
 
     ref = torch_stage1_ref(
         x_fp8,
@@ -927,7 +1086,7 @@ def test_moe_stage1(
 if __name__ == "__main__":
     torch.set_default_device("cuda")
     # Run the aiter-aligned FP8 per-token stage1 test.
-    test_moe_stage1(tokens=2048, model_dim=4096, inter_dim=2048, experts=17, topk=9, tile_m=64, tile_n=256, tile_k=128, doweight_stage1=False)
+    test_moe_stage1(tokens=2048, model_dim=4096, inter_dim=2560, experts=17, topk=9, tile_m=64, tile_n=128, tile_k=128, doweight_stage1=False)
 
 
 

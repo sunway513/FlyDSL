@@ -38,14 +38,15 @@ def _unwrap(v):
 
 
 def swizzle_xor_16b(flir, _arith_mlir, row_idx: ir.Value, col_idx: ir.Value, *, tile_k: int) -> ir.Value:
-    """CK-style xor-with-modulo swizzle on K at 16B granularity (index-typed)."""
+    """CK-style XOR16 swizzle on K at 16B granularity (index-typed).
+
+    This now routes through the dedicated `flir.swizzle_xor16` op so lowering can
+    optimize to bitwise ops when `kBlocks16` is a const power-of-two.
+    """
     row_idx = _unwrap(row_idx)
     col_idx = _unwrap(col_idx)
-    c16 = flir.const_index(16)
     k_blocks16 = flir.const_index(tile_k // 16)
-    row_mod = _unwrap(_arith_mlir.RemUIOp(row_idx, k_blocks16).result)
-    xor_mask = _unwrap(_arith_mlir.MulIOp(row_mod, c16).result)
-    return _unwrap(_arith_mlir.XOrIOp(col_idx, xor_mask).result)
+    return _unwrap(flir.swizzle_xor16(row_idx, col_idx, k_blocks16))
 
 
 def make_preshuffle_b_layout(flir, _arith_mlir, *, c_n: ir.Value, c_k: ir.Value) -> PreshuffleBLayout:
@@ -89,21 +90,57 @@ def compute_split_load_lens(bytes_per_thread: int, *, max_bytes_per_load: int = 
 
 
 def load_fp8_tile_split_dwordx4(buffer_ops, flir, _arith_mlir, *, rsrc, idx_div4: ir.Value, lens: Sequence[int], i32_type, mask=None):
-    """Load FP8 tile fragment via global dwordx4 loads; returns list of vector<4xi32>."""
+    """Load FP8 tile fragment via global dwordx4 loads; returns list of vector<4xi32>.
+
+    This is written in the same style as the preshuffle GEMM kernel:
+    - Use `flir.copy(load-only)` with `src_buffer_resource` so lowering selects
+      `buffer_load_dwordx4`.
+    - Allow scalar broadcast predication (`mask`) for padded/sentinel tokens.
+
+    NOTE: We intentionally load 16 fp8 bytes per split (dwordx4). Callers pad
+    the underlying storage so this is safe even when the last split is < 16B.
+    """
     rsrc = _unwrap(rsrc)
     idx_div4 = _unwrap(idx_div4)
     mask = _unwrap(mask) if mask is not None else None
+
+    # 16 fp8 bytes -> vector<16xf8> -> bitcast to vector<4xi32>
+    f8 = ir.Float8E4M3FNType.get()
+    atom = flir.make_copy_atom(f8, vector_size=16)
+    vec4_i32 = ir.VectorType.get([4], i32_type)
+
     parts = []
     off_i32 = 0
     for curr_bytes in lens:
         curr_idx = idx_div4 if off_i32 == 0 else _unwrap(_arith_mlir.AddIOp(idx_div4, flir.const_index(off_i32)).result)
-        parts.append(buffer_ops.buffer_load(rsrc, curr_idx, vec_width=4, dtype=i32_type, mask=mask))
+        src_view = flir.TensorView(
+            None,
+            (16,),
+            strides=(1,),
+            base_indices=(curr_idx,),
+            element_type=f8,
+        )
+        v16 = flir.copy(
+            atom,
+            src_view,
+            None,
+            pred=mask,
+            return_vector=True,
+            src_buffer_resource=rsrc,
+            src_buffer_offset_in_bytes=False,  # idx_div4 is in dword units
+            alignment=16,
+        )
+        parts.append(_unwrap(vector.BitCastOp(vec4_i32, _unwrap(v16)).result))
         off_i32 += (curr_bytes // 4)
     return parts
 
 
 def load_b_pack_k32(buffer_ops, flir, _arith_mlir, *, b_rsrc, layout_b, base_k: ir.Value, ki_step: int, n_blk: ir.Value, n_intra: ir.Value, lane_div_16: ir.Value, i32_type) -> ir.Value:
-    """Load one 8B (i64) B pack for one MFMA(x32) step."""
+    """Load one 8B (i64) B pack for one MFMA(x32) step.
+
+    Uses `flir.copy(load-only)` + `src_buffer_resource` to generate buffer loads,
+    matching the preshuffle GEMM path.
+    """
     b_rsrc = _unwrap(b_rsrc)
     layout_b = _unwrap(layout_b)
     base_k = _unwrap(base_k)
@@ -120,10 +157,26 @@ def load_b_pack_k32(buffer_ops, flir, _arith_mlir, *, b_rsrc, layout_b, base_k: 
 
     coord_b = flir.make_coord(n_blk, k0, k1, n_intra, k2_base)
     idx_bytes = flir.crd2idx(coord_b, layout_b)
-    idx_i32 = _unwrap(_arith_mlir.DivUIOp(_unwrap(idx_bytes), c4).result)
-    b8 = buffer_ops.buffer_load(b_rsrc, idx_i32, vec_width=2, dtype=i32_type)
+    f8 = ir.Float8E4M3FNType.get()
+    atom = flir.make_copy_atom(f8, vector_size=8)
+    b_view = flir.TensorView(
+        None,
+        (8,),
+        strides=(1,),
+        base_indices=(_unwrap(idx_bytes),),
+        element_type=f8,
+    )
+    b8_f8 = flir.copy(
+        atom,
+        b_view,
+        None,
+        alignment=8,
+        return_vector=True,
+        src_buffer_resource=b_rsrc,
+        src_buffer_offset_in_bytes=True,
+    )
     vec1_i64 = ir.VectorType.get([1], ir.IntegerType.get_signless(64))
-    b_vec64 = _unwrap(vector.BitCastOp(vec1_i64, _unwrap(b8)).result)
+    b_vec64 = _unwrap(vector.BitCastOp(vec1_i64, _unwrap(b8_f8)).result)
     return _unwrap(vector.ExtractOp(b_vec64, static_position=[0], dynamic_position=[]).result)
 
 

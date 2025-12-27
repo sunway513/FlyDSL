@@ -2715,7 +2715,7 @@ def copy(copy_desc, src, dst,
         with ip or InsertionPoint.current:
             recurse(0, [], [], [])
 
-    def emit_tensor_load(copy_shape, src_view: TensorView):
+    def emit_tensor_load(copy_shape, src_view: TensorView, pred_val: Optional[Value] = None):
         """Load-only path (no dst), primarily for gmem->register vector loads.
 
         Currently supported:
@@ -2764,11 +2764,13 @@ def copy(copy_desc, src, dst,
                 else:
                     # base index is already an i32-element offset for dtype=i32 loads.
                     idx_i32 = _unwrap_value(base0)
+                mask = _unwrap_value(pred_val) if pred_val is not None else None
                 i32_vec = _buffer_ops.buffer_load(
                     _unwrap_value(src_buffer_resource),
                     idx_i32,
                     vec_width=vec_width,
                     dtype=i32_ty,
+                    mask=mask,
                 )
                 vec_f8_ty = VectorType.get((extent,), src_view.element_type)
                 return vector.BitCastOp(vec_f8_ty, i32_vec).result
@@ -2805,14 +2807,25 @@ def copy(copy_desc, src, dst,
             d_idx2 = _maybe_swizzle_dst_indices(d_idx)
             store_indices = _normalize_indices_to_memref(dst.memref, d_idx2, dst.strides, loc)
             with ip or InsertionPoint.current:
-                # IMPORTANT: use the opview `vector.StoreOp` to match existing high-perf
-                # kernels' LDS codegen (some helper paths may lower differently).
-                vector_dialect.StoreOp(v, dst.memref, store_indices)
+                # Use `vector.store` so we can propagate alignment/nontemporal hints
+                # into lowering (this is important for LDS 16B ops selection).
+                vector_dialect.store(
+                    v,
+                    dst.memref,
+                    store_indices,
+                    nontemporal=nontemporal,
+                    alignment=alignment,
+                )
             return v if return_vector else None
 
     # Load-only path: dst=None and src is a TensorView.
     if isinstance(src, TensorView) and dst is None:
-        vec = emit_tensor_load(src.shape, src)
+        # For load-only, only scalar broadcast predicates are supported (pred TensorView
+        # implies element-wise masking, which would require vector predication support).
+        pred_val = None
+        if pred is not None and not isinstance(pred, TensorView):
+            pred_val = _unwrap_value(pred)
+        vec = emit_tensor_load(src.shape, src, pred_val=pred_val)
         return vec
 
     if isinstance(src, TensorView) and isinstance(dst, TensorView):
