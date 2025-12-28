@@ -22,6 +22,7 @@ from typing import Tuple, Optional
 import pytest
 import torch
 import torch.nn.functional as F
+import argparse
 
 import pyflir
 from pyflir.dialects.ext import flir
@@ -287,13 +288,19 @@ def test_moe_stage1(
     tile_n: int,
     tile_k: int,
     doweight_stage1: bool,
+    *,
+    seed: int = 0,
+    num_iters: int = 5,
+    num_warmup: int = 2,
+    compare_aiter_ck: Optional[bool] = None,
+    moe_sort_mode: Optional[str] = None,
 ):
     assert model_dim % 64 == 0
     assert model_dim % tile_k == 0
     assert inter_dim % tile_n == 0
 
     device = torch.device("cuda")
-    torch.manual_seed(0)
+    torch.manual_seed(int(seed))
 
     # Data: input and weights (aiter shapes)
     x_fp32 = torch.randn((tokens, model_dim), device=device, dtype=torch.float32)
@@ -308,7 +315,11 @@ def test_moe_stage1(
     topk_weights = torch.softmax(topk_vals, dim=1).to(torch.float32)
 
     # Prefer aiter moe_sorting buffers (exact CK routing format), fall back to torch sorting.
-    sort_mode = os.environ.get("pyflir_MOE_SORT_MODE", "aiter" if HAS_AITER else "torch").lower()
+    sort_mode = (
+        (moe_sort_mode or os.environ.get("pyflir_MOE_SORT_MODE", "aiter" if HAS_AITER else "torch"))
+        .lower()
+        .strip()
+    )
     sorted_token_ids = sorted_weights = sorted_expert_ids = num_valid_ids = None
     if sort_mode == "aiter":
         res = _maybe_aiter_moe_sorting(
@@ -427,9 +438,6 @@ def test_moe_stage1(
             inter_in: lambda: T.index(),
             k_in: lambda: T.index(),
         ):
-            # Compile-time experiment knobs (read once in Python, used to gate IR emission).
-            _no_epilogue = os.environ.get("FLIR_MOE_NO_EPILOGUE", "0") in ("1", "true", "True", "YES", "yes")
-
             f8 = I.f8
             f32 = I.f32
             i32 = I.i32
@@ -451,13 +459,15 @@ def test_moe_stage1(
 
             c0f = arith.constant(0.0, type=f32).value
             c1f = arith.constant(1.0, type=f32).value
+            # (kept for historical/context; not needed if we use `math.exp` directly)
+            # c_log2e = log2(e)
             c_log2e = arith.constant(1.4426950408889634, type=f32).value  # log2(e)
+            c3f = arith.constant(3.0, type=f32).value
+            c1_div_6 = arith.constant(0.1666666716337204, type=f32).value  # 1/6 as f32
 
             def silu(x):
-                # sigmoid(x) = 1 / (1 + exp(-x)) using exp2
                 neg = flir.arith.SubFOp(unwrap(c0f), unwrap(x)).result
-                scaled = flir.arith.MulFOp(unwrap(neg), unwrap(c_log2e)).result
-                exp_neg = mlir_math.exp2(unwrap(scaled))
+                exp_neg = mlir_math.exp(unwrap(neg))
                 den = flir.arith.AddFOp(unwrap(c1f), unwrap(exp_neg)).result
                 sig = flir.arith.DivFOp(unwrap(c1f), unwrap(den)).result
                 return flir.arith.MulFOp(unwrap(x), unwrap(sig)).result
@@ -825,33 +835,6 @@ def test_moe_stage1(
                 acc_gate, acc_up, vec_x_parts = emit_tile(k_iv, acc_gate, acc_up, vec_x_parts, is_last=False)
             acc_gate, acc_up, _ = emit_tile(c_k_main, acc_gate, acc_up, vec_x_parts, is_last=True)
 
-            if _no_epilogue:
-                # Minimal "no-epilogue" sink to prevent DCE of the MFMA core:
-                # write one fp16 value per accumulator vector (gate+up) into a compact prefix of `out`.
-                # This avoids all routing/scale/activation work while keeping the main loop intact.
-                tx_i32 = _arith_mlir.IndexCastOp(i32, unwrap(tx)).result
-                c256_i32 = arith.i32(256)._value
-                c_up_base = arith.i32(256 * (m_repeat * num_acc_n))._value
-
-                for mi in range_constexpr(m_repeat):
-                    for ni in range_constexpr(num_acc_n):
-                        acc_idx = mi * num_acc_n + ni
-                        slot_i32 = arith.i32(acc_idx * 256)._value
-
-                        # Gate: store element 0
-                        vg = vector.ExtractOp(acc_gate[acc_idx], [], [0]).result
-                        vg_f16 = _arith_mlir.TruncFOp(T.f16(), unwrap(vg)).result
-                        idx_gate = _arith_mlir.AddIOp(unwrap(tx_i32), unwrap(slot_i32)).result
-                        buffer_ops.buffer_store(vg_f16, out_rsrc, idx_gate)
-
-                        # Up: store element 0 at an offset
-                        vu = vector.ExtractOp(acc_up[acc_idx], [], [0]).result
-                        vu_f16 = _arith_mlir.TruncFOp(T.f16(), unwrap(vu)).result
-                        idx_up = _arith_mlir.AddIOp(unwrap(idx_gate), unwrap(c_up_base)).result
-                        buffer_ops.buffer_store(vu_f16, out_rsrc, idx_up)
-
-                return
-
             # Store epilogue to out[t, slot, inter]
             # Recompute token/slot for each output row this lane writes.
             #
@@ -871,10 +854,22 @@ def test_moe_stage1(
                     buffer_ops.buffer_load(sw_rsrc, row_up_idx, vec_width=1, dtype=f32, mask=valid_col)
                 )
 
+            # Epilogue hoists to keep IR + Python build time small:
+            # - `col_g` -> i32 cast is invariant across MI/II
+            # - lane_div_16*4 is invariant across MI/II
+            # - inter_dim i32 constant is invariant
+            col_i32_list = []
+            for ni in range_constexpr(num_acc_n):
+                col_i32_list.append(_arith_mlir.IndexCastOp(i32, unwrap(col_g_list[ni])).result)
+
+            lane_div_16_mul4 = _arith_mlir.MulIOp(unwrap(lane_div_16), unwrap(c4)).result
+            ii_idx_list = [arith.constant(ii, index=True) for ii in range(4)]
+            inter_i32_local = arith.i32(inter_dim)._value
+
             for mi in range_constexpr(m_repeat):
                 mi_base = arith.constant(mi * 16, index=True)
                 for ii in range_constexpr(4):
-                    row_off = _arith_mlir.AddIOp(unwrap(_arith_mlir.MulIOp(unwrap(lane_div_16), unwrap(c4)).result), unwrap(arith.constant(ii, index=True))).result
+                    row_off = _arith_mlir.AddIOp(unwrap(lane_div_16_mul4), unwrap(ii_idx_list[ii])).result
                     row_in_tile = _arith_mlir.AddIOp(unwrap(mi_base), unwrap(row_off)).result
                     sorted_row2 = _arith_mlir.AddIOp(unwrap(bx_m), unwrap(row_in_tile)).result
 
@@ -886,15 +881,23 @@ def test_moe_stage1(
                     t2_idx = _arith_mlir.IndexCastOp(ir.IndexType.get(), unwrap(t2)).result
                     sx = buffer_ops.buffer_load(sx_rsrc, t2_idx, vec_width=1, dtype=f32, mask=valid2)
 
-                    # Sorted weight aligned with `sorted_row2` (matches aiter moe_sorting output)
-                    tw = buffer_ops.buffer_load(sorted_w_rsrc, sorted_row2, vec_width=1, dtype=f32, mask=valid2)
+                    # out linear index base = ((t*topk + s)*inter_dim) (invariant across ni)
+                    idx0 = _arith_mlir.MulIOp(unwrap(t2), unwrap(topk_i32)).result
+                    idx0 = _arith_mlir.AddIOp(unwrap(idx0), unwrap(s2)).result
+                    idx0 = _arith_mlir.MulIOp(unwrap(idx0), unwrap(inter_i32_local)).result
+
+                    # Sorted weight aligned with `sorted_row2` (matches aiter moe_sorting output).
+                    # Only load when used to reduce both IR and runtime memory traffic.
+                    if doweight_stage1:
+                        tw = buffer_ops.buffer_load(
+                            sorted_w_rsrc, sorted_row2, vec_width=1, dtype=f32, mask=valid2
+                        )
 
                     for ni in range_constexpr(num_acc_n):
-                        col_g = col_g_list[ni]
                         valid_col = valid_col_list[ni]
                         valid_store = _arith_mlir.AndIOp(unwrap(valid2), unwrap(valid_col)).result
 
-                        col_i32 = _arith_mlir.IndexCastOp(i32, unwrap(col_g)).result
+                        col_i32 = col_i32_list[ni]
                         sw_gate = sw_gate_vals[ni]
                         sw_up = sw_up_vals[ni]
 
@@ -913,11 +916,6 @@ def test_moe_stage1(
 
                         y_f16 = _arith_mlir.TruncFOp(T.f16(), unwrap(y)).result
 
-                        # out linear index = ((t*topk + s)*inter_dim + col)
-                        inter_i32_local = arith.i32(inter_dim)._value
-                        idx0 = _arith_mlir.MulIOp(unwrap(t2), unwrap(topk_i32)).result
-                        idx0 = _arith_mlir.AddIOp(unwrap(idx0), unwrap(s2)).result
-                        idx0 = _arith_mlir.MulIOp(unwrap(idx0), unwrap(inter_i32_local)).result
                         idx_out = _arith_mlir.AddIOp(unwrap(idx0), unwrap(col_i32)).result
 
                         buffer_ops.buffer_store(y_f16, out_rsrc, idx_out, mask=valid_store)
@@ -975,17 +973,10 @@ def test_moe_stage1(
         sorted_token_ids,
         sorted_expert_ids,
         sorted_weights_1d,
-        num_iters=5,
-        num_warmup=2,
+        num_iters=int(num_iters),
+        num_warmup=int(num_warmup),
     )
     torch.cuda.synchronize()
-
-    if os.environ.get("FLIR_MOE_NO_EPILOGUE", "0") in ("1", "true", "True", "YES", "yes"):
-        # No-epilogue mode writes synthetic values; skip correctness/CK comparison.
-        flops = 2 * tokens * topk * (2 * inter_dim) * model_dim
-        tflops = flops / (us / 1e6) / 1e12
-        print(f"[no-epilogue] MoE stage1: {us:.1f} us, {tflops:.2f} TFLOPS")
-        return
 
     ref = torch_stage1_ref(
         x_fp8,
@@ -1001,7 +992,10 @@ def test_moe_stage1(
     assert verify_output(out.to(torch.float32), ref, rtol=0.25, atol=0.25)
 
     # Compare + benchmark vs aiter CK stage1 (optional; enabled by default when aiter is runnable).
-    compare_ck = os.environ.get("COMPARE_AITER_CK", "1" if HAS_AITER else "0") == "1"
+    if compare_aiter_ck is None:
+        compare_ck = os.environ.get("COMPARE_AITER_CK", "1" if HAS_AITER else "0") == "1"
+    else:
+        compare_ck = bool(compare_aiter_ck)
     if compare_ck:
         if not HAS_AITER:
             pytest.skip("aiter not available; cannot compare to CK moe stage1.", allow_module_level=False)
@@ -1050,8 +1044,8 @@ def test_moe_stage1(
                 w1_scale_ck,
                 scale_x,
                 sorted_weights,
-                num_iters=5,
-                num_warmup=2,
+                num_iters=int(num_iters),
+                num_warmup=int(num_warmup),
             )
 
             # Correctness: flir vs CK
@@ -1085,8 +1079,73 @@ def test_moe_stage1(
 
 if __name__ == "__main__":
     torch.set_default_device("cuda")
+    # CLI (mirrors key knobs from aiter/op_tests/test_moe_2stage.py, stage1 subset)
+    def _str2bool(v):
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        s = str(v).strip().lower()
+        if s in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "f", "no", "n", "off"}:
+            return False
+        raise argparse.ArgumentTypeError(f"invalid bool: {v} (use t/f, true/false, 1/0)")
+
+    def _str2tuple_dim(v: str) -> Tuple[int, int]:
+        # aiter uses "-dim 6144,4096" meaning (model_dim, inter_dim)
+        s = str(v).strip()
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) != 2:
+            raise argparse.ArgumentTypeError(f"invalid -dim {v!r}; expected 'model_dim,inter_dim' e.g. 6144,4096")
+        return int(parts[0]), int(parts[1])
+
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawTextHelpFormatter,
+        description="MoE stage1 (FLIR MFMA FP8) test/benchmark (argparse subset aligned with aiter test_moe_2stage.py)",
+    )
+    parser.add_argument("-d", "--dtype", type=str, default="fp32", choices=["fp32", "fp16", "bf16"], help="Input init dtype (currently data is quantized to FP8 per-token; init dtype mainly affects RNG range).")
+    parser.add_argument("-dim", type=_str2tuple_dim, default=(8192, 5120), help="Model dimension: model_dim,inter_dim (e.g. -dim 6144,4096)")
+    parser.add_argument("-t", "--tokenNum", type=int, default=2048, help="Number of tokens (e.g. -t 1024)")
+    parser.add_argument("-e", "--expert", type=int, default=17, help="Number of experts (e.g. -e 8)")
+    parser.add_argument("-k", "--topk", type=int, default=9, help="Top-k (e.g. -k 2)")
+    parser.add_argument("-s", "--doweight_stage1", type=_str2bool, nargs="?", const=True, default=False, help="Whether to multiply routed weight in stage1 (t/f).")
+
+    # Stage1-specific kernel tiling knobs
+    parser.add_argument("--tile_m", type=int, default=64, help="Tile M / block_m (routing block size).")
+    parser.add_argument("--tile_n", type=int, default=128, help="Tile N (inter dim tile).")
+    parser.add_argument("--tile_k", type=int, default=128, help="Tile K (model dim tile).")
+
+    # Sorting / comparison knobs
+    parser.add_argument("--moe_sort_mode", type=str, default=None, choices=["aiter", "torch"], help="Routing buffer build mode (aiter moe_sorting vs torch fallback).")
+    parser.add_argument("--compare_aiter_ck", type=_str2bool, nargs="?", const=True, default=None, help="Override COMPARE_AITER_CK (t/f). Default: env or HAS_AITER.")
+
+    # Benchmark knobs
+    parser.add_argument("--seed", type=int, default=0, help="torch.manual_seed(seed)")
+    parser.add_argument("--num_iters", type=int, default=5, help="Benchmark iters")
+    parser.add_argument("--num_warmup", type=int, default=2, help="Benchmark warmup iters")
+
+    args = parser.parse_args()
+
+    model_dim, inter_dim = args.dim
+
     # Run the aiter-aligned FP8 per-token stage1 test.
-    test_moe_stage1(tokens=2048, model_dim=4096, inter_dim=2560, experts=17, topk=9, tile_m=64, tile_n=128, tile_k=128, doweight_stage1=False)
+    test_moe_stage1(
+        tokens=int(args.tokenNum),
+        model_dim=int(model_dim),
+        inter_dim=int(inter_dim),
+        experts=int(args.expert),
+        topk=int(args.topk),
+        tile_m=int(args.tile_m),
+        tile_n=int(args.tile_n),
+        tile_k=int(args.tile_k),
+        doweight_stage1=bool(args.doweight_stage1),
+        seed=int(args.seed),
+        num_iters=int(args.num_iters),
+        num_warmup=int(args.num_warmup),
+        compare_aiter_ck=args.compare_aiter_ck,
+        moe_sort_mode=args.moe_sort_mode,
+    )
 
 
 
