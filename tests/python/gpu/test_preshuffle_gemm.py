@@ -127,8 +127,6 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             vec2_i32 = I.vec(2, i32)
             vec4_i32 = I.vec(4, i32)
 
-            vec_a_load_len = bytes_per_thread_a # fp8
-
             zero_attr = ir.DenseElementsAttr.get_splat(
                 vec4_f32, ir.FloatAttr.get(f32, 0.0)
             )
@@ -346,46 +344,48 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                     src_buffer_offset_in_bytes=False,
                 )
 
-            vec_a_inits = []
-            for i in range_constexpr(num_a_loads):
-                # Inter-thread contiguous 16B: lanes touch consecutive chunks, then stride by
-                # (total_threads * 16B) per subsequent load.
+            def a_tile_chunk_coord_i32(i: int):
+                """Map per-thread chunk `i` -> (row_a_local, col_a_local_i32) within the A tile.
+
+                We want inter-thread contiguous 16B chunks:
+                  chunk_linear = tx + i*total_threads
+                  chunk_i32_base = chunk_linear * 4  (because 16B == 4 dwords)
+                Then decompose into (row, col_i32) using a tile-local layout.
+                """
                 chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
                 tile_idx_i32 = tx_i32_base + chunk_off_i32
                 coord_a_local_i32 = flir.idx2crd(tile_idx_i32, layout_a_tile_div4)
                 row_a_local = flir.get(coord_a_local_i32, 0)
                 col_a_local_i32 = flir.get(coord_a_local_i32, 1)
+                return row_a_local, col_a_local_i32
 
-                row_a_global = bx_m + row_a_local
-                coord_a_g = flir.make_coord(row_a_global, col_a_local_i32)
-                idx_i32 = flir.crd2idx(coord_a_g, layout_a_div4)
-                a_f8 = load_a_16(idx_i32)
-                vec_a_inits.append(vector.BitCastOp(vec4_i32, a_f8).result)
-
-            # Loop-carried state
-            accs = acc_inits
-            vec_a_parts = vec_a_inits
-
-            def emit_tile(k_iv, accs_in, vec_a_in_parts, is_last_tile=False):
-                # Store A to LDS with CK-style XOR16 swizzle (16B granularity), preserving the
-                # original LDS address pattern (same row/col swizzle as before).
+            def load_a_tile(k_base_div4):
+                """Load the per-thread A tile portion (gmem -> regs) for a given K base (in /4 units)."""
+                parts = []
                 for i in range_constexpr(num_a_loads):
-                    a_val = vec_a_in_parts[i]
+                    row_a_local, col_a_local_i32 = a_tile_chunk_coord_i32(i)
+                    row_a_global = bx_m + row_a_local
+                    coord_a_g = flir.make_coord(
+                        row_a_global, k_base_div4 + col_a_local_i32
+                    )
+                    idx_i32 = flir.crd2idx(coord_a_g, layout_a_div4)
+                    a_f8 = load_a_16(idx_i32)
+                    parts.append(vector.BitCastOp(vec4_i32, a_f8).result)
+                return parts
 
-                    chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
-                    tile_idx_i32 = tx_i32_base + chunk_off_i32
-                    coord_a_local_i32 = flir.idx2crd(tile_idx_i32, layout_a_tile_div4)
-                    row_a_local = flir.get(coord_a_local_i32, 0)
-                    col_a_local_i32 = flir.get(coord_a_local_i32, 1)
-
+            def store_a_tile_to_lds(vec_a_in_parts):
+                """Store the per-thread A tile portion (regs -> LDS), applying CK-style XOR16 swizzle."""
+                for i in range_constexpr(num_a_loads):
+                    row_a_local, col_a_local_i32 = a_tile_chunk_coord_i32(i)
                     col_a_local_bytes = col_a_local_i32 * c4
-                    col_swz = flir.swizzle_xor16(row_a_local, col_a_local_bytes, k_blocks16)
+                    col_swz = flir.swizzle_xor16(
+                        row_a_local, col_a_local_bytes, k_blocks16
+                    )
                     coord_store_0 = flir.make_coord(row_a_local, col_swz)
                     idx_0 = flir.crd2idx(coord_store_0, layout_lds)
 
                     # Convert back to fp8 vector for LDS store.
-                    a_vec = vector.BitCastOp(vec16_f8, a_val).result
-
+                    a_vec = vector.BitCastOp(vec16_f8, vec_a_in_parts[i]).result
                     s_view = flir.TensorView(
                         lds_a,
                         (16,),
@@ -394,6 +394,18 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                         element_type=f8,
                     )
                     flir.copy(atom_a_g2r16, a_vec, s_view, alignment=16)
+
+            k0_div4 = arith.constant(0, index=True)
+            vec_a_inits = load_a_tile(k0_div4)
+
+            # Loop-carried state
+            accs = acc_inits
+            vec_a_parts = vec_a_inits
+
+            def emit_tile(k_iv, accs_in, vec_a_in_parts, is_last_tile=False):
+                # Store A to LDS with CK-style XOR16 swizzle (16B granularity), preserving the
+                # original LDS address pattern (same row/col swizzle as before).
+                store_a_tile_to_lds(vec_a_in_parts)
 
                 gpu.barrier()
 
@@ -406,19 +418,7 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                     next_k_div4 = next_k / 4
 
                     # Prefetch A (next tile) into regs via flir.copy(load-only, buffer backend).
-                    vec_a_next_parts = []
-                    for i in range_constexpr(num_a_loads):
-                        chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
-                        tile_idx_i32 = tx_i32_base + chunk_off_i32
-                        coord_a_local_i32 = flir.idx2crd(tile_idx_i32, layout_a_tile_div4)
-                        row_a_local = flir.get(coord_a_local_i32, 0)
-                        col_a_local_i32 = flir.get(coord_a_local_i32, 1)
-
-                        row_a_global = bx_m + row_a_local
-                        coord_a_g = flir.make_coord(row_a_global, next_k_div4 + col_a_local_i32)
-                        idx_i32 = flir.crd2idx(coord_a_g, layout_a_div4)
-                        a_f8 = load_a_16(idx_i32)
-                        vec_a_next_parts.append(vector.BitCastOp(vec4_i32, a_f8).result)
+                    vec_a_next_parts = load_a_tile(next_k_div4)
                     # b_vals_next_raw = load_b_tile(next_k)
                     # b_vals_next = []
                     # for b_list in b_vals_next_raw:
