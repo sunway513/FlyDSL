@@ -38,7 +38,7 @@ except ImportError:
     print("Warning: Aiter not found, skipping comparison")
     HAS_AITER = False
 
-RUN_AITER_BENCH = os.environ.get("COMPARE_AITER_CK", "0") == "1"
+RUN_AITER_BENCH = os.environ.get("COMPARE_AITER_CK", "1") == "1"
 
 
 def run_torch(x, weight, x_scale, w_scale, bias=None, dtype=torch.bfloat16):
@@ -52,17 +52,6 @@ def run_torch(x, weight, x_scale, w_scale, bias=None, dtype=torch.bfloat16):
     if bias is not None:
         out = out.to(bias.dtype) + bias
     return out.to(dtype)
-
-
-def unwrap(v):
-    if isinstance(v, int):
-        return arith.constant(v, index=True).value
-    while hasattr(v, "value") or hasattr(v, "_value"):
-        if hasattr(v, "_value"):
-            v = v._value
-        elif hasattr(v, "value"):
-            v = v.value
-    return v
 
 
 @pytest.mark.parametrize(
@@ -88,8 +77,16 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
     bytes_per_thread_a = elems_per_thread_a
     vec_width_a_i32 = bytes_per_thread_a // 4
 
-    pad_k = 8  # Padding to avoid bank conflicts (stride 136 bytes -> bank inc 2)
-    lds_stride = tile_k + pad_k
+    # Assume A loads are always 16B-aligned and use fixed dwordx4 (16B) buffer loads.
+    a_load_bytes = 16
+    if bytes_per_thread_a % a_load_bytes != 0:
+        raise ValueError(
+            f"bytes_per_thread_a ({bytes_per_thread_a}) must be divisible by "
+            f"a_load_bytes ({a_load_bytes})"
+        )
+
+
+    lds_stride = tile_k
 
     class _MFMA(flir.MlirModule):
         GPU_MODULE_NAME = "mfma_mod"
@@ -137,10 +134,13 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             )
             acc_init = _arith_mlir.ConstantOp(vec4_f32, zero_attr).result
 
-            layout_a = flir.make_layout((c_m, c_k), stride=(c_k, 1))
             layout_c = flir.make_layout((c_m, c_n), stride=(c_n, 1))
 
-            c0_i32 = arith.i32(0)
+            c0_i32 = arith.i32(0).value
+
+            # A is FP8 (1B/elem) but we use dwordx4 (16B) buffer loads, so build a /4 layout.
+            c_k_div4 = c_k / 4
+            layout_a_div4 = flir.make_layout((c_m, c_k_div4), stride=(c_k_div4, 1))
 
             c_k0 = c_k / 64
             c_n0 = c_n / 16
@@ -185,22 +185,8 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             scale_a_rsrc = buffer_ops.create_buffer_resource(arg_scale_a)
             scale_b_rsrc = buffer_ops.create_buffer_resource(arg_scale_b)
 
-            tx_idx = unwrap(tx)
-            vec_len_val = arith.constant(vec_a_load_len, index=True)
-            linear_id = tx_idx * vec_len_val
-
-            # Thread -> (row, col) within the A tile using FLIR idx2crd (avoid explicit div/mod).
-            layout_a_tile = flir.make_layout((tile_m, tile_k), stride=(tile_k, 1))
-            coord_a_local = flir.idx2crd(unwrap(linear_id), layout_a_tile)
-            row_a_local = flir.get(coord_a_local, 0)
-            col_a_local = flir.get(coord_a_local, 1)
-
             bx_m = bx * tile_m
-            row_a_global = bx_m + row_a_local
             by_n = by * tile_n
-
-            coord_store = flir.make_coord(unwrap(row_a_local), unwrap(col_a_local))
-            lds_write_idx = flir.crd2idx(coord_store, layout_lds)
 
             # (thread_id.x) -> (wave_id, lane_id) via FLIR (avoid explicit / and %).
             layout_wave_lane = flir.make_layout((4, 64), stride=(64, 1))
@@ -210,27 +196,21 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
 
             # lane_id -> (lane_div_16, lane_mod_16) via FLIR (avoid explicit / and %).
             layout_lane16 = flir.make_layout((4, 16), stride=(16, 1))
-            coord_lane16 = flir.idx2crd(unwrap(lane_id), layout_lane16)
+            coord_lane16 = flir.idx2crd(lane_id, layout_lane16)
             lane_div_16 = flir.get(coord_lane16, 0)
             lane_mod_16 = flir.get(coord_lane16, 1)
 
             row_a_lds = lane_mod_16
             # lane_div_16 * 16 via FLIR crd2idx((lane_div_16,0), layout=(4,16):stride=(16,1))
             col_offset_base = flir.crd2idx(
-                flir.make_coord(unwrap(lane_div_16), 0), layout_lane16
+                flir.make_coord(lane_div_16, 0), layout_lane16
             )
 
             row_b_lds = lane_mod_16
 
-            coord_a_base = flir.make_coord(unwrap(row_a_global), unwrap(col_a_local))
-            idx_a_base = flir.crd2idx(coord_a_base, layout_a)
-            idx_a_base_div4 = idx_a_base / 4
-
             m_repeat = tile_m // 16
             # K32 micro-step: one MFMA(x32) per step.
             k_unroll = tile_k // 32
-
-            lds_a_indices = []
 
             # --- Dynamic Tiling Logic ---
             num_waves = 4
@@ -254,7 +234,7 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                 # global_n = by_n + n_tile_base + offset + row_b_lds
                 global_n = by_n + n_tile_base + c_offset + row_b_lds
 
-                coord_n = flir.idx2crd(unwrap(global_n), layout_n_blk_intra)
+                coord_n = flir.idx2crd(global_n, layout_n_blk_intra)
                 n_blk = flir.get(coord_n, 0)
                 n_intra = flir.get(coord_n, 1)
 
@@ -271,12 +251,8 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                     ki_val = arith.constant(ki, index=True)
 
                     col_lds = col_offset_base + ki_val
-                    coord_a_lds = flir.make_coord(
-                        unwrap(curr_row_a_lds), unwrap(col_lds)
-                    )
+                    coord_a_lds = flir.make_coord(curr_row_a_lds, col_lds)
                     idx_a_mfma = flir.crd2idx(coord_a_lds, layout_lds)
-                    idx_a_idx = unwrap(idx_a_mfma)
-                    lds_a_indices.append(idx_a_idx)
 
             acc_inits = [acc_init] * (num_acc_n * m_repeat)
 
@@ -299,14 +275,14 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                 Load one 8B (i64) B pack for a single MFMA(x32) step.
                 We select the lower/upper half within the 16B KPack via k2_base = 0 or 8.
                 """
-                coord_k = flir.idx2crd(unwrap(base_k), layout_k0_kpack64)
+                coord_k = flir.idx2crd(base_k, layout_k0_kpack64)
                 k0_base = flir.get(coord_k, 0)
                 k0 = k0_base + (ki_step // 2)
                 k1 = lane_div_16  # 0..3
                 half = ki_step % 2
                 half_val = arith.constant(half, index=True)
                 k2_base = flir.crd2idx(
-                    flir.make_coord(unwrap(half_val), 0), layout_half8
+                    flir.make_coord(half_val, 0), layout_half8
                 )
 
                 n_intra = n_intra_list[ni]
@@ -318,7 +294,7 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                     arg_b,
                     (8,),
                     strides=(1,),
-                    base_indices=(unwrap(idx_bytes),),
+                    base_indices=(idx_bytes,),
                     element_type=f8,
                 )
                 b8_f8 = flir.copy(
@@ -330,66 +306,61 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                     src_buffer_resource=b_rsrc,
                 )
                 b_vec64 = vector.BitCastOp(vec1_i64, b8_f8).result
-                b_pack = unwrap(
-                    vector.ExtractOp(
-                        b_vec64, static_position=[0], dynamic_position=[]
-                    ).result
-                )
-                return b_pack
+                return vector.ExtractOp(
+                    b_vec64, static_position=[0], dynamic_position=[]
+                ).result
 
             # A gmem->reg prefetch via flir.copy (buffer-load backend), keeping the original
             # pipelining structure: load next tile into regs (loop-carried), then store to LDS.
-            max_bytes_per_load = 16
-            num_a_loads = (bytes_per_thread_a + max_bytes_per_load - 1) // max_bytes_per_load
-            vec_a_parts_lens = []
-            remaining_bytes = bytes_per_thread_a
-            for _ in range_constexpr(num_a_loads):
-                curr_bytes = min(remaining_bytes, max_bytes_per_load)
-                vec_a_parts_lens.append(curr_bytes)
-                remaining_bytes -= curr_bytes
+            # Fixed-width A loads (no tail handling): assume everything is 16B aligned.
+            max_bytes_per_load = a_load_bytes  # 16
+            num_a_loads = bytes_per_thread_a // max_bytes_per_load
+            # Reindex A tile at dword granularity so lanes load contiguous 16B chunks:
+            #   for load i: base = (tx + i*total_threads) * 16B
+            # i32-element base = (tx*4 + i*(total_threads*4)).
+            layout_a_tile_div4 = flir.make_layout((tile_m, tile_k // 4), stride=(tile_k // 4, 1))
+            c4 = arith.constant(4, index=True)
+            tx_i32_base = tx * c4
 
             atom_a_g2r16 = flir.make_copy_atom(f8, vector_size=16)
-            atom_a_g2r8 = flir.make_copy_atom(f8, vector_size=8)
 
-            def load_a_part(idx_i32, extent: int):
-                """Load `extent` fp8 bytes from A (gmem) into a vector via buffer_load backend.
+            def load_a_16(idx_i32):
+                """Load 16 fp8 bytes from A (gmem) into a vector via buffer_load backend.
 
-                We pass the buffer offset in i32-elements (dword units) to avoid emitting
-                per-load `idx_bytes/4` divisions.
+                idx_i32 is in i32-elements (dword units) to avoid emitting per-load idx_bytes/4.
                 """
                 a_view = flir.TensorView(
                     arg_a,
-                    (extent,),
+                    (16,),
                     strides=(1,),
-                    base_indices=(unwrap(idx_i32),),
+                    base_indices=(idx_i32,),
                     element_type=f8,
                 )
-                atom = atom_a_g2r16 if extent == 16 else atom_a_g2r8
                 return flir.copy(
-                    atom,
+                    atom_a_g2r16,
                     a_view,
                     None,
-                    alignment=extent,
+                    alignment=16,
                     return_vector=True,
                     src_buffer_resource=a_rsrc,
                     src_buffer_offset_in_bytes=False,
                 )
 
             vec_a_inits = []
-            curr_store_off = 0
             for i in range_constexpr(num_a_loads):
-                curr_bytes = vec_a_parts_lens[i]
-                off_i32 = arith.constant(curr_store_off // 4, index=True)
-                idx_i32 = idx_a_base_div4 + off_i32
-                a_f8 = load_a_part(idx_i32, curr_bytes)
-                if curr_bytes == 16:
-                    vec_a_inits.append(vector.BitCastOp(vec4_i32, a_f8).result)
-                elif curr_bytes == 8:
-                    vec_a_inits.append(vector.BitCastOp(vec2_i32, a_f8).result)
-                else:
-                    # Rare fallback: keep fp8 vector as-is.
-                    vec_a_inits.append(a_f8)
-                curr_store_off += curr_bytes
+                # Inter-thread contiguous 16B: lanes touch consecutive chunks, then stride by
+                # (total_threads * 16B) per subsequent load.
+                chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
+                tile_idx_i32 = tx_i32_base + chunk_off_i32
+                coord_a_local_i32 = flir.idx2crd(tile_idx_i32, layout_a_tile_div4)
+                row_a_local = flir.get(coord_a_local_i32, 0)
+                col_a_local_i32 = flir.get(coord_a_local_i32, 1)
+
+                row_a_global = bx_m + row_a_local
+                coord_a_g = flir.make_coord(row_a_global, col_a_local_i32)
+                idx_i32 = flir.crd2idx(coord_a_g, layout_a_div4)
+                a_f8 = load_a_16(idx_i32)
+                vec_a_inits.append(vector.BitCastOp(vec4_i32, a_f8).result)
 
             # Loop-carried state
             accs = acc_inits
@@ -398,33 +369,31 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             def emit_tile(k_iv, accs_in, vec_a_in_parts, is_last_tile=False):
                 # Store A to LDS with CK-style XOR16 swizzle (16B granularity), preserving the
                 # original LDS address pattern (same row/col swizzle as before).
-                curr_store_off = 0
                 for i in range_constexpr(num_a_loads):
-                    curr_bytes = vec_a_parts_lens[i]
                     a_val = vec_a_in_parts[i]
-                    col_0 = col_a_local + curr_store_off
-                    col_swz = flir.swizzle_xor16(row_a_local, col_0, k_blocks16)
-                    coord_store_0 = flir.make_coord(unwrap(row_a_local), unwrap(col_swz))
+
+                    chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
+                    tile_idx_i32 = tx_i32_base + chunk_off_i32
+                    coord_a_local_i32 = flir.idx2crd(tile_idx_i32, layout_a_tile_div4)
+                    row_a_local = flir.get(coord_a_local_i32, 0)
+                    col_a_local_i32 = flir.get(coord_a_local_i32, 1)
+
+                    col_a_local_bytes = col_a_local_i32 * c4
+                    col_swz = flir.swizzle_xor16(row_a_local, col_a_local_bytes, k_blocks16)
+                    coord_store_0 = flir.make_coord(row_a_local, col_swz)
                     idx_0 = flir.crd2idx(coord_store_0, layout_lds)
 
-                    # Convert back to fp8 vectors for LDS store.
-                    if curr_bytes == 16:
-                        a_vec = vector.BitCastOp(vec16_f8, a_val).result
-                    elif curr_bytes == 8:
-                        a_vec = vector.BitCastOp(vec8_f8, a_val).result
-                    else:
-                        a_vec = a_val
+                    # Convert back to fp8 vector for LDS store.
+                    a_vec = vector.BitCastOp(vec16_f8, a_val).result
 
                     s_view = flir.TensorView(
                         lds_a,
-                        (curr_bytes,),
+                        (16,),
                         strides=(1,),
-                        base_indices=(unwrap(idx_0),),
+                        base_indices=(idx_0,),
                         element_type=f8,
                     )
-                    atom_s = atom_a_g2r16 if curr_bytes == 16 else atom_a_g2r8
-                    flir.copy(atom_s, a_vec, s_view)
-                    curr_store_off += curr_bytes
+                    flir.copy(atom_a_g2r16, a_vec, s_view, alignment=16)
 
                 gpu.barrier()
 
@@ -434,23 +403,22 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                 if not is_last_tile:
                     # Next K calculations
                     next_k = k_iv + tile_k
+                    next_k_div4 = next_k / 4
 
                     # Prefetch A (next tile) into regs via flir.copy(load-only, buffer backend).
                     vec_a_next_parts = []
-                    curr_store_off2 = 0
                     for i in range_constexpr(num_a_loads):
-                        curr_bytes = vec_a_parts_lens[i]
-                        off_i32 = arith.constant(curr_store_off2 // 4, index=True)
-                        next_k_div4 = next_k / 4
-                        idx_i32 = idx_a_base_div4 + next_k_div4 + off_i32
-                        a_f8 = load_a_part(idx_i32, curr_bytes)
-                        if curr_bytes == 16:
-                            vec_a_next_parts.append(vector.BitCastOp(vec4_i32, a_f8).result)
-                        elif curr_bytes == 8:
-                            vec_a_next_parts.append(vector.BitCastOp(vec2_i32, a_f8).result)
-                        else:
-                            vec_a_next_parts.append(a_f8)
-                        curr_store_off2 += curr_bytes
+                        chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
+                        tile_idx_i32 = tx_i32_base + chunk_off_i32
+                        coord_a_local_i32 = flir.idx2crd(tile_idx_i32, layout_a_tile_div4)
+                        row_a_local = flir.get(coord_a_local_i32, 0)
+                        col_a_local_i32 = flir.get(coord_a_local_i32, 1)
+
+                        row_a_global = bx_m + row_a_local
+                        coord_a_g = flir.make_coord(row_a_global, next_k_div4 + col_a_local_i32)
+                        idx_i32 = flir.crd2idx(coord_a_g, layout_a_div4)
+                        a_f8 = load_a_16(idx_i32)
+                        vec_a_next_parts.append(vector.BitCastOp(vec4_i32, a_f8).result)
                     # b_vals_next_raw = load_b_tile(next_k)
                     # b_vals_next = []
                     # for b_list in b_vals_next_raw:
@@ -493,33 +461,25 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                         b = load_b_pack(k_iv, ki_step, ni)
                         b_packs.append(b)
 
-                    # For A, we still align swizzle at 16B granularity, then select the half (0 or 8B).
+                    # For A, align swizzle at 16B granularity.
                     ki64 = (ki_step // 2) * 64
-                    ki64_val = arith.constant(ki64, index=True)
                     half = ki_step % 2
-                    half_off = arith.constant(half * 8, index=True)
-                    col_base = col_offset_base + ki64_val
+                    col_base = col_offset_base + ki64
 
                     for mi in range_constexpr(m_repeat):
                         mi_val = arith.constant(mi * 16, index=True)
                         curr_row_a_lds = row_a_lds + mi_val
 
                         # Read A from LDS using the same (row,col)->(row,col') xor swizzle as the store.
-                        # Select the lower/upper 8B inside the 16B chunk.
                         col_base_swizzled = flir.swizzle_xor16(curr_row_a_lds, col_base, k_blocks16)
-                        col_swizzled = col_base_swizzled + half_off
-                        coord_a = flir.make_coord(
-                            unwrap(curr_row_a_lds), unwrap(col_swizzled)
-                        )
-                        idx_a = flir.crd2idx(coord_a, layout_lds)
-                        idx_a_idx = unwrap(idx_a)
-
-                        loaded_a8 = vector.LoadOp(
-                            vec8_f8, lds_a, [unwrap(idx_a_idx)]
+                        coord_a16 = flir.make_coord(curr_row_a_lds, col_base_swizzled)
+                        idx_a16 = flir.crd2idx(coord_a16, layout_lds)
+                        loaded_a16 = vector.LoadOp(
+                            vec16_f8, lds_a, [arith.ArithValue(idx_a16).value]
                         ).result
-                        a_vec64 = vector.BitCastOp(vec1_i64, loaded_a8).result
+                        a_vec128 = vector.BitCastOp(vec2_i64, loaded_a16).result
                         a_pack = vector.ExtractOp(
-                            a_vec64, static_position=[0], dynamic_position=[]
+                            a_vec128, static_position=[half], dynamic_position=[]
                         ).result
 
                         for ni in range_constexpr(num_acc_n):
@@ -530,12 +490,12 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                             acc0 = rocdl.mfma_f32_16x16x32_fp8_fp8(
                                 vec4_f32,
                                 [
-                                    unwrap(a_pack),
-                                    unwrap(b_pack),
-                                    unwrap(curr_acc),
-                                    unwrap(c0_i32),
-                                    unwrap(c0_i32),
-                                    unwrap(c0_i32),
+                                    arith.ArithValue(a_pack).value,
+                                    arith.ArithValue(b_pack).value,
+                                    arith.ArithValue(curr_acc).value,
+                                    c0_i32,
+                                    c0_i32,
+                                    c0_i32,
                                 ],
                             ).result
                             current_accs_list[acc_idx] = acc0
@@ -586,10 +546,12 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
 
                         val_s = val * s_a
                         val_s = val_s * s_b
-                        val_f16 = _arith_mlir.TruncFOp(f16, unwrap(val_s)).result
+                        val_f16 = _arith_mlir.TruncFOp(
+                            f16, arith.ArithValue(val_s).value
+                        ).result
 
                         idx = flir.crd2idx(
-                            flir.make_coord(unwrap(row_g), unwrap(col_g)), layout_c
+                            flir.make_coord(row_g, col_g), layout_c
                         )
                         buffer_ops.buffer_store(val_f16, c_rsrc, idx)
 
@@ -615,14 +577,14 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                 grid_size=(gx, gy, c1),
                 block_size=(bdx, c1, c1),
                 kernel_operands=[
-                    unwrap(arg_c),
-                    unwrap(arg_a),
-                    unwrap(arg_b),
-                    unwrap(arg_scale_a),
-                    unwrap(arg_scale_b),
-                    unwrap(c_m),
-                    unwrap(c_n),
-                    unwrap(c_k),
+                    arith.ArithValue(arg_c).value,
+                    arith.ArithValue(arg_a).value,
+                    arith.ArithValue(arg_b).value,
+                    arith.ArithValue(arg_scale_a).value,
+                    arith.ArithValue(arg_scale_b).value,
+                    arith.ArithValue(c_m).value,
+                    arith.ArithValue(c_n).value,
+                    arith.ArithValue(c_k).value,
                 ],
             )
 
@@ -757,7 +719,3 @@ if __name__ == "__main__":
 
     test_mfma_fp8_flir_preshuffle(5120, 5120, 8192, tile_m=64, tile_n=256, tile_k=128)
     
-    # Work around a known finalization crash
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(0)
