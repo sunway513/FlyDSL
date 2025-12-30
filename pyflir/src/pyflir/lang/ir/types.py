@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from _mlir import ir
+from _mlir.extras.types import *
+
 
 
 class Types:
@@ -53,26 +55,38 @@ class Types:
     @property
     def i64(self) -> ir.Type:
         return ir.IntegerType.get_signless(64)
+    @property
+    def i64x2(self) -> ir.Type:
+        return ir.VectorType.get([2], ir.IntegerType.get_signless(64))
 
     @property
     def f16(self) -> ir.Type:
         return ir.F16Type.get()
+    @property
+    def f16x2(self) -> ir.Type:
+        return ir.VectorType.get([2], ir.F16Type.get())
+    @property
+    def f16x4(self) -> ir.Type:
+        return ir.VectorType.get([4], ir.F16Type.get())
+    @property
+    def f16x8(self) -> ir.Type:
+        return ir.VectorType.get([8], ir.F16Type.get())
 
     @property
     def bf16(self) -> ir.Type:
         return ir.BF16Type.get()
-
     @property
     def bf16x2(self) -> ir.Type:
         return ir.VectorType.get([2], ir.BF16Type.get())
-
     @property
     def bf16x4(self) -> ir.Type:
         return ir.VectorType.get([4], ir.BF16Type.get())
-        
     @property
     def bf16x8(self) -> ir.Type:
         return ir.VectorType.get([8], ir.BF16Type.get())
+    @property
+    def bf16x2(self) -> ir.Type:
+        return ir.VectorType.get([2], ir.BF16Type.get())
 
     @property
     def f32(self) -> ir.Type:

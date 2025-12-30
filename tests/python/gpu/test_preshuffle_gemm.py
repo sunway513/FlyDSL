@@ -23,8 +23,8 @@ from _mlir import ir
 from _mlir.dialects import vector, memref, builtin, llvm
 from pyflir.dialects.ext import arith, scf, gpu, buffer_ops
 from _mlir.dialects import arith as _arith_mlir
-import _mlir.dialects.rocdl as rocdl
-import _mlir.extras.types as mlir_types
+import pyflir.dialects.ext.rocdl as rocdl
+import pyflir.lang.ir.types as mlir_types
 from pyflir.lang.ir.types import T
 
 if not torch.cuda.is_available():
@@ -87,11 +87,6 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
 
 
     lds_stride = tile_k
-    mask_mfma = 0x008
-    mask_vmem_rd = 0x020
-    mask_vmem_write = 0x040
-    mask_dsrd = 0x100
-    mask_dswr = 0x200    
 
     class _MFMA(flir.MlirModule):
         GPU_MODULE_NAME = "mfma_mod"
@@ -105,7 +100,7 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             allocator.finalize()
 
         @flir.kernel
-        def kernel_fixed(
+        def kernel_gemm(
             self: flir.T.i64,
             arg_c: lambda: mlir_types.memref(size_c, T.f16),
             arg_a: lambda: mlir_types.memref(size_a, T.f8),
@@ -468,7 +463,7 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                         loaded_a16 = vector.LoadOp(
                             T.f8x16, lds_a, [idx_a16]
                         ).result
-                        a_vec128 = vector.BitCastOp(T.vec(2, T.i64), loaded_a16).result
+                        a_vec128 = vector.BitCastOp(T.i64x2, loaded_a16).result
                         a_pack = vector.ExtractOp(
                             a_vec128, static_position=[half], dynamic_position=[]
                         ).result
@@ -518,14 +513,6 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             # Ping/pong B reg tiles (pong is primed by the prologue).
             b_tile_pong = b_tile_cur  # current/compute
             rocdl.sched_barrier(0)
-            def sched_mfma(cnt):
-                rocdl.sched_group_barrier(mask_mfma, cnt, 0)
-            def sched_vmem(cnt):
-                rocdl.sched_group_barrier(mask_vmem_rd, cnt, 0)
-            def sched_dsrd(cnt):
-                rocdl.sched_group_barrier(mask_dsrd, cnt, 0)
-            def sched_dswr(cnt):
-                rocdl.sched_group_barrier(mask_dswr, cnt, 0)
             def hot_loop_scheduler():
                 # Derive CK-like schedule parameters from this tile:
                 # - MFMA group size per "slot": num_acc_n
@@ -538,10 +525,9 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                 mfma_tail = mfma_total - sche_iters * mfma_per_iter
 
                 # DS-read preload (CK default is 2); clamp to non-negative.
-                sched_dsrd(1)
-                sched_mfma(1)
-                sched_dsrd(1)
-                sched_mfma(1)
+                rocdl.sched_dsrd(2)
+                rocdl.sched_mfma(1)
+                rocdl.sched_mfma(1)
 
                 # DS-write hints near the end: match total A LDS-store micro-ops per thread.
                 dswr_tail = num_a_loads
@@ -550,12 +536,12 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
                 dswr_start = sche_iters - dswr_tail
 
                 for sche_i in range_constexpr(sche_iters):
-                    sched_vmem(1)
-                    sched_mfma(mfma_group)
-                    sched_dsrd(1)
-                    sched_mfma(mfma_group)
+                    rocdl.sched_vmem(1)
+                    rocdl.sched_mfma(mfma_group)
+                    rocdl.sched_dsrd(1)
+                    rocdl.sched_mfma(mfma_group)
                     if sche_i >= dswr_start:
-                        sched_dswr(1)
+                        rocdl.sched_dswr(1)
 
                 rocdl.sched_barrier(0)
             for k_iv in range(0, c_k_main, tile_k * 2):
@@ -635,7 +621,7 @@ def test_mfma_fp8_flir_preshuffle(M, N, K, tile_m, tile_n, tile_k):
             gy = arith.constant(N // tile_n, index=True).value
 
             flir.gpu_ext.LaunchFuncOp(
-                ["mfma_mod", "kernel_fixed"],
+                ["mfma_mod", "kernel_gemm"],
                 grid_size=(gx, gy, c1),
                 block_size=(bdx, c1, c1),
                 kernel_operands=[
