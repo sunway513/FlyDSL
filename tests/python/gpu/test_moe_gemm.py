@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from typing import Tuple, Optional
 
@@ -8,9 +9,40 @@ import pytest
 import torch
 import argparse
 
+# -----------------------------------------------------------------------------
+# Ensure we use the repo-local `pyflir` when running this file directly.
+#
+# Some environments have another `pyflir` (e.g. from a sibling checkout) earlier
+# on `sys.path`, which can miss newer ROCDL wrappers (notably atomic fadd / MFMA).
+# -----------------------------------------------------------------------------
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+_PYFLIR_SRC = os.path.join(_REPO_ROOT, "pyflir", "src")
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+if _PYFLIR_SRC not in sys.path:
+    sys.path.insert(0, _PYFLIR_SRC)
+
 from test_ref import torch_moe_gemm1, torch_moe_gemm2
 from tests.utils import pertoken_quant, shuffle_weight
 from tests.test_common import verify_output, run_perftest
+
+def _pack_shuffled_int8_to_packed_int4_no_perm(x_shuf_i8: torch.Tensor) -> torch.Tensor:
+    """Pack a preshuffled int8 tensor (values in [-8, 7]) into packed int4 bytes.
+
+    Each contiguous 8-value block [v0..v7] -> 4 bytes:
+      b0=(v4<<4)|v0, b1=(v5<<4)|v1, b2=(v6<<4)|v2, b3=(v7<<4)|v3.
+
+    This matches the 7-op in-kernel unpack sequence and avoids any v_perm.
+    """
+    flat = x_shuf_i8.contiguous().view(-1).to(torch.int16)
+    assert flat.numel() % 8 == 0
+    u = (flat & 0xF).to(torch.uint8).view(-1, 8)
+    out = torch.empty((u.shape[0], 4), device=u.device, dtype=torch.uint8)
+    out[:, 0] = u[:, 0] | (u[:, 4] << 4)
+    out[:, 1] = u[:, 1] | (u[:, 5] << 4)
+    out[:, 2] = u[:, 2] | (u[:, 6] << 4)
+    out[:, 3] = u[:, 3] | (u[:, 7] << 4)
+    return out.view(-1).to(torch.int8)
 
 # Optional: use aiter's exact routing/sorting implementation (matches `aiter/op_tests/test_moe_2stage.py`).
 # Some environments ship aiter python but miss required JIT .so dependencies; we fall back gracefully.
@@ -21,10 +53,6 @@ try:
     HAS_AITER = True
 except Exception:
     HAS_AITER = False
-
-from tests.python.gpu.mfma_fp8_preshuffle_pipeline import (
-    make_preshuffle_b_layout,
-)
 
 # Kernel implementations live under `samples/`; this test file is the harness.
 from samples.moe_gemm_2stage import compile_moe_gemm1, compile_moe_gemm2
@@ -296,6 +324,7 @@ def run_moe_stage1(
     tile_k: int,
     doweight_stage1: bool,
     *,
+    in_dtype: str = "fp8",
     seed: int = 0,
     num_iters: int = 5,
     num_warmup: int = 2,
@@ -363,32 +392,55 @@ def run_moe_stage1(
     num_valid_ids = routing.num_valid_ids
     sorted_size = routing.sorted_size
 
-    # FP8 per-token quantize (aiter config)
-    x_fp8, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.float8_e4m3fnuz)  # [tokens, K], [tokens,1]
-    w1_fp8, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.float8_e4m3fnuz)  # [E, 2*inter, K], [E,2*inter,1]
+    if in_dtype not in ("fp8", "int8", "int4"):
+        raise ValueError(f"in_dtype must be 'fp8', 'int8', or 'int4', got {in_dtype!r}")
+    is_int4 = in_dtype == "int4"
+    is_int8 = in_dtype in ("int8", "int4")
+
+    # Quantize inputs / weights.
+    if in_dtype == "fp8":
+        x_q, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.float8_e4m3fnuz)  # [tokens,K], [tokens,1]
+        w1_q, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.float8_e4m3fnuz)  # [E,2*inter,K], [E,2*inter,1]
     # w2 is not used by our kernel, but required by CK stage1 API
-    w2_fp8, _scale_w2_unused = pertoken_quant(w2_fp32, quant_dtype=torch.float8_e4m3fnuz)
+        w2_q, _scale_w2_unused = pertoken_quant(w2_fp32, quant_dtype=torch.float8_e4m3fnuz)
+    elif in_dtype == "int8":
+        x_q, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.int8)
+        w1_q, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.int8)
+        w2_q, _scale_w2_unused = pertoken_quant(w2_fp32, quant_dtype=torch.int8)
+    else:
+        # W4A8: X is int8, W is int4 packed (host packs from int8 values in [-8,7]).
+        x_q, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.int8)
+        w1_q, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.int8, dtypeMax=7)
+        w2_q, _scale_w2_unused = pertoken_quant(w2_fp32, quant_dtype=torch.int8, dtypeMax=7)
 
-    # Preshuffle weights (aiter/CK layout)
-    w1_shuffled = shuffle_weight(w1_fp8)
-    w2_shuffled = shuffle_weight(w2_fp8)
+    # Preshuffle weights (aiter/CK layout) on the *unpacked* tensor.
+    w1_shuffled = shuffle_weight(w1_q)
+    w2_shuffled = shuffle_weight(w2_q) if in_dtype == "fp8" else None
 
-    # Flatten W1 for our flir kernel (treat expert dim as part of N)
+    # Flatten W1 for our flir kernel (treat expert dim as part of N).
     w1_shuffled_flat = w1_shuffled.view(experts * (2 * inter_dim), model_dim)
-    w1_fp8_flat = w1_fp8.view(experts * (2 * inter_dim), model_dim)
+    w1_q_flat = w1_q.view(experts * (2 * inter_dim), model_dim)
     scale_w1_flat = scale_w1.view(experts * (2 * inter_dim), 1)
 
     # Pad storage for forced global dwordx4 loads (same trick as existing GEMM tests)
     PAD_ELEMS = 256
-    x_flat = x_fp8.contiguous().view(-1)
-    x_storage = torch.empty(x_flat.numel() + PAD_ELEMS, device=device, dtype=x_fp8.dtype)
+    x_flat = x_q.contiguous().view(-1)
+    x_storage = torch.empty(x_flat.numel() + PAD_ELEMS, device=device, dtype=x_q.dtype)
     x_storage[: x_flat.numel()] = x_flat
-    x_fp8 = x_storage[: x_flat.numel()].view(tokens, model_dim)
+    x_q = x_storage[: x_flat.numel()].view(tokens, model_dim)
 
-    w_flat = w1_shuffled_flat.contiguous().view(-1)
-    w_storage = torch.empty(w_flat.numel() + PAD_ELEMS, device=device, dtype=w1_shuffled.dtype)
+    # Weight storage:
+    # - fp8/int8: preshuffled bytes (1B/elem)
+    # - int4: packed int4 bytes (2 values per byte)
+    w_flat = (
+        _pack_shuffled_int8_to_packed_int4_no_perm(w1_shuffled_flat) if is_int4 else w1_shuffled_flat
+    ).contiguous().view(-1)
+    w_storage = torch.empty(w_flat.numel() + PAD_ELEMS, device=device, dtype=w_flat.dtype)
     w_storage[: w_flat.numel()] = w_flat
-    w1_shuffled_flat = w_storage[: w_flat.numel()].view(experts * (2 * inter_dim), model_dim)
+    w_kernel = w_storage[: w_flat.numel()]
+    w_kernel = (
+        w_kernel.view(experts * (2 * inter_dim), model_dim) if (not is_int4) else w_kernel
+    )
 
     # Flatten scales to 1D memrefs
     scale_x_1d = scale_x.view(-1).contiguous()  # [tokens]
@@ -404,6 +456,7 @@ def run_moe_stage1(
         inter_dim=inter_dim,
         experts=experts,
         topk=topk,
+        in_dtype=in_dtype,
         tile_m=tile_m,
         tile_n=tile_n,
         tile_k=tile_k,
@@ -418,8 +471,8 @@ def run_moe_stage1(
     _, us = run_perftest(
         launch,
         out,
-        x_fp8,
-        w1_shuffled_flat,
+        x_q,
+        w_kernel,
         scale_x_1d,
         scale_w1_1d,
         sorted_token_ids,
@@ -431,8 +484,8 @@ def run_moe_stage1(
     torch.cuda.synchronize()
 
     ref = torch_moe_gemm1(
-        x_fp8,
-        w1_fp8_flat,
+        x_q,
+        w1_q_flat,
         scale_x,
         scale_w1_flat,
         topk_ids.to(torch.int64),
@@ -441,13 +494,17 @@ def run_moe_stage1(
         doweight_stage1=doweight_stage1,
     )
 
-    assert verify_output(out.to(torch.float32), ref, rtol=0.25, atol=0.25)
+    rtol = 0.5 if is_int4 else 0.25
+    atol = 0.5 if is_int4 else 0.25
+    assert verify_output(out.to(torch.float32), ref, rtol=rtol, atol=atol)
 
     # Compare + benchmark vs aiter CK stage1 (optional; enabled by default when aiter is runnable).
     if compare_aiter_ck is None:
         compare_ck = os.environ.get("COMPARE_AITER_CK", "1" if HAS_AITER else "0") == "1"
     else:
         compare_ck = bool(compare_aiter_ck)
+    # aiter CK paths are fp8-only in our setup.
+    compare_ck = compare_ck and (in_dtype == "fp8")
     if compare_ck:
         if not HAS_AITER:
             pytest.skip("aiter not available; cannot compare to CK moe stage1.", allow_module_level=False)
@@ -487,7 +544,7 @@ def run_moe_stage1(
             _, us_ck = run_perftest(
                 launch_ck,
                 out_ck,
-                x_fp8,
+                x_q,
                 w1_ck,
                 w2_ck,
                 sorted_token_ids,
@@ -521,7 +578,7 @@ def run_moe_stage1(
     # Rough bytes-moved accounting (same spirit as GEMM tests: count each tensor once).
     bytes_moved = 0
     bytes_moved += tokens * model_dim * 1  # x fp8
-    bytes_moved += experts * (2 * inter_dim) * model_dim * 1  # w fp8
+    bytes_moved += (experts * (2 * inter_dim) * model_dim) // (2 if is_int4 else 1)  # w (packed for int4)
     # Output rows are logically tokens*topk, but kernel may touch padded rows due to routing blocks.
     bytes_moved += int(sorted_size) * inter_dim * 2  # out fp16 (upper bound for writes)
     bytes_moved += tokens * 4  # scale_x f32 (1D)
@@ -532,7 +589,7 @@ def run_moe_stage1(
     tbps = bytes_moved / 1e12 / (us / 1e6)
 
     print(
-        "MoE stage1: "
+        f"MoE stage1[{in_dtype}]: "
         f"{us:.1f} us, "
         f"{tflops_logical:.2f} TFLOPS(logical, M={tokens*topk}), "
         f"{tbps:.3f} TB/s (doweight_stage1={doweight_stage1})"
@@ -553,6 +610,7 @@ def run_moe_stage2(
     tile_k: int,
     doweight_stage1: bool,
     *,
+    in_dtype: str = "fp8",
     seed: int = 0,
     num_iters: int = 5,
     num_warmup: int = 2,
@@ -620,24 +678,39 @@ def run_moe_stage2(
     num_valid_ids = routing.num_valid_ids
     sorted_size = routing.sorted_size
 
-    # Quantize + preshuffle weights.
-    x_fp8, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.float8_e4m3fnuz)  # [tokens,K], [tokens,1]
-    w1_fp8, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.float8_e4m3fnuz)  # [E,2*inter,K], [E,2*inter,1]
-    w2_fp8, scale_w2 = pertoken_quant(w2_fp32, quant_dtype=torch.float8_e4m3fnuz)  # [E,N,inter], [E,N,1]
+    if in_dtype not in ("fp8", "int8", "int4"):
+        raise ValueError(f"in_dtype must be 'fp8', 'int8', or 'int4', got {in_dtype!r}")
+    is_int4 = in_dtype == "int4"
+    is_int8 = in_dtype in ("int8", "int4")
 
-    # Preshuffle weights (aiter/CK layout).
-    w2_shuffled = shuffle_weight(w2_fp8)
+    # Quantize inputs / weights.
+    if in_dtype == "fp8":
+        x_q, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.float8_e4m3fnuz)
+        w1_q, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.float8_e4m3fnuz)
+        w2_q, scale_w2 = pertoken_quant(w2_fp32, quant_dtype=torch.float8_e4m3fnuz)
+    elif in_dtype == "int8":
+        x_q, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.int8)
+        w1_q, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.int8)
+        w2_q, scale_w2 = pertoken_quant(w2_fp32, quant_dtype=torch.int8)
+    else:
+        # W4A8: A2 is int8, W2 is int4 packed (host packs from int8 values in [-8,7]).
+        x_q, scale_x = pertoken_quant(x_fp32, quant_dtype=torch.int8)
+        w1_q, scale_w1 = pertoken_quant(w1_fp32, quant_dtype=torch.int8, dtypeMax=7)
+        w2_q, scale_w2 = pertoken_quant(w2_fp32, quant_dtype=torch.int8, dtypeMax=7)
+
+    # Preshuffle weights (aiter/CK layout) on the *unpacked* tensor.
+    w2_shuffled = shuffle_weight(w2_q)
 
     # Stage2 input (A2): either provided (gemm1->quantize chaining) or built from stage1 reference.
     if a2_fp8_in is not None and a2_scale_in is not None:
-        a2_fp8 = a2_fp8_in
+        a2_q = a2_fp8_in
         a2_scale = a2_scale_in
     else:
-        w1_fp8_flat = w1_fp8.view(experts * (2 * inter_dim), model_dim)
+        w1_q_flat = w1_q.view(experts * (2 * inter_dim), model_dim)
         scale_w1_flat = scale_w1.view(experts * (2 * inter_dim), 1)
         out1_ref = torch_moe_gemm1(
-            x_fp8,
-            w1_fp8_flat,
+            x_q,
+            w1_q_flat,
             scale_x,
             scale_w1_flat,
             topk_ids.to(torch.int64),
@@ -645,23 +718,33 @@ def run_moe_stage2(
             inter_dim=inter_dim,
             doweight_stage1=bool(doweight_stage1),
         )  # [tokens, topk, inter] fp32
-        a2_fp8, a2_scale = pertoken_quant(out1_ref, quant_dtype=torch.float8_e4m3fnuz)  # [tokens,topk,inter], [tokens,topk,1]
+        if in_dtype == "fp8":
+            a2_q, a2_scale = pertoken_quant(out1_ref, quant_dtype=torch.float8_e4m3fnuz)
+        else:
+            a2_q, a2_scale = pertoken_quant(out1_ref, quant_dtype=torch.int8)
 
     # Flatten weights/scales for the kernel.
     w2_shuffled_flat = w2_shuffled.view(experts * model_dim, inter_dim)
     scale_w2_flat = scale_w2.view(experts * model_dim, 1)
 
+    # For W4A8, pack preshuffled int8 weights into packed int4 bytes.
+    w2_kernel = w2_shuffled_flat
+    if is_int4:
+        w2_kernel = _pack_shuffled_int8_to_packed_int4_no_perm(w2_shuffled_flat)
+
     # Pad storage for forced global dwordx4 loads (same trick as existing GEMM tests).
     PAD_ELEMS = 256
-    a2_flat = a2_fp8.contiguous().view(-1)
-    a2_storage = torch.empty(a2_flat.numel() + PAD_ELEMS, device=device, dtype=a2_fp8.dtype)
+    a2_flat = a2_q.contiguous().view(-1)
+    a2_storage = torch.empty(a2_flat.numel() + PAD_ELEMS, device=device, dtype=a2_q.dtype)
     a2_storage[: a2_flat.numel()] = a2_flat
-    a2_fp8 = a2_storage[: a2_flat.numel()].view(tokens, topk, inter_dim)
+    a2_q = a2_storage[: a2_flat.numel()].view(tokens, topk, inter_dim)
 
-    w2_flat = w2_shuffled_flat.contiguous().view(-1)
-    w2_storage = torch.empty(w2_flat.numel() + PAD_ELEMS, device=device, dtype=w2_shuffled_flat.dtype)
+    w2_flat = w2_kernel.contiguous().view(-1)
+    w2_storage = torch.empty(w2_flat.numel() + PAD_ELEMS, device=device, dtype=w2_flat.dtype)
     w2_storage[: w2_flat.numel()] = w2_flat
-    w2_shuffled_flat = w2_storage[: w2_flat.numel()].view(experts * model_dim, inter_dim)
+    w2_kernel = w2_storage[: w2_flat.numel()]
+    if not is_int4:
+        w2_kernel = w2_kernel.view(experts * model_dim, inter_dim)
 
     # Flatten scales to 1D memrefs.
     a2_scale_1d = a2_scale.view(-1).contiguous()  # [tokens*topk]
@@ -679,6 +762,7 @@ def run_moe_stage2(
         inter_dim=inter_dim,
         experts=experts,
         topk=topk,
+        in_dtype=in_dtype,
         tile_m=tile_m,
         tile_n=tile_n,
         tile_k=tile_k,
@@ -696,8 +780,8 @@ def run_moe_stage2(
     _, us = run_perftest(
         launch,
         out_perf,
-        a2_fp8.view(-1),
-        w2_shuffled_flat.view(-1),
+        a2_q.view(-1),
+        w2_kernel.view(-1),
         a2_scale_1d,
         w2_scale_1d,
         sorted_token_ids,
@@ -712,8 +796,8 @@ def run_moe_stage2(
     out.zero_()
     launch(
         out,
-        a2_fp8.view(-1),
-        w2_shuffled_flat.view(-1),
+        a2_q.view(-1),
+        w2_kernel.view(-1),
         a2_scale_1d,
         w2_scale_1d,
         sorted_token_ids,
@@ -723,8 +807,8 @@ def run_moe_stage2(
     torch.cuda.synchronize()
 
     ref2 = torch_moe_gemm2(
-        a2_fp8,
-        w2_fp8,
+        a2_q,
+        w2_q,
         a2_scale,
         scale_w2,
         topk_ids.to(torch.int64),
@@ -739,6 +823,8 @@ def run_moe_stage2(
         compare_ck = os.environ.get("COMPARE_AITER_CK", "1" if HAS_AITER else "0") == "1"
     else:
         compare_ck = bool(compare_aiter_ck)
+    # aiter CK paths are fp8-only in our setup.
+    compare_ck = compare_ck and (in_dtype == "fp8")
     if compare_ck:
         if not HAS_AITER:
             pytest.skip("aiter not available; cannot compare to CK moe stage2.", allow_module_level=False)
@@ -773,8 +859,8 @@ def run_moe_stage2(
             _, us_ck = run_perftest(
                 launch_ck,
                 out_ck_perf,
-                a2_fp8,
-                shuffle_weight(w1_fp8),  # stage2 signature includes w1; provide preshuffled tensor
+                a2_q,
+                shuffle_weight(w1_q),  # stage2 signature includes w1; provide preshuffled tensor
                 w2_shuffled,
                 sorted_token_ids,
                 sorted_expert_ids,
@@ -798,8 +884,8 @@ def run_moe_stage2(
             out_ck.zero_()
             launch_ck(
                 out_ck,
-                a2_fp8,
-                shuffle_weight(w1_fp8),
+                a2_q,
+                shuffle_weight(w1_q),
                 w2_shuffled,
                 sorted_token_ids,
                 sorted_expert_ids,
@@ -810,7 +896,7 @@ def run_moe_stage2(
             )
             torch.cuda.synchronize()
             if not verify_output(out, out_ck.to(torch.float32), rtol=0.5, atol=0.5, msg="[aiter CK] stage2:"):
-                logging.warning("[aiter CK] stage2 correctness mismatch vs FLIR (continuing; perf numbers still printed).")
+                    logging.warning("[aiter CK] stage2 correctness mismatch vs FLIR (continuing; perf numbers still printed).")
         except Exception as e:
             logging.warning(f"Skipping aiter CK moe stage2 compare (not runnable here): {e}")
 
@@ -820,7 +906,7 @@ def run_moe_stage2(
 
     bytes_moved = 0
     bytes_moved += int(sorted_size) * inter_dim * 1  # a2 fp8 (upper bound: padded rows)
-    bytes_moved += experts * model_dim * inter_dim * 1  # w2 fp8
+    bytes_moved += (experts * model_dim * inter_dim) // (2 if is_int4 else 1)  # w2 (packed for int4)
     bytes_moved += tokens * model_dim * 4  # out fp32
     bytes_moved += int(sorted_size) * 4  # a2_scale f32 (1D, padded upper bound)
     bytes_moved += experts * model_dim * 4  # w2_scale f32 (1D)
@@ -829,7 +915,7 @@ def run_moe_stage2(
     bytes_moved += int(sorted_expert_ids.numel()) * 4
     tbps = bytes_moved / 1e12 / (us / 1e6)
     print(
-        "MoE stage2: "
+        f"MoE stage2[{in_dtype}]: "
         f"{us:.1f} us, "
         f"{tflops_logical:.2f} TFLOPS(logical, M={tokens*topk}), "
         f"{tbps:.3f} TB/s (doweight_stage2={doweight_stage2})"
@@ -858,6 +944,7 @@ def test_moe_gemm_2stage(
     tile_k2: int,
     doweight_stage1: bool,
     *,
+    in_dtype: str = "fp8",
     seed: int = 0,
     num_iters: int = 5,
     num_warmup: int = 2,
@@ -903,6 +990,7 @@ def test_moe_gemm_2stage(
         inter_dim=inter_dim,
         experts=experts,
         topk=topk,
+        in_dtype=in_dtype,
         tile_m=tile_m,
         tile_n=tile_n1,
         tile_k=tile_k1,
@@ -922,7 +1010,10 @@ def test_moe_gemm_2stage(
     )
 
     out1_fp32 = out1_fp16.to(torch.float32)
-    a2_fp8, a2_scale = pertoken_quant(out1_fp32, quant_dtype=torch.float8_e4m3fnuz)
+    if in_dtype == "fp8":
+        a2_q, a2_scale = pertoken_quant(out1_fp32, quant_dtype=torch.float8_e4m3fnuz)
+    else:
+        a2_q, a2_scale = pertoken_quant(out1_fp32, quant_dtype=torch.int8)
 
     _out2_fp32, _us2 = run_moe_stage2(
         tokens=tokens,
@@ -930,6 +1021,7 @@ def test_moe_gemm_2stage(
         inter_dim=inter_dim,
         experts=experts,
         topk=topk,
+        in_dtype=in_dtype,
         tile_m=tile_m,
         tile_n=tile_n2,
         tile_k=tile_k2,
@@ -945,7 +1037,7 @@ def test_moe_gemm_2stage(
         topk_ids_in=topk_ids,
         topk_weights_in=topk_weights,
         routing_in=routing,
-        a2_fp8_in=a2_fp8,
+        a2_fp8_in=a2_q,
         a2_scale_in=a2_scale,
         return_outputs=True,
     )
@@ -978,6 +1070,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawTextHelpFormatter,
         description="MoE 2-stage (FLIR MFMA FP8) test/benchmark (argparse subset aligned with aiter test_moe_2stage.py)",
+    )
+    parser.add_argument(
+        "--in_dtype",
+        type=str,
+        default="fp8",
+        choices=["fp8", "int8", "int4"],
+        help="Kernel input dtype: fp8 / int8 / int4 (int4 means W4A8: A int8, W packed int4).",
     )
     parser.add_argument("-d", "--dtype", type=str, default="fp32", choices=["fp32", "fp16", "bf16"], help="Input init dtype (currently data is quantized to FP8 per-token; init dtype mainly affects RNG range).")
     parser.add_argument("-dim", type=_str2tuple_dim, default=(8192, 5120), help="Model dimension: model_dim,inter_dim (e.g. -dim 6144,4096)")
@@ -1023,6 +1122,7 @@ if __name__ == "__main__":
         tile_n2=tile_n2,
         tile_k2=tile_k2,
         doweight_stage1=bool(args.doweight_stage1),
+        in_dtype=str(args.in_dtype),
         seed=int(args.seed),
         num_iters=int(args.num_iters),
         num_warmup=int(args.num_warmup),

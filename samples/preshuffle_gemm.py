@@ -17,12 +17,10 @@ from pyflir.dialects.ext.python_control_flow import range_constexpr
 from pyflir.runtime.device import get_rocm_arch as get_hip_arch
 from pyflir.utils import SmemAllocator
 
-from _mlir.dialects import arith as _arith_mlir
-
 from pyflir.dialects.ext import arith, gpu, buffer_ops, vector, rocdl
 from pyflir.lang.ir.types import T, memref
 
-from tests.python.gpu.mfma_fp8_preshuffle_pipeline import make_preshuffle_b_layout
+from samples.mfma_preshuffle_pipeline import make_preshuffle_b_layout, load_b_pack_k32
 
 
 def compile_preshuffle_gemm_a8(
@@ -41,14 +39,18 @@ def compile_preshuffle_gemm_a8(
     Args:
         M, N, K: GEMM sizes (A[M,K], B[N,K], C[M,N]).
         tile_m, tile_n, tile_k: block tile sizes.
-        in_dtype: "fp8" or "int8" (both are 1-byte element types).
+        in_dtype:
+          - "fp8": A/B are fp8 (1B/elem)
+          - "int8": A/B are int8 (1B/elem)
+          - "int4": W4A8 path: A is int8, B is packed int4 (2 values per byte) and unpacked to int8 in-kernel.
         lds_stage: 
           - 2: ping-pong LDS for A (2 LDS buffers), tuned schedule (original).
           - 1: single LDS buffer for A .
     """
-    if in_dtype not in ("fp8", "int8"):
-        raise ValueError(f"in_dtype must be 'fp8' or 'int8', got {in_dtype!r}")
-    is_int8 = in_dtype == "int8"
+    if in_dtype not in ("fp8", "int8", "int4"):
+        raise ValueError(f"in_dtype must be 'fp8', 'int8', or 'int4', got {in_dtype!r}")
+    is_int4 = in_dtype == "int4"
+    is_int8 = (in_dtype == "int8") or is_int4
 
     # INT8 must use a K32 MFMA so the micro-step matches the FP8 path (strict alignment).
     mfma_i32_k32 = None
@@ -68,7 +70,8 @@ def compile_preshuffle_gemm_a8(
 
     size_c = int(M) * int(N)
     size_a = int(M) * int(K)
-    size_b = int(N) * int(K)
+    # B is packed int4 for W4A8: 2 values per byte.
+    size_b = (int(N) * int(K)) // 2 if is_int4 else (int(N) * int(K))
 
     # Vector width calc (assume full tiles / no tail guards).
     total_threads = 256
@@ -124,12 +127,14 @@ def compile_preshuffle_gemm_a8(
             c_k: lambda: T.index,
         ):
             # ---- Types ----
-            acc_init = (
+            # NOTE: Some environments have multiple `pyflir` builds on PYTHONPATH.
+            # Use explicit MLIR Values (not Python ints / wrapper objects) for ROCDL ops.
+            acc_init = arith.unwrap(
                 arith.constant_vector(0, T.i32x4)
                 if is_int8
                 else arith.constant_vector(0.0, T.f32x4)
             )
-            c0_i32 = 0
+            c0_i32 = arith.unwrap(0, type=T.i32)
 
             # Layouts
             layout_c = flir.make_layout((c_m, c_n), stride=(c_n, 1))
@@ -138,9 +143,11 @@ def compile_preshuffle_gemm_a8(
             c_k_div4 = c_k / 4
             layout_a_div4 = flir.make_layout((c_m, c_k_div4), stride=(c_k_div4, 1))
 
-            # B preshuffle layout: match CK/aiter (N0,K0,KLane,NLane,KPack).
-            b_layout = make_preshuffle_b_layout(flir, _arith_mlir, c_n=c_n, c_k=c_k)
-            layout_b = b_layout.layout_b
+            # B preshuffle layout (shared with MoE kernels).
+            kpack_bytes = 8 if is_int4 else 16
+            layout_b = make_preshuffle_b_layout(
+                flir, arith, c_n=c_n, c_k=c_k, kpack_bytes=kpack_bytes
+            ).layout_b
 
             shape_lds = flir.make_shape(tile_m, tile_k)
             stride_lds = flir.make_stride(lds_stride, 1)
@@ -206,38 +213,28 @@ def compile_preshuffle_gemm_a8(
                 n_intra_list.append(flir.get(coord_n, 1))
 
             # --- B load logic (K32 micro-step), return i64 packs ---
-            layout_k0_kpack64 = flir.make_layout((c_k / 64, 64), stride=(64, 1))
-            layout_half8 = flir.make_layout((2, 8), stride=(8, 1))
-            atom_b_g2r = flir.make_copy_atom(_elem_type(), vector_size=8)
+            # Shared loader supports:
+            # - FP8/INT8: 8B direct load from preshuffled layout
+            # - INT4 (W4A8): 4B load + 7-op unpack to 8B (no v_perm)
 
             def load_b_pack(base_k, ki_step, ni):
-                coord_k = flir.idx2crd(base_k, layout_k0_kpack64)
-                k0_base = flir.get(coord_k, 0)
-                k0 = k0_base + (ki_step // 2)
-                k1 = lane_div_16
-                half = ki_step % 2
-                half_val = arith.constant(half, index=True)
-                k2_base = flir.crd2idx(flir.make_coord(half_val, 0), layout_half8)
-
-                coord_b = flir.make_coord(n_blk_list[ni], k0, k1, n_intra_list[ni], k2_base)
-                idx_bytes = flir.crd2idx(coord_b, layout_b)
-                b_view = flir.TensorView(
-                    arg_b,
-                    (8,),
-                    strides=(1,),
-                    base_indices=(idx_bytes,),
-                    element_type=_elem_type(),
+                return load_b_pack_k32(
+                    buffer_ops,
+                    flir,
+                    arith,
+                    vector,
+                    arg_b=arg_b,
+                    b_rsrc=b_rsrc,
+                    layout_b=layout_b,
+                    base_k=base_k,
+                    ki_step=ki_step,
+                    n_blk=n_blk_list[ni],
+                    n_intra=n_intra_list[ni],
+                    lane_div_16=lane_div_16,
+                    elem_type=_elem_type(),
+                    kpack_bytes=kpack_bytes,
+                    unpack_int4=is_int4,
                 )
-                b8 = flir.copy(
-                    atom_b_g2r,
-                    b_view,
-                    None,
-                    alignment=8,
-                    return_vector=True,
-                    src_buffer_resource=b_rsrc,
-                )
-                b_vec64 = vector.bitcast(T.vec(1, T.i64), b8)
-                return vector.extract(b_vec64, static_position=[0], dynamic_position=[])
 
             def load_b_tile(base_k):
                 b_tile = []

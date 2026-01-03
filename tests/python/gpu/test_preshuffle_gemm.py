@@ -8,11 +8,25 @@ NOTE:
 """
 
 import os
+import sys
 import logging
 
 import torch
 import torch.nn.functional as F
 import pytest
+
+# -----------------------------------------------------------------------------
+# Ensure we use the repo-local `pyflir` when running this file directly.
+#
+# Some environments have another `pyflir` (e.g. from a sibling checkout) earlier
+# on `sys.path`, which can miss newer ROCDL wrappers (notably INT8 MFMA helpers).
+# -----------------------------------------------------------------------------
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+_PYFLIR_SRC = os.path.join(_REPO_ROOT, "pyflir", "src")
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+if _PYFLIR_SRC not in sys.path:
+    sys.path.insert(0, _PYFLIR_SRC)
 
 from samples.preshuffle_gemm import compile_preshuffle_gemm_a8
 from tests.test_common import run_perftest, verify_output
@@ -52,7 +66,7 @@ def run_torch(x, weight, x_scale, w_scale, bias=None, dtype=torch.bfloat16):
     return out.to(dtype)
 
 
-@pytest.mark.parametrize("in_dtype", ["fp8", "int8"])
+@pytest.mark.parametrize("in_dtype", ["fp8", "int8", "int4"])
 @pytest.mark.parametrize(
     "M, N, K, tile_m, tile_n, tile_k", [(1024, 7168, 2048, 128, 128, 128)]
 )
@@ -86,7 +100,8 @@ def test_mfma_a8_flir_preshuffle(in_dtype, M, N, K, tile_m, tile_n, tile_k):
 
     size_c = M * N
     size_a = M * K
-    size_b = N * K
+    # B is packed int4 for W4A8: 2 values per byte.
+    size_b = (N * K) // 2 if in_dtype == "int4" else (N * K)
 
     device = torch.device("cuda")
 
@@ -94,10 +109,17 @@ def test_mfma_a8_flir_preshuffle(in_dtype, M, N, K, tile_m, tile_n, tile_k):
     a_fp32 = torch.randn(M, K, device=device, dtype=torch.float32)
     b_fp32_t = torch.randn(N, K, device=device, dtype=torch.float32)  # (N, K)
 
-    is_int8 = in_dtype == "int8"
+    is_int4 = in_dtype == "int4"
+    # INT4 here means W4A8: A is INT8, B is packed INT4 and unpacked to INT8 in-kernel.
+    is_int8 = (in_dtype == "int8") or is_int4
+
     quant_dtype = torch.int8 if is_int8 else torch.float8_e4m3fnuz
     a_q, scale_a = pertoken_quant(a_fp32, quant_dtype=quant_dtype)  # (M, K)
-    b_q, scale_b = pertoken_quant(b_fp32_t, quant_dtype=quant_dtype)  # (N, K)
+    if is_int4:
+        # Signed int4 range is [-8, 7]. Use dtypeMax=7 for symmetric per-row scaling.
+        b_q, scale_b = pertoken_quant(b_fp32_t, quant_dtype=torch.int8, dtypeMax=7)  # (N, K)
+    else:
+        b_q, scale_b = pertoken_quant(b_fp32_t, quant_dtype=quant_dtype)  # (N, K)
 
     # When using fixed-width global loads (16B chunks), some threads can over-read.
     # Pad the underlying storage so the over-read stays in-bounds.
@@ -115,6 +137,29 @@ def test_mfma_a8_flir_preshuffle(in_dtype, M, N, K, tile_m, tile_n, tile_k):
     # Preshuffle B to CK/aiter layout.
     b_shuffled = shuffle_weight(b_q)
 
+    def _pack_shuffled_int8_to_packed_int4_no_perm(x_shuf_i8: torch.Tensor) -> torch.Tensor:
+        """
+        Pack a preshuffled int8 tensor (values in [-8,7]) into packed int4 bytes.
+
+        Each contiguous 8-byte block [v0..v7] -> 4 bytes:
+          b0=(v4<<4)|v0, b1=(v5<<4)|v1, b2=(v6<<4)|v2, b3=(v7<<4)|v3.
+
+        This matches the 7-op in-kernel unpack sequence and avoids any v_perm.
+        """
+        flat = x_shuf_i8.contiguous().view(-1).to(torch.int16)
+        assert flat.numel() % 8 == 0
+        u = (flat & 0xF).to(torch.uint8).view(-1, 8)
+        out = torch.empty((u.shape[0], 4), device=u.device, dtype=torch.uint8)
+        out[:, 0] = u[:, 0] | (u[:, 4] << 4)
+        out[:, 1] = u[:, 1] | (u[:, 5] << 4)
+        out[:, 2] = u[:, 2] | (u[:, 6] << 4)
+        out[:, 3] = u[:, 3] | (u[:, 7] << 4)
+        return out.view(-1).to(torch.int8)
+
+    b_packed = None
+    if is_int4:
+        b_packed = _pack_shuffled_int8_to_packed_int4_no_perm(b_shuffled)
+
     # Reference (dequant + matmul).
     c_ref = run_torch(a_q, b_q, scale_a, scale_b, bias=None, dtype=torch.float32)
 
@@ -131,7 +176,7 @@ def test_mfma_a8_flir_preshuffle(in_dtype, M, N, K, tile_m, tile_n, tile_k):
         launch_kernel,
         c_out_raw,
         a_q,
-        b_shuffled,
+        b_packed if is_int4 else b_shuffled,
         scale_a,
         scale_b,
         num_iters=bench_iters,
@@ -148,7 +193,7 @@ def test_mfma_a8_flir_preshuffle(in_dtype, M, N, K, tile_m, tile_n, tile_k):
     tbps = bytes_moved / 1e12 / (us / 1e6)
     print(f"Throughput: {us:.1f} us, {tflops:.2f} TFLOPS, BW: {tbps:.3f} TB/s")
 
-    if HAS_AITER and RUN_AITER_BENCH:
+    if HAS_AITER and RUN_AITER_BENCH and (not is_int4):
         print("-" * 40)
         print("Running Aiter Benchmark...")
         try:
@@ -169,7 +214,8 @@ def test_mfma_a8_flir_preshuffle(in_dtype, M, N, K, tile_m, tile_n, tile_k):
             print("-" * 40)
         except Exception as e:
             # Best-effort only: aiter can be importable but fail to load its JIT .so deps.
-            print(f"Skipping Aiter benchmark (not runnable here): {e}")
+            msg = str(e).splitlines()[0] if str(e) else repr(e)
+            print(f"Skipping Aiter benchmark (not runnable here): {msg}")
             print("-" * 40)
     elif HAS_AITER and not RUN_AITER_BENCH:
         print("-" * 40)
@@ -182,5 +228,7 @@ if __name__ == "__main__":
     print("Running Tiling Tests...")
     test_mfma_a8_flir_preshuffle("fp8", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
     test_mfma_a8_flir_preshuffle("int8", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
+    test_mfma_a8_flir_preshuffle("int4", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
     test_mfma_a8_flir_preshuffle("fp8", 16, 5120, 8192, tile_m=16, tile_n=64, tile_k=512)
+    test_mfma_a8_flir_preshuffle("int4", 16, 5120, 8192, tile_m=16, tile_n=64, tile_k=512)
 
