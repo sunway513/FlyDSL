@@ -59,6 +59,10 @@ def compile_preshuffle_gemm_a8(
     is_int4 = in_dtype == "int4"
     is_int8 = (in_dtype == "int8") or is_int4
 
+    # K64 micro-step wrapper uses 2x K32 MFMA. Require tile_k divisible by 64.
+    if (int(tile_k) % 64) != 0:
+        raise ValueError(f"tile_k must be divisible by 64 (for K64 unroll), got tile_k={tile_k}")
+
     # INT8 must use a K32 MFMA so the micro-step matches the FP8 path (strict alignment).
     mfma_i32_k32 = None
     if is_int8:
@@ -201,7 +205,7 @@ def compile_preshuffle_gemm_a8(
             col_offset_base = flir.crd2idx(flir.make_coord(lane_div_16, 0), layout_lane16)
 
             m_repeat = tile_m // 16
-            k_unroll = tile_k // 32  # K32 micro-step
+            k_unroll = tile_k // 64  # K64 micro-step (2x K32 MFMA)
 
             # --- Dynamic tiling along N (4 waves) ---
             num_waves = 4
@@ -224,7 +228,7 @@ def compile_preshuffle_gemm_a8(
                 n_blk_list.append(flir.get(coord_n, 0))
                 n_intra_list.append(flir.get(coord_n, 1))
 
-            # --- B load logic (K32 micro-step), return i64 packs ---
+            # --- B load logic (K64 micro-step), return i64 packs (two halves) ---
             # Shared loader supports:
             # - FP8/INT8: explicit 16B load (one full KPack) + extract 8B for this micro-step
             # - INT4 (W4A8): 4B load + 7-op unpack to 8B (no v_perm)
@@ -248,14 +252,69 @@ def compile_preshuffle_gemm_a8(
                     unpack_int4=is_int4,
                 )
 
+            # For FP8/INT8 we can load one 16B pack and extract both 8B halves (K64).
+            # For INT4 (packed), reuse the existing K32 loader twice (2x4B loads + unpack).
+            atom_b_g2r16 = flir.make_copy_atom(_elem_type(), vector_size=16)
+            c64_b = 64
+            c0_idx = 0
+
+            def load_b_packs_k64(base_k, ku: int, ni: int):
+                if is_int4:
+                    ki0 = (ku * 2) + 0
+                    ki1 = (ku * 2) + 1
+                    return load_b_pack(base_k, ki0, ni), load_b_pack(base_k, ki1, ni)
+
+                # FP8/INT8: load 16 bytes (one full KPack) and return both i64 halves.
+                k0_base = base_k / c64_b
+                k0 = k0_base + ku
+                k1 = lane_div_16
+                coord_pack = flir.make_coord(n_blk_list[ni], k0, k1, n_intra_list[ni], c0_idx)
+                idx_pack_bytes = flir.crd2idx(coord_pack, layout_b)
+                b_view = flir.TensorView(
+                    arg_b,
+                    (16,),
+                    strides=(1,),
+                    base_indices=(idx_pack_bytes,),
+                    element_type=_elem_type(),
+                )
+                b16 = flir.copy(
+                    atom_b_g2r16,
+                    b_view,
+                    None,
+                    alignment=8,
+                    return_vector=True,
+                    src_buffer_resource=b_rsrc,
+                    src_buffer_offset_in_bytes=True,
+                )
+                b_i64x2 = vector.bitcast(T.i64x2, b16)
+                b0 = vector.extract(b_i64x2, static_position=[0], dynamic_position=[])
+                b1 = vector.extract(b_i64x2, static_position=[1], dynamic_position=[])
+                return b0, b1
+
             def load_b_tile(base_k):
+                # b_tile[ku] = (packs_half0[ni], packs_half1[ni])
                 b_tile = []
-                for ki_step in range_constexpr(k_unroll):
-                    packs = []
+                for ku in range_constexpr(k_unroll):
+                    packs0 = []
+                    packs1 = []
                     for ni in range_constexpr(num_acc_n):
-                        packs.append(load_b_pack(base_k, ki_step, ni))
-                    b_tile.append(packs)
+                        b0, b1 = load_b_packs_k64(base_k, ku, ni)
+                        packs0.append(b0)
+                        packs1.append(b1)
+                    b_tile.append((packs0, packs1))
                 return b_tile
+
+            # --- A LDS load helper for K64 (load 16B once, extract 2x i64 halves) ---
+            def lds_load_packs_k64(curr_row_a_lds, col_base, lds_base):
+                col_base_swz = flir.swizzle_xor16(curr_row_a_lds, col_base, k_blocks16)
+                coord_a16 = flir.make_coord(curr_row_a_lds, col_base_swz)
+                idx_a16 = flir.crd2idx(coord_a16, layout_lds)
+                idx_a16 = arith.ArithValue(idx_a16) + lds_base
+                loaded_a16 = vector.load_op(_vec16_type(), lds_a, [idx_a16])
+                a_i64x2 = vector.bitcast(T.i64x2, loaded_a16)
+                a0 = vector.extract(a_i64x2, static_position=[0], dynamic_position=[])
+                a1 = vector.extract(a_i64x2, static_position=[1], dynamic_position=[])
+                return a0, a1
 
             # --- A load/store (16B chunks), XOR16 swizzle ---
             num_a_loads = bytes_per_thread_a // a_load_bytes
@@ -350,46 +409,36 @@ def compile_preshuffle_gemm_a8(
                 mfma_res_ty = T.i32x4 if is_int8 else T.f32x4
                 mfma_fn = mfma_i32_k32 if is_int8 else rocdl.mfma_f32_16x16x32_fp8_fp8
 
-                for ki_step in range_constexpr(k_unroll):
-                    b_packs = b_tile_in[ki_step]
-                    ki64 = (ki_step // 2) * 64
-                    half = ki_step % 2
+                # MFMA K64 wrapper: two K32 MFMA back-to-back.
+                def mfma_k64(acc_in, a0, a1, b0, b1):
+                    acc_mid = mfma_fn(
+                        mfma_res_ty,
+                        [a0, b0, acc_in, c0_i32, c0_i32, c0_i32],
+                    )
+                    return mfma_fn(
+                        mfma_res_ty,
+                        [a1, b1, acc_mid, c0_i32, c0_i32, c0_i32],
+                    )
+
+                for ku in range_constexpr(k_unroll):
+                    b_packs0, b_packs1 = b_tile_in[ku]
+                    ki64 = ku * 64
                     col_base = col_offset_base + ki64
                     for mi in range_constexpr(m_repeat):
                         mi_val = arith.constant(mi * 16, index=True)
                         curr_row_a_lds = row_a_lds + mi_val
-                        if (a0_prefetch is not None) and (ki_step == 0) and (mi == 0):
-                            a_pack = a0_prefetch
+                        if (a0_prefetch is not None) and (ku == 0) and (mi == 0):
+                            a0, a1 = a0_prefetch
                         else:
-                            a_pack = lds_load_pack_k32(
-                                flir,
-                                arith,
-                                vector,
-                                lds_memref=lds_a,
-                                layout_lds=layout_lds,
-                                k_blocks16=k_blocks16,
-                                curr_row_a_lds=curr_row_a_lds,
-                                col_base=col_base,
-                                half=half,
-                                lds_base=lds_base,
-                                ck_lds128=True,
-                                vec16_ty=_vec16_type(),
-                                vec8_ty=_vec16_type(),  # unused in ck_lds128=True path
-                                vec2_i64_ty=T.i64x2,
-                                vec1_i64_ty=T.vec(1, T.i64),
-                            )
+                            a0, a1 = lds_load_packs_k64(curr_row_a_lds, col_base, lds_base)
                         for ni in range_constexpr(num_acc_n):
                             acc_idx = mi * num_acc_n + ni
-                            current_accs_list[acc_idx] = mfma_fn(
-                                mfma_res_ty,
-                                [
-                                    a_pack,
-                                    b_packs[ni],
-                                    current_accs_list[acc_idx],
-                                    c0_i32,
-                                    c0_i32,
-                                    c0_i32,
-                                ],
+                            current_accs_list[acc_idx] = mfma_k64(
+                                current_accs_list[acc_idx],
+                                a0,
+                                a1,
+                                b_packs0[ni],
+                                b_packs1[ni],
                             )
                 return current_accs_list, scales_pf
 
@@ -423,24 +472,31 @@ def compile_preshuffle_gemm_a8(
             rocdl.sched_barrier(0)
 
             def hot_loop_scheduler():
-                if tile_m == 16:
-                    return
                 # - MFMA group size per "slot": num_acc_n
-                # - Total MFMA per tile: k_unroll * m_repeat * num_acc_n
+                # - Total MFMA per tile: (2*K32 per K64) * k_unroll * m_repeat * num_acc_n
                 # - We emit (mfma_group + dsrd + mfma_group) per scheduler iteration.
                 mfma_group = num_acc_n
-                mfma_total = k_unroll * m_repeat * mfma_group
+                mfma_total = (k_unroll * 2) * m_repeat * mfma_group
                 mfma_per_iter = 2 * mfma_group
                 sche_iters = 0 if mfma_per_iter == 0 else (mfma_total // mfma_per_iter)
 
                 # DS-read preload (CK default is 2).
                 rocdl.sched_dsrd(2)
                 rocdl.sched_mfma(1)
+                if tile_m == 16:
+                    rocdl.sched_vmem(1)
                 rocdl.sched_mfma(1)
+                if tile_m == 16:
+                    rocdl.sched_vmem(1)
                 if num_acc_n < 4:
                     rocdl.sched_dsrd(1)
                     rocdl.sched_mfma(1)
+                    if tile_m == 16:
+                        rocdl.sched_vmem(1)
                     rocdl.sched_dsrd(1)
+                    rocdl.sched_mfma(1)
+                    if tile_m == 16:
+                        rocdl.sched_vmem(1)
                     rocdl.sched_mfma(1)
 
                 # DS-write hints near the end: match total A LDS-store micro-ops per thread.
@@ -471,24 +527,8 @@ def compile_preshuffle_gemm_a8(
                 # so it can overlap with the VMEM prefetch of the following tile.
 
                 def prefetch_a0_pack(lds_base):
-                    # (mi=0, ki_step=0) -> (col_base=col_offset_base, half=0)
-                    return lds_load_pack_k32(
-                        flir,
-                        arith,
-                        vector,
-                        lds_memref=lds_a,
-                        layout_lds=layout_lds,
-                        k_blocks16=k_blocks16,
-                        curr_row_a_lds=row_a_lds,
-                        col_base=col_offset_base,
-                        half=0,
-                        lds_base=lds_base,
-                        ck_lds128=True,
-                        vec16_ty=_vec16_type(),
-                        vec8_ty=_vec16_type(),  # unused in ck_lds128=True path
-                        vec2_i64_ty=T.i64x2,
-                        vec1_i64_ty=T.vec(1, T.i64),
-                    )
+                    # (mi=0, ku=0): prefetch both K32 halves (K64) for the first A-pack.
+                    return lds_load_packs_k64(row_a_lds, col_offset_base, lds_base)
 
                 # Prologue: tile-0
                 k0 = arith.constant(0, index=True)
