@@ -85,7 +85,8 @@ def load_b_pack_k32(
 
     Returns an i64 Value containing 8 bytes consumed by MFMA.
 
-    - For FP8/INT8: loads 8 bytes directly from preshuffled layout.
+    - For FP8/INT8: loads 16 bytes (one full KPack) and extracts the 8 bytes used by
+      this micro-step.
     - For packed INT4 (W4A8): loads 4 bytes (8 int4 values) and unpacks to 8 int8 bytes
       using the 7-op sequence (no v_perm).
     """
@@ -101,12 +102,16 @@ def load_b_pack_k32(
     half_bytes = kpack_bytes // 2
     k2_base = arith.constant((ki_step % 2) * half_bytes, index=True)
 
-    coord_b = flir.make_coord(n_blk, k0, k1, n_intra, k2_base)
-    idx_bytes = flir.crd2idx(coord_b, layout_b)
+    # Always compute the *pack base* byte index (k2=0). This avoids an extra
+    # add/sub on the address path and keeps the load address stable across the
+    # two half-steps.
+    coord_pack = flir.make_coord(n_blk, k0, k1, n_intra, arith.constant(0, index=True))
+    idx_pack_bytes = flir.crd2idx(coord_pack, layout_b)
 
     if unpack_int4:
         # Load 4 bytes -> i32 -> unpack to i64 (8 i8 bytes).
         atom = flir.make_copy_atom(elem_type, vector_size=4)
+        idx_bytes = arith.ArithValue(idx_pack_bytes) + k2_base
         b_view = flir.TensorView(
             arg_b,
             (4,),
@@ -150,27 +155,54 @@ def load_b_pack_k32(
         v64 = vector.bitcast(vec1_i64, v2)
         return vector.extract(v64, static_position=[0], dynamic_position=[])
 
-    # FP8/INT8: load 8 bytes directly -> i64.
-    atom = flir.make_copy_atom(elem_type, vector_size=8)
+    # FP8/INT8: load 16 bytes (one full KPack) and extract half (8B) as i64.
+    #
+    # This keeps the original semantics (return the same 8B i64 used by MFMA for
+    # this `ki_step`), but makes the intended 16B buffer-load (dwordx4) explicit
+    # in the IR instead of relying on backend vectorization.
+    atom = flir.make_copy_atom(elem_type, vector_size=16)
     b_view = flir.TensorView(
         arg_b,
-        (8,),
+        (16,),
         strides=(1,),
-        base_indices=(idx_bytes,),
+        base_indices=(idx_pack_bytes,),
         element_type=elem_type,
     )
-    b8 = flir.copy(
+    b16 = flir.copy(
         atom,
         b_view,
         None,
+        # Keep conservative alignment here: some layouts/launchers may only guarantee 8B.
+        # This is still compatible with 16B buffer loads; it just avoids overstating
+        # alignment to the compiler.
         alignment=8,
         return_vector=True,
         src_buffer_resource=b_rsrc,
         src_buffer_offset_in_bytes=True,
     )
-    vec1_i64 = ir.VectorType.get([1], ir.IntegerType.get_signless(64))
-    b_vec64 = vector.bitcast(vec1_i64, b8)
-    return vector.extract(b_vec64, static_position=[0], dynamic_position=[])
+    # Extract the needed 8B half as an i64 while keeping the other half dead.
+    #
+    # NOTE: We intentionally build the i64 from the selected 2 dwords, instead of
+    # `bitcast -> i64x2 -> extract`, to help the backend shorten live ranges and
+    # avoid unnecessary VGPR pressure on some schedules.
+    i32 = ir.IntegerType.get_signless(32)
+    i64 = ir.IntegerType.get_signless(64)
+    vec4_i32 = ir.VectorType.get([4], i32)
+    b_i32x4 = vector.bitcast(vec4_i32, b16)
+
+    half = ki_step % 2
+    if half == 0:
+        d0 = vector.extract(b_i32x4, static_position=[0], dynamic_position=[])
+        d1 = vector.extract(b_i32x4, static_position=[1], dynamic_position=[])
+    else:
+        d0 = vector.extract(b_i32x4, static_position=[2], dynamic_position=[])
+        d1 = vector.extract(b_i32x4, static_position=[3], dynamic_position=[])
+
+    vec2_i32 = ir.VectorType.get([2], i32)
+    v2 = vector.from_elements(vec2_i32, [d0, d1])
+    vec1_i64 = ir.VectorType.get([1], i64)
+    v64 = vector.bitcast(vec1_i64, v2)
+    return vector.extract(v64, static_position=[0], dynamic_position=[])
 
 
 def tile_chunk_coord_i32(flir, arith, *, tx_i32_base: ir.Value, i: int, total_threads: int, layout_tile_div4):

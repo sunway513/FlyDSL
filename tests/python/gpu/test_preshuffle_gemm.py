@@ -227,8 +227,8 @@ if __name__ == "__main__":
     torch.set_default_device("cuda")
     print("Running Tiling Tests...")
     test_mfma_a8_flir_preshuffle("fp8", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
-    test_mfma_a8_flir_preshuffle("int8", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
-    test_mfma_a8_flir_preshuffle("int4", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
-    test_mfma_a8_flir_preshuffle("fp8", 16, 5120, 8192, tile_m=16, tile_n=128, tile_k=512)
-    test_mfma_a8_flir_preshuffle("int4", 16, 5120, 8192, tile_m=16, tile_n=64, tile_k=512)
+    # test_mfma_a8_flir_preshuffle("int8", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
+    # test_mfma_a8_flir_preshuffle("int4", 5120, 5120, 8320, tile_m=64, tile_n=256, tile_k=128)
+    test_mfma_a8_flir_preshuffle("fp8", 16, 5120*2, 8192, tile_m=16, tile_n=128, tile_k=512)
+    # test_mfma_a8_flir_preshuffle("int4", 16, 5120, 8192, tile_m=16, tile_n=64, tile_k=512)
 
