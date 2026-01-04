@@ -472,6 +472,30 @@ def run_moe_stage1(
     atol = 0.5 if is_int4 else 0.25
     assert verify_output(out.to(torch.float32), ref, rtol=rtol, atol=atol)
 
+    # Note: kernel executes `sorted_size` rows (padded to full tile_m blocks per-expert),
+    # which can be > tokens*topk. Report both:
+    flops = 2 * tokens * topk * (2 * inter_dim) * model_dim
+    tflops = flops / (us / 1e6) / 1e12
+
+    # Rough bytes-moved accounting (same spirit as GEMM tests: count each tensor once).
+    bytes_moved = 0
+    bytes_moved += tokens * model_dim * 1  # x fp8
+    bytes_moved += (experts * (2 * inter_dim) * model_dim) // (2 if is_int4 else 1)  # w (packed for int4)
+    # Output rows are logically tokens*topk, but kernel may touch padded rows due to routing blocks.
+    bytes_moved += int(sorted_size) * inter_dim * 2  # out fp16 (upper bound for writes)
+    bytes_moved += tokens * 4  # scale_x f32 (1D)
+    bytes_moved += experts * (2 * inter_dim) * 4  # scale_w f32 (1D)
+    bytes_moved += int(sorted_weights.numel()) * 4  # sorted_weights f32
+    bytes_moved += int(sorted_token_ids.numel()) * 4  # sorted_token_ids i32
+    bytes_moved += int(sorted_expert_ids.numel()) * 4  # sorted_expert_ids i32
+    tbps = bytes_moved / 1e12 / (us / 1e6)
+
+    print(
+        f"FLIR MoE stage1[{in_dtype}]: "
+        f"{us:.1f} us, "
+        f"{tflops:.2f} TFLOPS(logical, M={tokens*topk}), "
+        f"{tbps:.3f} TB/s (doweight_stage1={doweight_stage1})"
+    )
     # Compare + benchmark vs aiter CK stage1 (optional; enabled by default when aiter is runnable).
     if compare_aiter_ck is None:
         compare_ck = os.environ.get("COMPARE_AITER_CK", "1" if HAS_AITER else "0") == "1"
@@ -510,8 +534,6 @@ def run_moe_stage1(
                     sorted_weights=sorted_w_ if doweight_stage1 else None,
                     quant_type=QuantType.per_Token,
                     activation=ActivationType.Silu,
-                    splitk=1,
-                    dst_type=torch.float16,
                 )
 
             # Benchmark CK stage1
@@ -537,37 +559,11 @@ def run_moe_stage1(
             # Perf print: use the same flop model for both
             flops = 2 * tokens * topk * (2 * inter_dim) * model_dim
             tflops_ck = flops / (us_ck / 1e6) / 1e12
-            print(f"[aiter CK] stage1: {us_ck:.1f} us, {tflops_ck:.2f} TFLOPS")
+            print(f"[aiter CK] stage1: {us_ck:.1f} us, {tflops_ck:.2f} TFLOPS, flir vs aiter speedups: {tflops / tflops_ck:.2f}x")
         except Exception as e:
             # Treat CK compare as best-effort: many environments can import `aiter` but can't load
             # the full JIT .so dependency chain. Don't fail the FLIR test suite for that.
             logging.warning(f"Skipping aiter CK moe stage1 compare (not runnable here): {e}")
-    # Note: kernel executes `sorted_size` rows (padded to full tile_m blocks per-expert),
-    # which can be > tokens*topk. Report both:
-    # - logical TFLOPS: based on tokens*topk (algorithmic work)
-    # - executed TFLOPS: based on sorted_size (actual kernel work including padding)
-    flops_logical = 2 * tokens * topk * (2 * inter_dim) * model_dim
-    tflops_logical = flops_logical / (us / 1e6) / 1e12
-
-    # Rough bytes-moved accounting (same spirit as GEMM tests: count each tensor once).
-    bytes_moved = 0
-    bytes_moved += tokens * model_dim * 1  # x fp8
-    bytes_moved += (experts * (2 * inter_dim) * model_dim) // (2 if is_int4 else 1)  # w (packed for int4)
-    # Output rows are logically tokens*topk, but kernel may touch padded rows due to routing blocks.
-    bytes_moved += int(sorted_size) * inter_dim * 2  # out fp16 (upper bound for writes)
-    bytes_moved += tokens * 4  # scale_x f32 (1D)
-    bytes_moved += experts * (2 * inter_dim) * 4  # scale_w f32 (1D)
-    bytes_moved += int(sorted_weights.numel()) * 4  # sorted_weights f32
-    bytes_moved += int(sorted_token_ids.numel()) * 4  # sorted_token_ids i32
-    bytes_moved += int(sorted_expert_ids.numel()) * 4  # sorted_expert_ids i32
-    tbps = bytes_moved / 1e12 / (us / 1e6)
-
-    print(
-        f"FLIR MoE stage1[{in_dtype}]: "
-        f"{us:.1f} us, "
-        f"{tflops_logical:.2f} TFLOPS(logical, M={tokens*topk}), "
-        f"{tbps:.3f} TB/s (doweight_stage1={doweight_stage1})"
-    )
     if return_outputs:
         return out, us
     return None
@@ -792,6 +788,26 @@ def run_moe_stage2(
     )
     assert verify_output(out, ref2, rtol=0.5, atol=0.5)
 
+    # Same note as stage1: executed rows = sorted_size (padded), logical rows = tokens*topk.
+    flops = 2 * tokens * topk * model_dim * inter_dim
+    tflops = flops / (us / 1e6) / 1e12
+
+    bytes_moved = 0
+    bytes_moved += int(sorted_size) * inter_dim * 1  # a2 fp8 (upper bound: padded rows)
+    bytes_moved += (experts * model_dim * inter_dim) // (2 if is_int4 else 1)  # w2 (packed for int4)
+    bytes_moved += tokens * model_dim * 4  # out fp32
+    bytes_moved += int(sorted_size) * 4  # a2_scale f32 (1D, padded upper bound)
+    bytes_moved += experts * model_dim * 4  # w2_scale f32 (1D)
+    bytes_moved += int(sorted_weights.numel()) * 4
+    bytes_moved += int(sorted_token_ids.numel()) * 4
+    bytes_moved += int(sorted_expert_ids.numel()) * 4
+    tbps = bytes_moved / 1e12 / (us / 1e6)
+    print(
+        f"FLIR MoE stage2[{in_dtype}]: "
+        f"{us:.1f} us, "
+        f"{tflops:.2f} TFLOPS(logical, M={tokens*topk}), "
+        f"{tbps:.3f} TB/s (doweight_stage2={doweight_stage2})"
+    )
     # Optional compare vs aiter CK stage2.
     if compare_aiter_ck is None:
         compare_ck = os.environ.get("COMPARE_AITER_CK", "1" if HAS_AITER else "0") == "1"
@@ -847,11 +863,11 @@ def run_moe_stage2(
             )
 
             # Perf print (report both executed vs logical FLOPs, same convention as FLIR).
-            flops_logical = 2 * tokens * topk * model_dim * inter_dim
-            tflops_ck_logical = flops_logical / (us_ck / 1e6) / 1e12
+            flops = 2 * tokens * topk * model_dim * inter_dim
+            tflops_ck = flops / (us_ck / 1e6) / 1e12
             print(
                 f"[aiter CK] stage2: {us_ck:.1f} us, "
-                f"{tflops_ck_logical:.2f} TFLOPS(logical, M={tokens*topk})"
+                f"{tflops_ck:.2f} TFLOPS(logical, M={tokens*topk}), flir vs aiter speedups: {tflops / tflops_ck:.2f}x"
             )
 
             # Correctness run (best-effort; do not fail perf comparison if CK diverges).
@@ -874,26 +890,6 @@ def run_moe_stage2(
         except Exception as e:
             logging.warning(f"Skipping aiter CK moe stage2 compare (not runnable here): {e}")
 
-    # Same note as stage1: executed rows = sorted_size (padded), logical rows = tokens*topk.
-    flops_logical = 2 * tokens * topk * model_dim * inter_dim
-    tflops_logical = flops_logical / (us / 1e6) / 1e12
-
-    bytes_moved = 0
-    bytes_moved += int(sorted_size) * inter_dim * 1  # a2 fp8 (upper bound: padded rows)
-    bytes_moved += (experts * model_dim * inter_dim) // (2 if is_int4 else 1)  # w2 (packed for int4)
-    bytes_moved += tokens * model_dim * 4  # out fp32
-    bytes_moved += int(sorted_size) * 4  # a2_scale f32 (1D, padded upper bound)
-    bytes_moved += experts * model_dim * 4  # w2_scale f32 (1D)
-    bytes_moved += int(sorted_weights.numel()) * 4
-    bytes_moved += int(sorted_token_ids.numel()) * 4
-    bytes_moved += int(sorted_expert_ids.numel()) * 4
-    tbps = bytes_moved / 1e12 / (us / 1e6)
-    print(
-        f"FLIR MoE stage2[{in_dtype}]: "
-        f"{us:.1f} us, "
-        f"{tflops_logical:.2f} TFLOPS(logical, M={tokens*topk}), "
-        f"{tbps:.3f} TB/s (doweight_stage2={doweight_stage2})"
-    )
     if return_outputs:
         return out, us
     return None
@@ -1054,7 +1050,7 @@ if __name__ == "__main__":
         "int4 means W4A8: A int8, W packed int4.",
     )
     parser.add_argument("-d", "--dtype", type=str, default="fp32", choices=["fp32", "fp16", "bf16"], help="Input init dtype (currently data is quantized to FP8 per-token; init dtype mainly affects RNG range).")
-    parser.add_argument("-dim", type=_str2tuple_dim, default=(8192, 5120), help="Model dimension: model_dim,inter_dim (e.g. -dim 6144,4096)")
+    parser.add_argument("-dim", type=_str2tuple_dim, default=(7168, 256), help="Model dimension: model_dim,inter_dim (e.g. -dim 6144,4096)")
     parser.add_argument("-t", "--tokenNum", type=int, default=2048, help="Number of tokens (e.g. -t 1024)")
     parser.add_argument("-e", "--expert", type=int, default=17, help="Number of experts (e.g. -e 8)")
     parser.add_argument("-k", "--topk", type=int, default=9, help="Top-k (e.g. -k 2)")
