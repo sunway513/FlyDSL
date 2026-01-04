@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parent
 # IMPORTANT: setuptools editable builds require *relative* paths in setup()
 # arguments (not absolute paths).
-PY_SRC_REL = Path("pyflir") / "src"
+PY_SRC_REL = Path("flydsl") / "src"
 DEFAULT_OUT_DIR_REL = Path(".flir")
 DEFAULT_BUILD_DIR_REL = DEFAULT_OUT_DIR_REL / "build"
 
@@ -47,7 +47,7 @@ if BUILD_DIR_REL.is_absolute():
         f"(got absolute: {BUILD_DIR_REL})."
     )
 
-EMBEDDED_MLIR_ROOT_REL = BUILD_DIR_REL / "python_packages" / "pyflir"
+EMBEDDED_MLIR_ROOT_REL = BUILD_DIR_REL / "python_packages" / "flydsl"
 EMBEDDED__MLIR_REL = EMBEDDED_MLIR_ROOT_REL / "_mlir"
 
 PY_SRC = REPO_ROOT / PY_SRC_REL
@@ -56,7 +56,7 @@ EMBEDDED__MLIR = REPO_ROOT / EMBEDDED__MLIR_REL
 
 
 def _read_version() -> str:
-    init_py = (PY_SRC / "pyflir" / "__init__.py").read_text(encoding="utf-8")
+    init_py = (PY_SRC / "flydsl" / "__init__.py").read_text(encoding="utf-8")
     for line in init_py.splitlines():
         if line.startswith("__version__"):
             # __version__ = "0.1.0"
@@ -65,8 +65,8 @@ def _read_version() -> str:
 
 
 def _load_requirements() -> list[str]:
-    # Keep Python requirements alongside the pyflir source root.
-    req = REPO_ROOT / "pyflir" / "requirements.txt"
+    # Keep Python requirements alongside the flydsl source root.
+    req = REPO_ROOT / "flydsl" / "requirements.txt"
     if not req.exists():
         return []
     out: list[str] = []
@@ -80,7 +80,7 @@ def _load_requirements() -> list[str]:
 
 def _assert_embedded_mlir_exists() -> None:
     # For runtime, FLIR expects the embedded MLIR runtime under `_mlir/`.
-    # This is built by the repo build (CMake) and staged under build/python_packages/pyflir.
+    # This is built by the repo build (CMake) and staged under build/python_packages/flydsl.
     # Default to ALWAYS rebuilding unless the user opts out.
     rebuild_mode = (os.environ.get("FLIR_REBUILD") or os.environ.get("FLIR_REBUILD") or "1").strip().lower()
     # Semantics:
@@ -109,7 +109,7 @@ def _assert_embedded_mlir_exists() -> None:
             "Embedded MLIR python runtime not found at "
             f"{EMBEDDED__MLIR}.\n\n"
             "Build it first (e.g. `./build.sh`), or run the CMake build that "
-            "produces `build/python_packages/pyflir/_mlir`.\n\n"
+            "produces `build/python_packages/flydsl/_mlir`.\n\n"
             "Controls:\n"
             "  - FLIR_REBUILD=auto (default): build iff missing\n"
             "  - FLIR_REBUILD=1:              always rebuild\n"
@@ -126,7 +126,7 @@ def _ensure_python_embedded_mlir_package() -> None:
 
     pip's PEP660 editable install mode does not reliably honor multi-root
     `package_dir` mappings. To keep `pip install -e .` and `setup.py develop`
-    working, we create a `_mlir` package entry under `pyflir/src/_mlir` by
+    working, we create a `_mlir` package entry under `flydsl/src/_mlir` by
     symlinking to the embedded runtime produced by the CMake build.
     """
     dst = PY_SRC / "_mlir"
@@ -159,14 +159,14 @@ def _ensure_python_embedded_mlir_package() -> None:
         raise RuntimeError(
             f"Failed to create symlink {dst} -> {target}.\n"
             "Either create it manually, or install with PYTHONPATH pointing at "
-            "`build/python_packages/pyflir`.\n"
+            "`build/python_packages/flydsl`.\n"
             f"Original error: {e}"
         ) from e
 
 
 if not IS_WHEEL_BUILD:
     _ensure_python_embedded_mlir_package()
-    # Editable/dev installs: single-root under `pyflir/src/` (includes `_mlir` via symlink).
+    # Editable/dev installs: single-root under `flydsl/src/` (includes `_mlir` via symlink).
     all_packages = sorted(
         set(find_packages(where=str(PY_SRC_REL)))
         | set(find_namespace_packages(where=str(PY_SRC_REL), include=["_mlir*"]))
@@ -186,7 +186,7 @@ else:
     }
 
 setup(
-    name="pyflir",
+    name="flydsl",
     version=_read_version(),
     description="FLIR - ROCm Domain Specific Language for layout algebra (Python + embedded MLIR runtime)",
     long_description=(REPO_ROOT / "README.md").read_text(encoding="utf-8") if (REPO_ROOT / "README.md").exists() else "",

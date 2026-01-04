@@ -75,12 +75,12 @@ set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 # Configure Python package prefix (embed upstream MLIR under `_mlir` to avoid
 # colliding with MLIR's own exported CMake/Python targets named `mlir.*`).
 set(MLIR_PYTHON_PACKAGE_PREFIX "_mlir" CACHE STRING "" FORCE)
-set(MLIR_BINDINGS_PYTHON_INSTALL_PREFIX "python_packages/pyflir/${MLIR_PYTHON_PACKAGE_PREFIX}" CACHE STRING "" FORCE)
+set(MLIR_BINDINGS_PYTHON_INSTALL_PREFIX "python_packages/flydsl/${MLIR_PYTHON_PACKAGE_PREFIX}" CACHE STRING "" FORCE)
 
 add_subdirectory(flir/lib)
 add_subdirectory(flir/tools)
 if(BUILD_PYTHON_BINDINGS AND MLIR_FOUND)
-    add_subdirectory(python_bindings)
+    add_subdirectory(flir/python_bindings)
 endif()
 
 

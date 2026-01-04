@@ -37,8 +37,8 @@ echo "Flir Test Suite"
 echo "========================================================================"
 echo ""
 
-PYTHON_PACKAGE_ROOT="${BUILD_DIR}/python_packages/pyflir"
-export PYTHONPATH="${SCRIPT_DIR}/pyflir/src:${PYTHON_PACKAGE_ROOT}:${SCRIPT_DIR}:${PYTHONPATH}"
+PYTHON_PACKAGE_ROOT="${BUILD_DIR}/python_packages/flydsl"
+export PYTHONPATH="${SCRIPT_DIR}/flydsl/src:${PYTHON_PACKAGE_ROOT}:${SCRIPT_DIR}:${PYTHONPATH}"
 echo "Using in-tree Python sources + embedded build packages via PYTHONPATH."
 
 
@@ -76,7 +76,7 @@ echo ""
 IR_TEST_COUNT=0
 IR_PASS_COUNT=0
 
-for test_file in tests/python/ir/test_*.py; do
+for test_file in tests/pyir/test_*.py; do
     if [ -f "$test_file" ]; then
         IR_TEST_COUNT=$((IR_TEST_COUNT + 1))
         test_name=$(basename "$test_file" .py)
@@ -105,27 +105,7 @@ echo "========================================================================"
 echo ""
 
 EXAMPLE_TEST_COUNT=0
-EXAMPLE_PASS_COUNT=0
 
-for test_file in tests/python/examples/test_*.py; do
-    if [ -f "$test_file" ]; then
-        EXAMPLE_TEST_COUNT=$((EXAMPLE_TEST_COUNT + 1))
-        test_name=$(basename "$test_file" .py)
-        echo "Running: $test_name"
-        python3 "$test_file" > /tmp/${test_name}.log 2>&1
-        if [ $? -eq 0 ]; then
-            echo "   PASS"
-            EXAMPLE_PASS_COUNT=$((EXAMPLE_PASS_COUNT + 1))
-        else
-            echo "   FAIL"
-            echo "      Log: /tmp/${test_name}.log"
-        fi
-    fi
-done
-
-echo ""
-echo "Example Tests: $EXAMPLE_PASS_COUNT/$EXAMPLE_TEST_COUNT passed"
-echo ""
 
 #=============================================================================
 # Part 4: GPU Execution Tests (Real GPU kernels)
@@ -147,7 +127,7 @@ if command -v rocm-smi &> /dev/null; then
     GPU_TEST_COUNT=0
     GPU_PASS_COUNT=0
     
-    for test_file in tests/python/gpu/test_*.py; do
+    for test_file in tests/kernels/test_*.py; do
         if [ -f "$test_file" ]; then
             GPU_TEST_COUNT=$((GPU_TEST_COUNT + 1))
             test_name=$(basename "$test_file" .py)
@@ -159,6 +139,9 @@ if command -v rocm-smi &> /dev/null; then
                 # Show key metrics if available
                 if grep -q "TFLOPS" /tmp/${test_name}.log; then
                     grep "TFLOPS" /tmp/${test_name}.log | tail -1 | sed 's/^/      /'
+                fi
+                if grep -q "Bandwidth:" /tmp/${test_name}.log; then
+                    grep "Bandwidth:" /tmp/${test_name}.log | tail -1 | sed 's/^/      /'
                 fi
             else
                 echo "   FAIL"
@@ -180,51 +163,6 @@ else
     GPU_PASS_COUNT=0
 fi
 
-#=============================================================================
-# Part 5: Benchmark Tests (Performance Benchmarks)
-#=============================================================================
-echo "========================================================================"
-echo "Part 5: Benchmark Tests (Performance Benchmarks)"
-echo "========================================================================"
-echo ""
-
-if command -v rocm-smi >/dev/null 2>&1; then
-    BENCHMARK_TEST_COUNT=0
-    BENCHMARK_PASS_COUNT=0
-    
-    for test_file in tests/benchmark/*.py; do
-        if [ -f "$test_file" ]; then
-            BENCHMARK_TEST_COUNT=$((BENCHMARK_TEST_COUNT + 1))
-            test_name=$(basename "$test_file" .py)
-            echo "Running: $test_name"
-            pytest -sv "$test_file" > /tmp/${test_name}.log 2>&1
-            if [ $? -eq 0 ]; then
-                echo "   PASS"
-                BENCHMARK_PASS_COUNT=$((BENCHMARK_PASS_COUNT + 1))
-                # Show key metrics if available
-                if grep -q "Bandwidth:" /tmp/${test_name}.log; then
-                    grep "Bandwidth:" /tmp/${test_name}.log | tail -1 | sed 's/^/      /'
-                fi
-            else
-                echo "   FAIL"
-                echo "      Log: /tmp/${test_name}.log"
-            fi
-        fi
-    done
-    
-    echo ""
-    echo "Benchmark Tests: $BENCHMARK_PASS_COUNT/$BENCHMARK_TEST_COUNT passed"
-    
-    ALL_BENCHMARK_PASSED=$((BENCHMARK_PASS_COUNT == BENCHMARK_TEST_COUNT))
-else
-    echo "Skipped (requires GPU)"
-    echo ""
-    ALL_BENCHMARK_PASSED=1
-    BENCHMARK_TEST_COUNT=0
-    BENCHMARK_PASS_COUNT=0
-fi
-
-echo ""
 
 #=============================================================================
 # Final Summary
@@ -235,38 +173,26 @@ echo "========================================================================"
 echo ""
 echo "MLIR IR Tests (Lowering):        $MLIR_PASS_COUNT/$MLIR_TEST_COUNT passed"
 echo "Python IR Tests (Generation):    $IR_PASS_COUNT/$IR_TEST_COUNT passed"
-echo "Example Tests (ROCDL):           $EXAMPLE_PASS_COUNT/$EXAMPLE_TEST_COUNT passed"
 
 if command -v rocm-smi >/dev/null 2>&1; then
     echo "GPU Execution Tests:             $GPU_PASS_COUNT/$GPU_TEST_COUNT passed"
-    echo "Benchmark Tests:                 $BENCHMARK_PASS_COUNT/$BENCHMARK_TEST_COUNT passed"
 else
     echo "GPU Execution Tests:             Skipped (no GPU)"
-    echo "Benchmark Tests:                 Skipped (no GPU)"
 fi
 
-if [ $ALL_GPU_PASSED -eq 1 ] && [ $ALL_BENCHMARK_PASSED -eq 1 ]; then
+if [ $GPU_PASS_COUNT -eq $GPU_TEST_COUNT ] && [ $IR_PASS_COUNT -eq $IR_TEST_COUNT ] && [ $MLIR_PASS_COUNT -eq $MLIR_TEST_COUNT ]; then
     echo ""
     echo ""
     echo "Verified Capabilities:"
     echo "  * Flir IR generation and lowering"
-    echo "  * Coordinate operations (crd2idx, layouts)"
-    echo "  * ROCDL dialect operations (381 ops exposed)"
-    echo "  * GPU kernel compilation (MLIR → HSACO)"
-    echo "  * GPU kernel execution (HIP runtime)"
-    echo "  * Shared memory optimizations (LDS)"
-    echo "  * MFMA operations (Pure Python API)"
-    echo "  * Performance benchmarking (bandwidth tests)"
+    echo "  * GPU kernel compilation and execution (MLIR → HSACO)"
     echo ""
     exit 0
 else
     if command -v rocm-smi >/dev/null 2>&1; then
         echo ""
-        if [ $ALL_GPU_PASSED -ne 1 ]; then
+        if [ $GPU_PASS_COUNT -ne $GPU_TEST_COUNT ]; then
             echo "Some GPU tests failed"
-        fi
-        if [ $ALL_BENCHMARK_PASSED -ne 1 ]; then
-            echo "Some benchmark tests failed"
         fi
         exit 1
     else

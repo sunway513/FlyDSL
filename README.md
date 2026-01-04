@@ -1,35 +1,40 @@
-# FLIR （**F**lexible **L**ayout **I**ntermediate **R**epresentation）
+# # FlyDSL (**F**lexible **L**ayout P**Y**thon DSL) & FLIR （**F**lexible **L**ayout **I**ntermediate **R**epresentation）
 
->  A modular MLIR compiler stack for high‑performance GPU kernels.
+> A Python DSL and a MLIR stack for authoring high‑performance GPU kernels with explicit layouts and tiling. 
 
-FLIR is an end‑to‑end, MLIR‑native compiler stack for GPU kernels.
-At its core is the `flir` dialect—a first‑class layout IR for expressing tiling, partitioning, and data movement—paired with a composable lowering pipeline to GPU/ROCDL and a Python front‑end (`pyflir`) for authoring and compiling kernels.
+FlyDSL is the **Python front‑end** of the project: a *Flexible Layout Python DSL* for expressing
+tiling, partitioning, data movement, and kernel structure at a high level.
+
+**FlyDSL** & **FLIR**: FlyDSL is powered by FLIR (**F**lexible **L**ayout **I**ntermediate **R**epresentation):
+an end‑to‑end, MLIR‑native compiler stack for GPU kernels. Its core is the `flir` dialect—a first‑class
+layout IR with explicit algebra and coordinate mapping, plus a composable lowering pipeline to GPU/ROCDL.
 
 ## Overview
 
-- **Flir Dialect** (layout algebra inspired by CuTe/CUTLASS)
+- **FlyDSL (Python DSL)**: author kernels in Python and compile them through FLIR
+  - Primary package: `flydsl/` (`flydsl/src/flydsl/`)
+  - Kernel examples: `kernels/` (importable as `kernels.*`)
+- **FLIR (`flir` dialect)**: the layout IR and compiler foundation
   - Core abstractions: `!flir.shape`, `!flir.stride`, `!flir.layout`, `!flir.coord`
   - Algebra ops: composition/product/divide/partition + coordinate mapping ops
-- **Python bindings** (`pyflir/src/pyflir/`) with an embedded MLIR python package
-  - No external `mlir` python wheel is required: MLIR python bindings are built and staged into `.flir/build/python_packages/pyflir/_mlir` (default; legacy `build/` also works)
-- **Python package source**: `pyflir/src/pyflir/`
-- **GPU lowering** to HSACO via MLIR GPU → ROCDL pipeline
-- **Tools**: `flir-opt` for pass testing and IR experimentation
-- **Samples**: `samples/` (Python scripts)
+  - Tooling: `flir-opt` for pass testing and IR experimentation
+- **Embedded MLIR Python runtime** (`_mlir`)
+  - No external `mlir` python wheel is required: MLIR python bindings are built and staged into `.flir/build/python_packages/flydsl/_mlir` (default; legacy `build/` also works)
+  - Python package root: `.flir/build/python_packages/flydsl/`
 
 ### Repository layout
 
 ```
-FLIR/
+FlyDSL/
 ├── CMakeLists.txt
 ├── build_llvm.sh              # build/prepare llvm-project (optional helper)
 ├── build.sh                   # build FLIR + python bindings (recommended)
 ├── run_tests.sh               # run MLIR + Python tests
 ├── flir/                      # C++ sources (include/, lib/, tools/)
-├── pyflir/                    # Python sources (src/pyflir) + python-only docs/reqs
-├── python_bindings/           # CMake targets for python extensions/bindings
+├── flydsl/                    # Python sources (src/flydsl) + python-only docs/reqs
+├── flir/python_bindings/      # CMake targets for python extensions/bindings
 ├── tests/                     # mlir + python tests/benchmarks
-└── samples/                   # Python samples (importable as `samples.*`)
+└── kernels/                   # Python kernels (importable as `kernels.*`)
 ```
 
 ## Getting started
@@ -38,7 +43,7 @@ FLIR/
 - **Build tools**: `cmake`, C++ compiler, and optionally `ninja` (faster).
 - **Python**: Python 3 + `pip`.
   - `build_llvm.sh` installs `nanobind`, `numpy`, `pybind11`.
-  - `pyflir/requirements.txt` exists for auxiliary deps (`numpy`, `torch`) for runtime data initialize and result check.
+  - `flydsl/requirements.txt` exists for auxiliary deps (`numpy`, `torch`) for runtime data initialize and result check.
 
 ### Build
 
@@ -66,9 +71,9 @@ After a successful build, you will have:
 
 - `.flir/build/bin/flir-opt` (default; legacy `build/bin/flir-opt` also works)
 - Python package root at:
-  - `.flir/build/python_packages/pyflir/`
+  - `.flir/build/python_packages/flydsl/`
   - This contains:
-    - `pyflir/` (your Python API)
+    - `flydsl/` (your Python API)
     - `_mlir/` (embedded MLIR python bindings)
 
 ### Python install
@@ -76,9 +81,11 @@ After a successful build, you will have:
 
 ```bash
 python3 -m pip install -e .
+#for development, you can also use:  
+python setup.py develop
 ```
 
-Build a wheel (default output under `.flir/dist/`):
+Build a wheel (default output under `dist/`):
 
 ```bash
 python3 setup.py bdist_wheel
@@ -94,12 +101,10 @@ ls dist/
 What `run_tests.sh` does (high level):
 
 - **MLIR file tests**: runs `tests/mlir/*.mlir` through `flir-opt --flir-to-standard`
-- **Python IR tests**: runs `tests/python/ir/test_*.py` (no GPU required)
-- **Python examples**: runs `tests/python/examples/test_*.py` (if present)
-- **GPU execution tests** (only if ROCm is detected): runs `tests/python/gpu/test_*.py`
-- **Benchmarks** (only if ROCm is detected): runs `tests/benchmark/*.py` via `pytest`
+- **Python IR tests**: runs `tests/pyir/test_*.py` (no GPU required)
+- **Kernel/GPU execution tests** (only if ROCm is detected): runs `tests/kernels/test_*.py`
 
-For the Python test folder organization, see `tests/python/README.md`.
+For the test folder organization, see `tests/` (`mlir/`, `pyir/`, `kernels/`).
 
 ### Troubleshooting
 
@@ -107,17 +112,17 @@ For the Python test folder organization, see `tests/python/README.md`.
   - Run `./build.sh`, or build it explicitly:
     - `cmake --build build --target flir-opt -j$(nproc)`
 
-- **Python import issues (`No module named pyflir` / `No module named mlir`)**
+- **Python import issues (`No module named flydsl` / `No module named mlir`)**
   - Ensure you are using the embedded package:
-    - `export PYTHONPATH=$(pwd)/build/python_packages/pyflir:$PYTHONPATH`
+    - `export PYTHONPATH=$(pwd)/build/python_packages/flydsl:$PYTHONPATH`
   - Or prefer in-tree sources:
-    - `export PYTHONPATH=$(pwd)/pyflir/src:$(pwd)/.flir/build/python_packages/pyflir:$PYTHONPATH`
+    - `export PYTHONPATH=$(pwd)/flydsl/src:$(pwd)/.flir/build/python_packages/flydsl:$PYTHONPATH`
 
 - **MLIR `.so` load errors**
   - Add MLIR build lib dir to the loader path:
     - `export LD_LIBRARY_PATH=$MLIR_PATH/lib:$LD_LIBRARY_PATH`
 
-## 📐 Layout System
+## 📐 FLIR Layout System
 
 > FLIR = **F**lexible **L**ayout **I**ntermediate **R**epresentation.
 
@@ -161,16 +166,16 @@ func.func @layout_example(%i: !flir.int, %j: !flir.int) -> !flir.int {
 }
 ```
 
-## 🐍 Python API (`pyflir`)
+## 🐍 Python API (`flydsl`)
 
-> Python package: `pyflir` (C++/dialect namespace: `flir`).
+> Python package: `flydsl` (C++/dialect namespace: `flir`).
 
 FLIR provides a high-level Python API for generating kernels.
 
 ### Layout Construction
 
 ```python
-from pyflir.dialects.ext import flir, arith
+from flydsl.dialects.ext import flir, arith
 
 # Create constants
 c8 = arith.constant(8, index=True)
@@ -191,7 +196,7 @@ idx = flir.crd2idx(coord, layout)
 Easy-to-use compilation pipeline:
 
 ```python
-from pyflir.compiler.pipeline import Pipeline
+from flydsl.compiler.pipeline import Pipeline
 
 # Build and run optimization pipeline
 pipeline = (
@@ -245,11 +250,11 @@ With the per-level partitions in hand, you can allocate register fragments, emit
 
 ## 🧮 Minimal VecAdd Example
 
-This condensed snippet mirrors `tests/benchmark/vecAdd.py`, highlighting how tiled copies, fragments, and benchmarking fit together:
+This condensed snippet mirrors `tests/kernels/test_vec_add.py`, highlighting how tiled copies, fragments, and benchmarking fit together:
 
 ```python
-from pyflir.compiler.context import RAIIMLIRContextModule
-from pyflir.dialects.ext import gpu, flir
+from flydsl.compiler.context import RAIIMLIRContextModule
+from flydsl.dialects.ext import gpu, flir
 import _mlir.extras.types as T
 
 THREADS = 256
@@ -284,7 +289,7 @@ def vecAdd(A: T.memref(20480000, T.f32()),
 ```
 
 Compile the module with the pipeline, set up HIP device buffers, and invoke the helper utilities
-in the tests/benchmarks for timing—just like the full benchmark.
+in `tests/kernels/` for timing—just like the full benchmark.
 
 ## ✅ Testing Status
 
@@ -293,10 +298,10 @@ in the tests/benchmarks for timing—just like the full benchmark.
 | **MLIR Core** | ✅ Passing | Type parsing, Op verification, Basic transforms |
 | **Flir Ops** | ✅ Passing | Layout algebra, Coordinate lowering |
 | **GPU Backend**| ✅ Passing | GPU kernel compilation, Shared memory, Vectorization |
-| **Hardware** | ✅ Passing | MFMA (Matrix Fused Multiply-Add) execution on MI300 |
+| **Hardware** | ✅ Passing | MFMA (Matrix Fused Multiply-Add) execution on MI300-family GPUs |
 
 **Verified Platforms**:
-*   AMD MI300X (gfx942), AMD MI350 (gfx950)
+*   AMD MI300X/MI308X (gfx942), AMD MI350 (gfx950)
 *   Linux / ROCm 6.x, 7.x
 
 ## 📄 License
