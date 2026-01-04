@@ -11,11 +11,8 @@ Key primitives:
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 from _mlir import ir
-
 
 @dataclass(frozen=True)
 class PreshuffleBLayout:
@@ -176,9 +173,134 @@ def load_b_pack_k32(
     return vector.extract(b_vec64, static_position=[0], dynamic_position=[])
 
 
+def tile_chunk_coord_i32(flir, arith, *, tx_i32_base: ir.Value, i: int, total_threads: int, layout_tile_div4):
+    """Map (thread, chunk_id) -> (row_local, col_local_i32) for 16B chunk loads.
+
+    This matches the mapping used across preshuffle GEMM + MoE kernels:
+      chunk_linear = tx + i*total_threads
+      chunk_i32_base = chunk_linear * 4   (16B == 4 dwords)
+    """
+    chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
+    tile_idx_i32 = tx_i32_base + chunk_off_i32
+    coord_local = flir.idx2crd(tile_idx_i32, layout_tile_div4)
+    row_local = flir.get(coord_local, 0)
+    col_local_i32 = flir.get(coord_local, 1)
+    return row_local, col_local_i32
+
+
+def buffer_copy_gmem16_dwordx4(
+    flir,
+    *,
+    arg,
+    elem_type,
+    idx_i32: ir.Value,
+    atom_g2r16,
+    rsrc,
+):
+    """Copy 16 bytes from global memory into regs via buffer-load dwordx4 lowering.
+
+    `idx_i32` is a dword element offset (not bytes), so `src_buffer_offset_in_bytes=False`.
+    """
+    view = flir.TensorView(
+        arg,
+        (16,),
+        strides=(1,),
+        base_indices=(idx_i32,),
+        element_type=elem_type,
+    )
+    return flir.copy(
+        atom_g2r16,
+        view,
+        None,
+        alignment=16,
+        return_vector=True,
+        src_buffer_resource=rsrc,
+        src_buffer_offset_in_bytes=False,
+    )
+
+
+def lds_store_16b_xor16(
+    flir,
+    arith,
+    vector,
+    *,
+    lds_memref,
+    vec16_ty,
+    elem_type,
+    atom_s16,
+    layout_lds,
+    row_local: ir.Value,
+    col_local_i32: ir.Value,
+    tx_c4: ir.Value,
+    k_blocks16: ir.Value,
+    lds_base: ir.Value,
+    vec_part_i32x4: ir.Value,
+):
+    """Store one 16B chunk into LDS with CK-style XOR16 swizzle on the K dimension."""
+    col_local_bytes = col_local_i32 * tx_c4
+    col_swz = flir.swizzle_xor16(row_local, col_local_bytes, k_blocks16)
+    coord_store = flir.make_coord(row_local, col_swz)
+    idx0 = flir.crd2idx(coord_store, layout_lds)
+    idx0 = arith.ArithValue(idx0) + lds_base
+    v16 = vector.bitcast(vec16_ty, vec_part_i32x4)
+    s_view = flir.TensorView(
+        lds_memref,
+        (16,),
+        strides=(1,),
+        base_indices=(idx0,),
+        element_type=elem_type,
+    )
+    flir.copy(atom_s16, v16, s_view, alignment=16)
+
+
+def lds_load_pack_k32(
+    flir,
+    arith,
+    vector,
+    *,
+    lds_memref,
+    layout_lds,
+    k_blocks16: ir.Value,
+    curr_row_a_lds: ir.Value,
+    col_base: ir.Value,
+    half: int,
+    lds_base: ir.Value,
+    ck_lds128: bool,
+    vec16_ty,
+    vec8_ty,
+    vec2_i64_ty,
+    vec1_i64_ty,
+):
+    """Load one i64 A-pack for an MFMA K32 micro-step from LDS.
+
+    - ck_lds128=True: load 16B and extract half (8B) as i64
+    - ck_lds128=False: load 8B directly as i64
+    """
+    col_base_swz = flir.swizzle_xor16(curr_row_a_lds, col_base, k_blocks16)
+    if ck_lds128:
+        coord_a16 = flir.make_coord(curr_row_a_lds, col_base_swz)
+        idx_a16 = flir.crd2idx(coord_a16, layout_lds)
+        idx_a16 = arith.ArithValue(idx_a16) + lds_base
+        loaded_a16 = vector.load_op(vec16_ty, lds_memref, [idx_a16])
+        a_vec128 = vector.bitcast(vec2_i64_ty, loaded_a16)
+        return vector.extract(a_vec128, static_position=[half], dynamic_position=[])
+    else:
+        col_swizzled = col_base_swz + arith.constant(int(half) * 8, index=True)
+        coord_a = flir.make_coord(curr_row_a_lds, col_swizzled)
+        idx_a = flir.crd2idx(coord_a, layout_lds)
+        idx_a = arith.ArithValue(idx_a) + lds_base
+        loaded_a8 = vector.load_op(vec8_ty, lds_memref, [idx_a])
+        a_vec64 = vector.bitcast(vec1_i64_ty, loaded_a8)
+        return vector.extract(a_vec64, static_position=[0], dynamic_position=[])
+
+
 __all__ = [
     "PreshuffleBLayout",
+    "buffer_copy_gmem16_dwordx4",
+    "lds_load_pack_k32",
+    "lds_store_16b_xor16",
     "make_preshuffle_b_layout",
     "load_b_pack_k32",
+    "tile_chunk_coord_i32",
 ]
 

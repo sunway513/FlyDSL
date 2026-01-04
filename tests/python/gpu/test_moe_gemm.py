@@ -86,48 +86,15 @@ def build_sorted_routing(
     - `sorted_weights[fp32]` aligned with sorted_token_ids
     - `sorted_expert_ids[int32]` per M-block
 
-    Prefer aiter's `moe_sorting` (same path as `aiter/op_tests/test_moe_2stage.py`),
-    then pad to `len(sorted_expert_ids) * tile_m` so our kernel never OOB-loads.
+    Torch fallback routing builder (deterministic):
+    - Sort by (expert, token, slot)
+    - Pad each expert segment to `tile_m`
+
+    NOTE: aiter routing is handled by `build_routing_buffers(..., moe_sort_mode="aiter")`.
     """
     assert topk_ids.is_cuda and topk_weights.is_cuda
     tokens, topk = topk_ids.shape
-
-    if HAS_AITER:
-        try:
-            topk_ids_i32 = topk_ids.to(torch.int32)
-            topk_w_f32 = topk_weights.to(torch.float32)
-            sorted_ids, sorted_w, sorted_expert_ids, _num_valid_ids, _moe_buf = aiter_moe_sorting(
-                topk_ids_i32,
-                topk_w_f32,
-                num_experts,
-                model_dim,
-                torch.float16,
-                tile_m,  # block_size must match our kernel tile_m
-            )
-
-            # Pad to full blocks so the kernel can safely index [bx*tile_m + lane_row]
-            mblocks = int(sorted_expert_ids.numel())
-            padded_len = mblocks * tile_m
-            if int(sorted_ids.numel()) < padded_len:
-                pad_ids = torch.empty((padded_len,), device="cuda", dtype=torch.int32)
-                pad_w = torch.empty((padded_len,), device="cuda", dtype=torch.float32)
-                pad_ids.fill_(tokens)  # sentinel fused token (token=tokens, slot=0)
-                pad_w.zero_()
-                pad_ids[: sorted_ids.numel()] = sorted_ids
-                pad_w[: sorted_w.numel()] = sorted_w
-                sorted_ids = pad_ids
-                sorted_w = pad_w
-            else:
-                sorted_ids = sorted_ids[:padded_len]
-                sorted_w = sorted_w[:padded_len]
-
-            return sorted_ids, sorted_w, sorted_expert_ids
-        except Exception:
-            # Fall back below.
-            pass
-
-    # Fallback (no working aiter): build the same CK-style buffers using torch,
-    # with a deterministic ordering: sort by (expert, token, slot).
+    # Build the same CK-style buffers using torch.
     topk_ids_i64 = topk_ids.to(torch.int64)
     topk_w_f32 = topk_weights.to(torch.float32)
 
@@ -278,6 +245,13 @@ def build_routing_buffers(
         )
         if res is not None:
             sorted_token_ids, sorted_weights, sorted_expert_ids, num_valid_ids = res
+            # Some aiter builds return `sorted_expert_ids` with extra garbage entries.
+            # Trim based on `num_valid_ids` to keep expert ids in-range and consistent with sorted ids.
+            valid = int(num_valid_ids.view(-1)[0].item())
+            blocks = (valid + int(tile_m) - 1) // int(tile_m)
+            sorted_token_ids = sorted_token_ids[:valid].contiguous()
+            sorted_weights = sorted_weights[:valid].contiguous()
+            sorted_expert_ids = sorted_expert_ids[:blocks].contiguous()
         else:
             logging.warning(
                 "aiter moe_sorting unavailable; falling back to torch routing buffers. "
@@ -448,7 +422,7 @@ def run_moe_stage1(
     sorted_weights_1d = sorted_weights.contiguous().view(-1)  # [sorted_size]
 
     # Output: [tokens, topk, inter_dim] fp16
-    out = torch.zeros((tokens, topk, inter_dim), device=device, dtype=torch.float16)
+    out = torch.empty((tokens, topk, inter_dim), device=device, dtype=torch.float16)
 
     exe = compile_moe_gemm1(
         tokens=tokens,
@@ -589,7 +563,7 @@ def run_moe_stage1(
     tbps = bytes_moved / 1e12 / (us / 1e6)
 
     print(
-        f"MoE stage1[{in_dtype}]: "
+        f"FLIR MoE stage1[{in_dtype}]: "
         f"{us:.1f} us, "
         f"{tflops_logical:.2f} TFLOPS(logical, M={tokens*topk}), "
         f"{tbps:.3f} TB/s (doweight_stage1={doweight_stage1})"
@@ -915,7 +889,7 @@ def run_moe_stage2(
     bytes_moved += int(sorted_expert_ids.numel()) * 4
     tbps = bytes_moved / 1e12 / (us / 1e6)
     print(
-        f"MoE stage2[{in_dtype}]: "
+        f"FLIR MoE stage2[{in_dtype}]: "
         f"{us:.1f} us, "
         f"{tflops_logical:.2f} TFLOPS(logical, M={tokens*topk}), "
         f"{tbps:.3f} TB/s (doweight_stage2={doweight_stage2})"
@@ -1074,9 +1048,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--in_dtype",
         type=str,
-        default="fp8",
-        choices=["fp8", "int8", "int4"],
-        help="Kernel input dtype: fp8 / int8 / int4 (int4 means W4A8: A int8, W packed int4).",
+        default="all",
+        choices=["fp8", "int8", "int4", "all"],
+        help="Kernel input dtype: fp8 / int8 / int4 / all (default: all). "
+        "int4 means W4A8: A int8, W packed int4.",
     )
     parser.add_argument("-d", "--dtype", type=str, default="fp32", choices=["fp32", "fp16", "bf16"], help="Input init dtype (currently data is quantized to FP8 per-token; init dtype mainly affects RNG range).")
     parser.add_argument("-dim", type=_str2tuple_dim, default=(8192, 5120), help="Model dimension: model_dim,inter_dim (e.g. -dim 6144,4096)")
@@ -1110,26 +1085,28 @@ if __name__ == "__main__":
     tile_k2 = int(args.tile_k2) if args.tile_k2 is not None else int(args.tile_k)
 
     # Run 2-stage (gemm1 -> quantize -> gemm2) aiter-style test/benchmark.
-    test_moe_gemm_2stage(
-        tokens=int(args.tokenNum),
-        model_dim=int(model_dim),
-        inter_dim=int(inter_dim),
-        experts=int(args.expert),
-        topk=int(args.topk),
-        tile_m=int(args.tile_m),
-        tile_n1=int(args.tile_n),
-        tile_k1=int(args.tile_k),
-        tile_n2=tile_n2,
-        tile_k2=tile_k2,
-        doweight_stage1=bool(args.doweight_stage1),
-        in_dtype=str(args.in_dtype),
-        seed=int(args.seed),
-        num_iters=int(args.num_iters),
-        num_warmup=int(args.num_warmup),
-        moe_sort_mode=args.moe_sort_mode,
-        compare_aiter_ck=args.compare_aiter_ck,
-        init_scale=float(args.init_scale),
-    )
+    dtypes_to_run = ["fp8", "int8", "int4"] if args.in_dtype == "all" else [str(args.in_dtype)]
+    for dt in dtypes_to_run:
+        test_moe_gemm_2stage(
+            tokens=int(args.tokenNum),
+            model_dim=int(model_dim),
+            inter_dim=int(inter_dim),
+            experts=int(args.expert),
+            topk=int(args.topk),
+            tile_m=int(args.tile_m),
+            tile_n1=int(args.tile_n),
+            tile_k1=int(args.tile_k),
+            tile_n2=tile_n2,
+            tile_k2=tile_k2,
+            doweight_stage1=bool(args.doweight_stage1),
+            in_dtype=dt,
+            seed=int(args.seed),
+            num_iters=int(args.num_iters),
+            num_warmup=int(args.num_warmup),
+            moe_sort_mode=args.moe_sort_mode,
+            compare_aiter_ck=args.compare_aiter_ck,
+            init_scale=float(args.init_scale),
+        )
 
 
 

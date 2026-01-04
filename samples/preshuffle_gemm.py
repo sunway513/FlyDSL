@@ -20,7 +20,14 @@ from pyflir.utils import SmemAllocator
 from pyflir.dialects.ext import arith, gpu, buffer_ops, vector, rocdl
 from pyflir.lang.ir.types import T, memref
 
-from samples.mfma_preshuffle_pipeline import make_preshuffle_b_layout, load_b_pack_k32
+from samples.mfma_preshuffle_pipeline import (
+    buffer_copy_gmem16_dwordx4,
+    lds_load_pack_k32,
+    lds_store_16b_xor16,
+    make_preshuffle_b_layout,
+    load_b_pack_k32,
+    tile_chunk_coord_i32,
+)
 
 
 def compile_preshuffle_gemm_a8(
@@ -255,30 +262,24 @@ def compile_preshuffle_gemm_a8(
             atom_a_g2r16 = flir.make_copy_atom(_elem_type(), vector_size=16)
 
             def load_a_16(idx_i32):
-                a_view = flir.TensorView(
-                    arg_a,
-                    (16,),
-                    strides=(1,),
-                    base_indices=(idx_i32,),
-                    element_type=_elem_type(),
-                )
-                return flir.copy(
-                    atom_a_g2r16,
-                    a_view,
-                    None,
-                    alignment=16,
-                    return_vector=True,
-                    src_buffer_resource=a_rsrc,
-                    src_buffer_offset_in_bytes=False,
+                return buffer_copy_gmem16_dwordx4(
+                    flir,
+                    arg=arg_a,
+                    elem_type=_elem_type(),
+                    idx_i32=idx_i32,
+                    atom_g2r16=atom_a_g2r16,
+                    rsrc=a_rsrc,
                 )
 
             def a_tile_chunk_coord_i32(i: int):
-                chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
-                tile_idx_i32 = tx_i32_base + chunk_off_i32
-                coord_a_local_i32 = flir.idx2crd(tile_idx_i32, layout_a_tile_div4)
-                row_a_local = flir.get(coord_a_local_i32, 0)
-                col_a_local_i32 = flir.get(coord_a_local_i32, 1)
-                return row_a_local, col_a_local_i32
+                return tile_chunk_coord_i32(
+                    flir,
+                    arith,
+                    tx_i32_base=tx_i32_base,
+                    i=i,
+                    total_threads=total_threads,
+                    layout_tile_div4=layout_a_tile_div4,
+                )
 
             def load_a_tile(base_k_div4):
                 parts = []
@@ -294,20 +295,22 @@ def compile_preshuffle_gemm_a8(
             def store_a_tile_to_lds(vec_a_parts, lds_base):
                 for i in range_constexpr(num_a_loads):
                     row_a_local, col_a_local_i32 = a_tile_chunk_coord_i32(i)
-                    col_a_local_bytes = col_a_local_i32 * c4
-                    col_swz = flir.swizzle_xor16(row_a_local, col_a_local_bytes, k_blocks16)
-                    coord_store = flir.make_coord(row_a_local, col_swz)
-                    idx_0 = flir.crd2idx(coord_store, layout_lds)
-                    idx_0 = arith.ArithValue(idx_0) + lds_base
-                    a_vec = vector.bitcast(_vec16_type(), vec_a_parts[i])
-                    s_view = flir.TensorView(
-                        lds_a,
-                        (16,),
-                        strides=(1,),
-                        base_indices=(idx_0,),
-                        element_type=_elem_type(),
+                    lds_store_16b_xor16(
+                        flir,
+                        arith,
+                        vector,
+                        lds_memref=lds_a,
+                        vec16_ty=_vec16_type(),
+                        elem_type=_elem_type(),
+                        atom_s16=atom_a_g2r16,
+                        layout_lds=layout_lds,
+                        row_local=row_a_local,
+                        col_local_i32=col_a_local_i32,
+                        tx_c4=c4,
+                        k_blocks16=k_blocks16,
+                        lds_base=lds_base,
+                        vec_part_i32x4=vec_a_parts[i],
                     )
-                    flir.copy(atom_a_g2r16, a_vec, s_view, alignment=16)
 
             def prefetch_ab_tile(base_k):
                 base_k_div4 = base_k / 4
@@ -351,13 +354,22 @@ def compile_preshuffle_gemm_a8(
                         mi_val = arith.constant(mi * 16, index=True)
                         curr_row_a_lds = row_a_lds + mi_val
                         col_base_swz = flir.swizzle_xor16(curr_row_a_lds, col_base, k_blocks16)
-                        coord_a16 = flir.make_coord(curr_row_a_lds, col_base_swz)
-                        idx_a16 = flir.crd2idx(coord_a16, layout_lds)
-                        idx_a16 = arith.ArithValue(idx_a16) + lds_base
-                        loaded_a16 = vector.load_op(_vec16_type(), lds_a, [idx_a16])
-                        a_vec128 = vector.bitcast(T.i64x2, loaded_a16)
-                        a_pack = vector.extract(
-                            a_vec128, static_position=[half], dynamic_position=[]
+                        a_pack = lds_load_pack_k32(
+                            flir,
+                            arith,
+                            vector,
+                            lds_memref=lds_a,
+                            layout_lds=layout_lds,
+                            k_blocks16=k_blocks16,
+                            curr_row_a_lds=curr_row_a_lds,
+                            col_base=col_base,
+                            half=half,
+                            lds_base=lds_base,
+                            ck_lds128=True,
+                            vec16_ty=_vec16_type(),
+                            vec8_ty=_vec16_type(),  # unused in ck_lds128=True path
+                            vec2_i64_ty=T.i64x2,
+                            vec1_i64_ty=T.vec(1, T.i64),
                         )
                         for ni in range_constexpr(num_acc_n):
                             acc_idx = mi * num_acc_n + ni
@@ -404,6 +416,8 @@ def compile_preshuffle_gemm_a8(
             rocdl.sched_barrier(0)
 
             def hot_loop_scheduler():
+                if tile_m == 16:
+                    return
                 # - MFMA group size per "slot": num_acc_n
                 # - Total MFMA per tile: k_unroll * m_repeat * num_acc_n
                 # - We emit (mfma_group + dsrd + mfma_group) per scheduler iteration.
@@ -443,14 +457,14 @@ def compile_preshuffle_gemm_a8(
             lds_base0 = arith.constant(0, index=True)
             lds_base1 = lds_tile_elems
 
-            # Prologue: tile-0
-            k0 = arith.constant(0, index=True)
-            a_regs0, b_tile0 = prefetch_ab_tile(k0)
-            store_a_tile_to_lds(a_regs0, lds_base0)
-            gpu.barrier()
-            accs = [acc_init] * (num_acc_n * m_repeat)
-
             if lds_stage == 2:
+                # Prologue: tile-0
+                k0 = arith.constant(0, index=True)
+                a_regs0, b_tile0 = prefetch_ab_tile(k0)
+                store_a_tile_to_lds(a_regs0, lds_base0)
+                gpu.barrier()
+                accs = [acc_init] * (num_acc_n * m_repeat)
+
                 # Ping-pong LDS (2 buffers), same as the original tuned kernel.
                 lds_base_pong = lds_base0
                 lds_base_ping = lds_base1
@@ -507,6 +521,13 @@ def compile_preshuffle_gemm_a8(
                 # - Intrawave schedule
                 # - Global prefetch 2 (regs double-buffer)
                 # - Local shared memory buffer 1 (single LDS tile for A)
+                # Prologue: tile-0
+                k0 = arith.constant(0, index=True)
+                a_regs0, b_tile0 = prefetch_ab_tile(k0)
+                store_a_tile_to_lds(a_regs0, lds_base0)
+                gpu.barrier()
+                accs = [acc_init] * (num_acc_n * m_repeat)
+
                 lds_base = lds_base0
                 b_tile_cur = b_tile0
 

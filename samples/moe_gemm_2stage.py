@@ -23,7 +23,14 @@ from pyflir.lang.ir.types import T as I
 
 from pyflir.dialects.ext import arith, gpu, buffer_ops, llvm, vector, rocdl
 
-from samples.mfma_preshuffle_pipeline import make_preshuffle_b_layout, load_b_pack_k32
+from samples.mfma_preshuffle_pipeline import (
+    buffer_copy_gmem16_dwordx4,
+    lds_load_pack_k32,
+    lds_store_16b_xor16,
+    make_preshuffle_b_layout,
+    load_b_pack_k32,
+    tile_chunk_coord_i32,
+)
 
 
 def compile_moe_gemm1(
@@ -245,12 +252,14 @@ def compile_moe_gemm1(
             topk_i32 = arith.i32(topk)
 
             def x_tile_chunk_coord_i32(i: int):
-                chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
-                tile_idx_i32 = tx_i32_base + chunk_off_i32
-                coord_local = flir.idx2crd(tile_idx_i32, layout_x_tile_div4)
-                row_local = flir.get(coord_local, 0)
-                col_local_i32 = flir.get(coord_local, 1)
-                return row_local, col_local_i32
+                return tile_chunk_coord_i32(
+                    flir,
+                    arith,
+                    tx_i32_base=tx_i32_base,
+                    i=i,
+                    total_threads=total_threads,
+                    layout_tile_div4=layout_x_tile_div4,
+                )
 
             # CK-aligned: decode token once (per thread's M-slice) and build a base row offset.
             x_row_base_div4 = []
@@ -275,21 +284,13 @@ def compile_moe_gemm1(
 
                 `idx_i32` is an i32-element (dword) offset (not bytes), matching GEMM.
                 """
-                x_view = flir.TensorView(
-                    arg_x,
-                    (16,),
-                    strides=(1,),
-                    base_indices=(idx_i32,),
-                    element_type=x_elem,
-                )
-                return flir.copy(
-                    atom_x_g2r16,
-                    x_view,
-                    None,
-                    alignment=16,
-                    return_vector=True,
-                    src_buffer_resource=x_rsrc,
-                    src_buffer_offset_in_bytes=False,
+                return buffer_copy_gmem16_dwordx4(
+                    flir,
+                    arg=arg_x,
+                    elem_type=x_elem,
+                    idx_i32=idx_i32,
+                    atom_g2r16=atom_x_g2r16,
+                    rsrc=x_rsrc,
                 )
 
             def load_x_tile(base_k):
@@ -396,22 +397,22 @@ def compile_moe_gemm1(
                     # Match test_preshuffle_gemm.py exactly: per-thread 16B chunk mapping.
                     row_local = x_row_local[i]
                     col_local_i32 = x_col_local_i32[i]
-                    col_0 = col_local_i32 * c4
-                    col_swz = flir.swizzle_xor16(row_local, col_0, k_blocks16)
-                    coord_store_0 = flir.make_coord(row_local, col_swz)
-                    idx_0 = flir.crd2idx(coord_store_0, layout_lds)
-                    idx_0 = arith.ArithValue(idx_0) + lds_base
-
-                    v16 = vector.bitcast(vec16_x, vec_x_in_parts[i])
-                    s_view = flir.TensorView(
-                        lds_x,
-                        (16,),
-                        strides=(1,),
-                        base_indices=(idx_0,),
-                        element_type=x_elem,
+                    lds_store_16b_xor16(
+                        flir,
+                        arith,
+                        vector,
+                        lds_memref=lds_x,
+                        vec16_ty=vec16_x,
+                        elem_type=x_elem,
+                        atom_s16=atom_x_s16,
+                        layout_lds=layout_lds,
+                        row_local=row_local,
+                        col_local_i32=col_local_i32,
+                        tx_c4=c4,
+                        k_blocks16=k_blocks16,
+                        lds_base=lds_base,
+                        vec_part_i32x4=vec_x_in_parts[i],
                     )
-                    # Force LDS128 stores like test_preshuffle_gemm.py
-                    flir.copy(atom_x_s16, v16, s_view, alignment=16)
 
             def compute_tile(
                 acc_gate_in,
@@ -459,23 +460,23 @@ def compile_moe_gemm1(
                         mi_val = arith.constant(mi * 16, index=True)
                         curr_row_a_lds = row_a_lds + mi_val
 
-                        # Read X from LDS using the same (row,col)->(row,col') xor swizzle as the store.
-                        col_base_swizzled = flir.swizzle_xor16(curr_row_a_lds, col_base, k_blocks16)
-                        if _ck_lds128:
-                            coord_a16 = flir.make_coord(curr_row_a_lds, col_base_swizzled)
-                            idx_a16 = flir.crd2idx(coord_a16, layout_lds)
-                            idx_a16 = arith.ArithValue(idx_a16) + lds_base
-                            loaded_a16 = vector.load_op(vec16_x, lds_x, [idx_a16])
-                            a_vec128 = vector.bitcast(vec2_i64, loaded_a16)
-                            a_pack = vector.extract(a_vec128, static_position=[half], dynamic_position=[])
-                        else:
-                            col_swizzled = col_base_swizzled + half * 8
-                            coord_a = flir.make_coord(curr_row_a_lds, col_swizzled)
-                            idx_a = flir.crd2idx(coord_a, layout_lds)
-                            idx_a = arith.ArithValue(idx_a) + lds_base
-                            loaded_a8 = vector.load_op(vec8_x, lds_x, [idx_a])
-                            a_vec64 = vector.bitcast(vec1_i64, loaded_a8)
-                            a_pack = vector.extract(a_vec64, static_position=[0], dynamic_position=[])
+                        a_pack = lds_load_pack_k32(
+                            flir,
+                            arith,
+                            vector,
+                            lds_memref=lds_x,
+                            layout_lds=layout_lds,
+                            k_blocks16=k_blocks16,
+                            curr_row_a_lds=curr_row_a_lds,
+                            col_base=col_base,
+                            half=half,
+                            lds_base=lds_base,
+                            ck_lds128=bool(_ck_lds128),
+                            vec16_ty=vec16_x,
+                            vec8_ty=vec8_x,
+                            vec2_i64_ty=vec2_i64,
+                            vec1_i64_ty=vec1_i64,
+                        )
 
                         for ni in range_constexpr(num_acc_n):
                             acc_idx = mi * num_acc_n + ni
@@ -905,31 +906,26 @@ def compile_moe_gemm2(
 
             topk_i32 = arith.i32(topk)
             mask24 = arith.i32(0xFFFFFF)
+            tokens_i32 = arith.i32(tokens)
 
             def x_tile_chunk_coord_i32(i: int):
-                chunk_off_i32 = arith.constant(i * total_threads * 4, index=True)
-                tile_idx_i32 = tx_i32_base + chunk_off_i32
-                coord_local = flir.idx2crd(tile_idx_i32, layout_x_tile_div4)
-                row_local = flir.get(coord_local, 0)
-                col_local_i32 = flir.get(coord_local, 1)
-                return row_local, col_local_i32
+                return tile_chunk_coord_i32(
+                    flir,
+                    arith,
+                    tx_i32_base=tx_i32_base,
+                    i=i,
+                    total_threads=total_threads,
+                    layout_tile_div4=layout_x_tile_div4,
+                )
 
             def load_x_16(idx_i32):
-                x_view = flir.TensorView(
-                    arg_x,
-                    (16,),
-                    strides=(1,),
-                    base_indices=(idx_i32,),
-                    element_type=x_elem,
-                )
-                return flir.copy(
-                    atom_x_g2r16,
-                    x_view,
-                    None,
-                    alignment=16,
-                    return_vector=True,
-                    src_buffer_resource=x_rsrc,
-                    src_buffer_offset_in_bytes=False,  # idx_i32 is in dword units
+                return buffer_copy_gmem16_dwordx4(
+                    flir,
+                    arg=arg_x,
+                    elem_type=x_elem,
+                    idx_i32=idx_i32,
+                    atom_g2r16=atom_x_g2r16,
+                    rsrc=x_rsrc,
                 )
 
             # CK-aligned: decode routed token once (per thread's M-slice) and build a base offset.
@@ -945,8 +941,21 @@ def compile_moe_gemm2(
                 fused_i = buffer_ops.buffer_load(sorted_rsrc, sorted_row_i, vec_width=1, dtype=i32)
                 t_i32 = arith.andi(fused_i, mask24)
                 s_i32 = arith.shrui(fused_i, arith.i32(24))
+                # Guard sentinel padded token id (t_i32 == tokens) / any OOB:
+                # clamp row index so global loads stay in-bounds; masked stores/atomics
+                # will zero out contributions for invalid rows.
+                t_valid = flir.arith.CmpIOp(
+                    flir.arith.CmpIPredicate.ult,
+                    arith.ArithValue(t_i32).value,
+                    arith.ArithValue(tokens_i32).value,
+                ).result
+                t_i32_safe = flir.arith.SelectOp(
+                    arith.ArithValue(t_valid).value,
+                    arith.ArithValue(t_i32).value,
+                    arith.constant(0, type=T.i32()).value,
+                ).result
                 # A2 row index = t*topk + s (still i32 here).
-                row_ts_i32 = arith.ArithValue(t_i32) * topk_i32 + s_i32
+                row_ts_i32 = arith.ArithValue(t_i32_safe) * topk_i32 + s_i32
                 row_ts_idx = arith.index_cast(ir.IndexType.get(), row_ts_i32)
                 # Base row offset in dword units: row_ts_idx * (k_in/4)
                 x_row_base_div4.append(arith.ArithValue(row_ts_idx) * c_k_div4)
@@ -1033,22 +1042,22 @@ def compile_moe_gemm2(
                 for i in range_constexpr(num_x_loads):
                     row_local = x_row_local[i]
                     col_local_i32 = x_col_local_i32[i]
-                    col_local_bytes = col_local_i32 * c4
-                    col_swz = flir.swizzle_xor16(row_local, col_local_bytes, k_blocks16)
-                    coord_store_0 = flir.make_coord(row_local, col_swz)
-                    idx_0 = flir.crd2idx(coord_store_0, layout_lds)
-                    idx_0 = arith.ArithValue(idx_0) + lds_base
-
-                    v16 = vector.bitcast(vec16_x, vec_x_in_parts[i])
-                    s_view = flir.TensorView(
-                        lds_x,
-                        (16,),
-                        strides=(1,),
-                        base_indices=(idx_0,),
-                        element_type=x_elem,
+                    lds_store_16b_xor16(
+                        flir,
+                        arith,
+                        vector,
+                        lds_memref=lds_x,
+                        vec16_ty=vec16_x,
+                        elem_type=x_elem,
+                        atom_s16=atom_x_s16,
+                        layout_lds=layout_lds,
+                        row_local=row_local,
+                        col_local_i32=col_local_i32,
+                        tx_c4=c4,
+                        k_blocks16=k_blocks16,
+                        lds_base=lds_base,
+                        vec_part_i32x4=vec_x_in_parts[i],
                     )
-                    # Force LDS128 stores like test_preshuffle_gemm.py
-                    flir.copy(atom_x_s16, v16, s_view, alignment=16)
 
             def compute_tile(acc_in, b_tile_in, lds_base, *, prefetch_epilogue: bool = False):
                 acc_list = list(acc_in)
@@ -1077,22 +1086,23 @@ def compile_moe_gemm2(
                         mi_val = arith.constant(mi * 16, index=True)
                         curr_row_a_lds = row_a_lds + mi_val
 
-                        col_base_swizzled = flir.swizzle_xor16(curr_row_a_lds, col_base, k_blocks16)
-                        if _ck_lds128:
-                            coord_a16 = flir.make_coord(curr_row_a_lds, col_base_swizzled)
-                            idx_a16 = flir.crd2idx(coord_a16, layout_lds)
-                            idx_a16 = arith.ArithValue(idx_a16) + lds_base
-                            loaded_a16 = vector.load_op(vec16_x, lds_x, [idx_a16])
-                            a_vec128 = vector.bitcast(vec2_i64, loaded_a16)
-                            a_pack = vector.extract(a_vec128, static_position=[half], dynamic_position=[])
-                        else:
-                            col_swizzled = col_base_swizzled + half * 8
-                            coord_a = flir.make_coord(curr_row_a_lds, col_swizzled)
-                            idx_a = flir.crd2idx(coord_a, layout_lds)
-                            idx_a = arith.ArithValue(idx_a) + lds_base
-                            loaded_a8 = vector.load_op(vec8_x, lds_x, [idx_a])
-                            a_vec64 = vector.bitcast(vec1_i64, loaded_a8)
-                            a_pack = vector.extract(a_vec64, static_position=[0], dynamic_position=[])
+                        a_pack = lds_load_pack_k32(
+                            flir,
+                            arith,
+                            vector,
+                            lds_memref=lds_x,
+                            layout_lds=layout_lds,
+                            k_blocks16=k_blocks16,
+                            curr_row_a_lds=curr_row_a_lds,
+                            col_base=col_base,
+                            half=half,
+                            lds_base=lds_base,
+                            ck_lds128=bool(_ck_lds128),
+                            vec16_ty=vec16_x,
+                            vec8_ty=vec8_x,
+                            vec2_i64_ty=vec2_i64,
+                            vec1_i64_ty=vec1_i64,
+                        )
 
                         for ni in range_constexpr(num_acc_n):
                             acc_idx = mi * num_acc_n + ni
