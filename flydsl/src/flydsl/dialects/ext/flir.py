@@ -480,13 +480,12 @@ class ShapeType(Type):
     @staticmethod
     def get(rank: int, context=None):
         """Create a shape type with given rank."""
-        # This would need to be implemented in C++ bindings
-        # For now, return a generic type
         from _mlir.ir import Context
         if context is None:
             context = Context.current
-        # Placeholder - would use actual ODS-generated type
-        return Type.parse(f"!flir.shape<{rank}>", context=context)
+        spec = "(" + ",".join(["?"] * int(rank)) + ")"
+        # Rank-1 can be printed as "?" in C++, but keep tuple form here for clarity/stability.
+        return Type.parse(f"!flir.shape<{spec}>", context=context)
 
 
 class StrideType(Type):
@@ -498,7 +497,8 @@ class StrideType(Type):
         from _mlir.ir import Context
         if context is None:
             context = Context.current
-        return Type.parse(f"!flir.stride<{rank}>", context=context)
+        spec = "(" + ",".join(["?"] * int(rank)) + ")"
+        return Type.parse(f"!flir.stride<{spec}>", context=context)
 
 
 class LayoutType(Type):
@@ -510,7 +510,8 @@ class LayoutType(Type):
         from _mlir.ir import Context
         if context is None:
             context = Context.current
-        return Type.parse(f"!flir.layout<{rank}>", context=context)
+        spec = "(" + ",".join(["?"] * int(rank)) + ")"
+        return Type.parse(f"!flir.layout<{spec}:{spec}>", context=context)
 
 
 class CoordType(Type):
@@ -522,7 +523,8 @@ class CoordType(Type):
         from _mlir.ir import Context
         if context is None:
             context = Context.current
-        return Type.parse(f"!flir.coord<{rank}>", context=context)
+        spec = "(" + ",".join(["?"] * int(rank)) + ")"
+        return Type.parse(f"!flir.coord<{spec}>", context=context)
 
 
 # -----------------------------------------------------------------------------

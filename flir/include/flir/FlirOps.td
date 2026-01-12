@@ -22,13 +22,14 @@ def Flir_CoordType : Type<CPred<"llvm::isa<::mlir::flir::CoordType>($_self)">, "
 //===----------------------------------------------------------------------===//
 
 def Flir_MakeShapeOp : Flir_Op<"make_shape", [Pure]> {
-  let summary = "Create a flir shape (type-mode: structure/spec in type, dynamic leaves in operands)";
+  let summary = "Create a flir shape (type-mode: pattern in type, dynamic leaves in operands)";
   let description = [{
     Creates a shape value.
     This op is **type-mode only**:
-      - The tuple structure and any compile-time constants are encoded in the result type
-        (`!flir.shape<...>` / structure+dims).
-      - The operands contain **only the dynamic leaf index values** (in left-to-right leaf order).
+      - The tuple/pattern (including constants) is encoded in the result type (`!flir.shape<...>`).
+      - Dynamic leaves are encoded as `?` in the type pattern and mapped to operands by
+        the embedded `dyncElemIdx` inside `!flir.dync_i*`.
+      - The operands contain **only the dynamic leaf values** (indexed by `dyncElemIdx`).
   }];
   let arguments = (ins Variadic<Index>:$values);
   let results = (outs Flir_ShapeType:$result);
@@ -37,13 +38,14 @@ def Flir_MakeShapeOp : Flir_Op<"make_shape", [Pure]> {
 }
 
 def Flir_MakeStrideOp : Flir_Op<"make_stride", [Pure]> {
-  let summary = "Create a flir stride (type-mode: structure/spec in type, dynamic leaves in operands)";
+  let summary = "Create a flir stride (type-mode: pattern in type, dynamic leaves in operands)";
   let description = [{
     Creates a stride value.
     This op is **type-mode only**:
-      - The tuple structure and any compile-time constants are encoded in the result type
-        (`!flir.stride<...>` / structure+dims).
-      - The operands contain **only the dynamic leaf index values** (in left-to-right leaf order).
+      - The tuple/pattern (including constants) is encoded in the result type (`!flir.stride<...>`).
+      - Dynamic leaves are encoded as `?` in the type pattern and mapped to operands by
+        the embedded `dyncElemIdx` inside `!flir.dync_i*`.
+      - The operands contain **only the dynamic leaf values** (indexed by `dyncElemIdx`).
   }];
   let arguments = (ins Variadic<Index>:$values);
   let results = (outs Flir_StrideType:$result);

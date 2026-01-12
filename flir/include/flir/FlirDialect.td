@@ -25,4 +25,10 @@ def Flir_Dialect : Dialect {
   }];
 }
 
+class Flir_Attr<string attrName, string attrMnemonic,
+                   list<Trait> traits = []>
+    : AttrDef<Flir_Dialect, attrName, traits> {
+  let mnemonic = attrMnemonic;
+}
+
 #endif // FLIR_DIALECT
