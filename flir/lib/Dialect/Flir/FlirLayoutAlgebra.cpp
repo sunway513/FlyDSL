@@ -1,11 +1,8 @@
 //===- FlirLayoutAlgebra.cpp - Type-level layout algebra helpers ---------===//
 
 #include "flir/FlirLayoutAlgebra.h"
+#include "flir/FlirPatternAttr.h"
 
-#include "flir/FlirDialect.h"
-
-#include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/Builders.h"
 #include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <cstdint>
@@ -56,33 +53,38 @@ static void flattenLeaves(const PatternNode &n,
     flattenLeaves(c, out);
 }
 
-static PatternNode parsePatternAttr(Attribute pat) {
-  if (auto arr = dyn_cast<ArrayAttr>(pat)) {
-    std::vector<PatternNode> kids;
-    kids.reserve(arr.size());
-    for (auto e : arr.getValue())
-      kids.push_back(parsePatternAttr(e));
-    return PatternNode::tuple(std::move(kids));
+static PatternNode parsePattern(Attribute pattern) {
+  if (!pattern)
+    return PatternNode::leaf(std::nullopt);
+  if (auto arr = llvm::dyn_cast<ArrayAttr>(pattern)) {
+    std::vector<PatternNode> children;
+    children.reserve(arr.size());
+    for (Attribute e : arr.getValue())
+      children.push_back(parsePattern(e));
+    return PatternNode::tuple(std::move(children));
   }
-  if (auto i = dyn_cast<IntegerAttr>(pat))
-    return PatternNode::leaf(i.getInt());
-  // Dynamic / wildcard leaves.
+  if (auto i = llvm::dyn_cast<IntegerAttr>(pattern))
+    return PatternNode::leaf(i.getValue().getSExtValue());
+  if (llvm::isa<DyncI32Attr>(pattern) || llvm::isa<UnderscoreAttr>(pattern))
+    return PatternNode::leaf(std::nullopt);
+  // Unknown leaf kind => treat as dynamic/unknown.
   return PatternNode::leaf(std::nullopt);
 }
 
-static Attribute patternNodeToAttr(MLIRContext *ctx, const PatternNode &n, int32_t &dyncIdx) {
-  Builder b(ctx);
+static Attribute serializePatternAttr(MLIRContext *ctx, const PatternNode &n,
+                                      int32_t &dyncElemIdx) {
   if (n.isLeaf) {
-    if (n.value.has_value()) {
-      return IntegerAttr::get(b.getIntegerType(64), APInt(64, static_cast<uint64_t>(*n.value), true));
-    }
-    return DyncI64Attr::get(ctx, dyncIdx++, /*divisibility=*/1);
+    if (!n.value.has_value())
+      return DyncI32Attr::get(ctx, dyncElemIdx++, /*divisibility=*/1);
+    return IntegerAttr::get(IntegerType::get(ctx, 32),
+                            APInt(32, static_cast<uint64_t>(*n.value),
+                                  /*isSigned=*/true));
   }
-  SmallVector<Attribute, 8> elems;
-  elems.reserve(n.children.size());
+  llvm::SmallVector<Attribute, 8> children;
+  children.reserve(n.children.size());
   for (auto &c : n.children)
-    elems.push_back(patternNodeToAttr(ctx, c, dyncIdx));
-  return ArrayAttr::get(ctx, elems);
+    children.push_back(serializePatternAttr(ctx, c, dyncElemIdx));
+  return ArrayAttr::get(ctx, children);
 }
 
 static PatternNode makeFlatTupleFromLeaves(const std::vector<std::optional<int64_t>> &leaves) {
@@ -159,7 +161,10 @@ compositionImpl(const PatternNode &lhsShape, const PatternNode &lhsStride,
 
   for (size_t i = 0; i < lhsShapes.size(); ++i) {
     auto currShape = lhsShapes[i];
-    auto currStride = (i < lhsStrides.size()) ? lhsStrides[i] : std::nullopt;
+    // Avoid GCC false-positive maybe-uninitialized warnings on std::optional.
+    std::optional<int64_t> currStride = std::nullopt;
+    if (i < lhsStrides.size())
+      currStride = lhsStrides[i];
 
     auto nextShape = ceilDivUI(currShape, restStride);
     auto nextStride = ceilDivUI(restStride, currShape);
@@ -266,34 +271,46 @@ static std::optional<int64_t> sizeOfShape(const PatternNode &shape) {
 FailureOr<LayoutType> mlir::flir::inferCompositionType(MLIRContext *ctx,
                                                        LayoutType lhs,
                                                        LayoutType rhs) {
-  PatternNode lhsShape = parsePatternAttr(lhs.getShapePattern());
-  PatternNode lhsStride = parsePatternAttr(lhs.getStridePattern());
-  PatternNode rhsShape = parsePatternAttr(rhs.getShapePattern());
-  PatternNode rhsStride = parsePatternAttr(rhs.getStridePattern());
+  auto lhsShapeAttr = lhs.getShapePattern();
+  auto lhsStrideAttr = lhs.getStridePattern();
+  auto rhsShapeAttr = rhs.getShapePattern();
+  auto rhsStrideAttr = rhs.getStridePattern();
 
-  // Runtime-capable policy: if any operand leaf is dynamic/unknown, return a
-  // rank-only dynamic layout type and let lowering compute values at runtime.
-  // (We cannot soundly predict the exact output rank/structure without static
-  // values because the decomposition depends on divisions and early-exit tests.)
+  int64_t lhsRank = getPatternRank(lhsShapeAttr);
+  int64_t rhsRank = getPatternRank(rhsShapeAttr);
+
+  PatternNode lhsShape = parsePattern(lhsShapeAttr);
+  PatternNode lhsStride = parsePattern(lhsStrideAttr);
+  PatternNode rhsShape = parsePattern(rhsShapeAttr);
+  PatternNode rhsStride = parsePattern(rhsStrideAttr);
+
+  // Conservative: require fully static leaves for now.
   if (!allStaticLeaves(lhsShape) || !allStaticLeaves(lhsStride) ||
       !allStaticLeaves(rhsShape) || !allStaticLeaves(rhsStride))
-    return LayoutType::get(ctx, std::max(lhs.getRank(), rhs.getRank()));
+    return makeRankOnlyLayoutType(ctx, std::max(lhsRank, rhsRank));
 
   auto [outShape, outStride] = compositionImpl(lhsShape, lhsStride, rhsShape, rhsStride);
-  int32_t dyncIdx = 0;
-  Attribute outShapeAttr = patternNodeToAttr(ctx, outShape, dyncIdx);
-  dyncIdx = 0;
-  Attribute outStrideAttr = patternNodeToAttr(ctx, outStride, dyncIdx);
-  return LayoutType::get(ctx, outShapeAttr, outStrideAttr);
+  int32_t si = 0, di = 0;
+  return LayoutType::get(ctx,
+                         serializePatternAttr(ctx, outShape, si),
+                         serializePatternAttr(ctx, outStride, di));
 }
 
 FailureOr<LayoutType> mlir::flir::inferLogicalProductType(MLIRContext *ctx,
                                                           LayoutType block,
                                                           LayoutType tiler) {
-  PatternNode bShape = parsePatternAttr(block.getShapePattern());
-  PatternNode bStride = parsePatternAttr(block.getStridePattern());
-  PatternNode tShape = parsePatternAttr(tiler.getShapePattern());
-  PatternNode tStride = parsePatternAttr(tiler.getStridePattern());
+  auto bShapeAttr = block.getShapePattern();
+  auto bStrideAttr = block.getStridePattern();
+  auto tShapeAttr = tiler.getShapePattern();
+  auto tStrideAttr = tiler.getStridePattern();
+
+  int64_t bRank = getPatternRank(bShapeAttr);
+  int64_t tRank = getPatternRank(tShapeAttr);
+
+  PatternNode bShape = parsePattern(bShapeAttr);
+  PatternNode bStride = parsePattern(bStrideAttr);
+  PatternNode tShape = parsePattern(tShapeAttr);
+  PatternNode tStride = parsePattern(tStrideAttr);
 
   // Match current lowering's semantics: flatten then concatenate.
   std::vector<std::optional<int64_t>> bShapeLeaves, bStrideLeaves, tShapeLeaves, tStrideLeaves;
@@ -305,13 +322,13 @@ FailureOr<LayoutType> mlir::flir::inferLogicalProductType(MLIRContext *ctx,
   // Conservative: require static.
   auto blockSize = sizeOfShape(bShape);
   if (!blockSize)
-    return LayoutType::get(ctx, block.getRank() + tiler.getRank());
+    return makeRankOnlyLayoutType(ctx, bRank + tRank);
   for (auto &v : bStrideLeaves)
     if (!v)
-      return LayoutType::get(ctx, block.getRank() + tiler.getRank());
+      return makeRankOnlyLayoutType(ctx, bRank + tRank);
   for (auto &v : tStrideLeaves)
     if (!v)
-      return LayoutType::get(ctx, block.getRank() + tiler.getRank());
+      return makeRankOnlyLayoutType(ctx, bRank + tRank);
 
   std::vector<std::optional<int64_t>> outShapeLeaves = bShapeLeaves;
   outShapeLeaves.insert(outShapeLeaves.end(), tShapeLeaves.begin(), tShapeLeaves.end());
@@ -322,24 +339,31 @@ FailureOr<LayoutType> mlir::flir::inferLogicalProductType(MLIRContext *ctx,
 
   PatternNode outShape = makeFlatTupleFromLeaves(outShapeLeaves);
   PatternNode outStride = makeFlatTupleFromLeaves(outStrideLeaves);
-  int32_t dyncIdx = 0;
-  Attribute outShapeAttr = patternNodeToAttr(ctx, outShape, dyncIdx);
-  dyncIdx = 0;
-  Attribute outStrideAttr = patternNodeToAttr(ctx, outStride, dyncIdx);
-  return LayoutType::get(ctx, outShapeAttr, outStrideAttr);
+  int32_t si = 0, di = 0;
+  return LayoutType::get(ctx,
+                         serializePatternAttr(ctx, outShape, si),
+                         serializePatternAttr(ctx, outStride, di));
 }
 
 FailureOr<LayoutType> mlir::flir::inferLogicalDivideType(MLIRContext *ctx,
                                                          LayoutType layout,
                                                          LayoutType tiler) {
-  PatternNode lShape = parsePatternAttr(layout.getShapePattern());
-  PatternNode lStride = parsePatternAttr(layout.getStridePattern());
-  PatternNode tShape = parsePatternAttr(tiler.getShapePattern());
-  PatternNode tStride = parsePatternAttr(tiler.getStridePattern());
+  auto lShapeAttr = layout.getShapePattern();
+  auto lStrideAttr = layout.getStridePattern();
+  auto tShapeAttr = tiler.getShapePattern();
+  auto tStrideAttr = tiler.getStridePattern();
+
+  int64_t lRank = getPatternRank(lShapeAttr);
+  int64_t tRank = getPatternRank(tShapeAttr);
+
+  PatternNode lShape = parsePattern(lShapeAttr);
+  PatternNode lStride = parsePattern(lStrideAttr);
+  PatternNode tShape = parsePattern(tShapeAttr);
+  PatternNode tStride = parsePattern(tStrideAttr);
 
   if (!allStaticLeaves(lShape) || !allStaticLeaves(lStride) ||
       !allStaticLeaves(tShape) || !allStaticLeaves(tStride))
-    return LayoutType::get(ctx, std::max(layout.getRank(), tiler.getRank()));
+    return makeRankOnlyLayoutType(ctx, std::max(lRank, tRank));
 
   auto inputSize = sizeOfShape(lShape);
   auto [compShape, compStride] = complementImpl(tShape, tStride, inputSize);
@@ -349,11 +373,10 @@ FailureOr<LayoutType> mlir::flir::inferLogicalDivideType(MLIRContext *ctx,
   PatternNode rhsStride = PatternNode::tuple({tStride, compStride});
 
   auto [outShape, outStride] = compositionImpl(lShape, lStride, rhsShape, rhsStride);
-  int32_t dyncIdx = 0;
-  Attribute outShapeAttr = patternNodeToAttr(ctx, outShape, dyncIdx);
-  dyncIdx = 0;
-  Attribute outStrideAttr = patternNodeToAttr(ctx, outStride, dyncIdx);
-  return LayoutType::get(ctx, outShapeAttr, outStrideAttr);
+  int32_t si = 0, di = 0;
+  return LayoutType::get(ctx,
+                         serializePatternAttr(ctx, outShape, si),
+                         serializePatternAttr(ctx, outStride, di));
 }
 
 

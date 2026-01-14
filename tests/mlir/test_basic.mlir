@@ -13,7 +13,7 @@ module {
   }
   
   func.func @test_all_types(%s: !flir.shape<(?,?,?)>, %st: !flir.stride<(?,?,?)>, 
-                            %l: !flir.layout<(?,?):(?,?)>, %c: !flir.coord<(?,?)>) {
+                           %l: !flir.layout<(?,?):(?,?)>, %c: !flir.coord<(?,?)>) {
     return
   }
 }

@@ -20,10 +20,4 @@ def Flir_Dialect : Dialect {
   let usePropertiesForAttributes = 1;
 }
 
-class Flir_Attr<string attrName, string attrMnemonic,
-                   list<Trait> traits = []>
-    : AttrDef<Flir_Dialect, attrName, traits> {
-  let mnemonic = attrMnemonic;
-}
-
 #endif // FLIR_DIALECT

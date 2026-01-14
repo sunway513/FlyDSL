@@ -6,29 +6,18 @@ include "mlir/IR/BuiltinAttributeInterfaces.td"
 
 include "flir/FlirDialect.td"
 
-def Flir_UnderscoreAttr : Flir_Attr<"Underscore", "underscore", []> {
+// A leaf wildcard in tuple patterns (printed as `*`).
+def Flir_UnderscoreAttr : AttrDef<Flir_Dialect, "Underscore"> {
+  let mnemonic = "underscore";
   let parameters = (ins);
   let assemblyFormat = "`*`";
 }
 
-def Flir_DyncI32Attr : Flir_Attr<"DyncI32", "dync_i32", []> {
-  let parameters = (ins
-    "int32_t":$dyncElemIdx,
-    "int32_t":$divisibility
-  );
+// A leaf dynamic placeholder in tuple patterns (printed as `?`).
+def Flir_DyncI32Attr : AttrDef<Flir_Dialect, "DyncI32"> {
+  let mnemonic = "dync_i32";
+  let parameters = (ins "int32_t":$dyncElemIdx, "int32_t":$divisibility);
   let assemblyFormat = "`?` $dyncElemIdx `{` `div` `=` $divisibility `}`";
-}
-
-def Flir_DyncI64Attr : Flir_Attr<"DyncI64", "dync_i64", []> {
-  let parameters = (ins
-    "int32_t":$dyncElemIdx,
-    "int32_t":$divisibility
-  );
-  let assemblyFormat = "`?` $dyncElemIdx `{` `div` `=` $divisibility `}`";
-}
-
-def Flir_DyncIntAttr : AnyAttrOf<[Flir_DyncI32Attr, Flir_DyncI64Attr]> {
-  let cppFunctionName = "isValidDyncIntAttr";
 }
 
 #endif // FLIR_ATTRDEFS

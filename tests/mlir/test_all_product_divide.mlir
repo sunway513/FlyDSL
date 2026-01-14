@@ -89,8 +89,8 @@ func.func @test_zipped_divide() -> index {
   %stride_tiler = flir.make_stride %c1, %c8 : (index, index) -> !flir.stride<(?,?)>
   %tiler = flir.make_layout %shape_tiler, %stride_tiler : (!flir.shape<(?,?)>, !flir.stride<(?,?)>) -> !flir.layout<(?,?):(?,?)>
   
-  %result = flir.zipped_divide %layout, %tiler : (!flir.layout<(?,?):(?,?)>, !flir.layout<(?,?):(?,?)>) -> !flir.layout<(?,?):(?,?)>
-  %size = flir.size %result : !flir.layout<(?,?):(?,?)> -> index
+  %result = flir.zipped_divide %layout, %tiler : (!flir.layout<(?,?):(?,?)>, !flir.layout<(?,?):(?,?)>) -> !flir.layout<(?,?,?,?):(?,?,?,?)>
+  %size = flir.size %result : !flir.layout<(?,?,?,?):(?,?,?,?)> -> index
   return %size : index
 }
 
@@ -108,7 +108,7 @@ func.func @test_flat_divide() -> index {
   %stride_tiler = flir.make_stride %c1, %c4 : (index, index) -> !flir.stride<(?,?)>
   %tiler = flir.make_layout %shape_tiler, %stride_tiler : (!flir.shape<(?,?)>, !flir.stride<(?,?)>) -> !flir.layout<(?,?):(?,?)>
   
-  %result = flir.flat_divide %layout, %tiler : (!flir.layout<(?,?):(?,?)>, !flir.layout<(?,?):(?,?)>) -> !flir.layout<(?,?):(?,?)>
-  %size = flir.size %result : !flir.layout<(?,?):(?,?)> -> index
+  %result = flir.flat_divide %layout, %tiler : (!flir.layout<(?,?):(?,?)>, !flir.layout<(?,?):(?,?)>) -> !flir.layout<(?,?,?,?):(?,?,?,?)>
+  %size = flir.size %result : !flir.layout<(?,?,?,?):(?,?,?,?)> -> index
   return %size : index
 }
