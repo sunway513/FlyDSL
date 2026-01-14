@@ -11,6 +11,8 @@ Pipelines:
 - `ck_v1_single_lds`: CK-like Intrawave + bpreshuffle v1 spirit (single LDS buffer for A)
 """
 
+import os
+
 import flydsl
 from flydsl.dialects.ext import flir
 from flydsl.dialects.ext.python_control_flow import range_constexpr
@@ -195,11 +197,13 @@ def compile_preshuffle_gemm_a8(
                 else None
             )
 
-            a_rsrc = buffer_ops.create_buffer_resource(arg_a)
-            b_rsrc = buffer_ops.create_buffer_resource(arg_b)
-            c_rsrc = buffer_ops.create_buffer_resource(arg_c)
-            scale_a_rsrc = buffer_ops.create_buffer_resource(arg_scale_a)
-            scale_b_rsrc = buffer_ops.create_buffer_resource(arg_scale_b)
+            # Note: We assume N is aligned (no N-tail support in this kernel).
+            a_rsrc = buffer_ops.create_buffer_resource(arg_a, max_size=False)
+            c_rsrc = buffer_ops.create_buffer_resource(arg_c, max_size=False)
+            scale_a_rsrc = buffer_ops.create_buffer_resource(arg_scale_a, max_size=False)
+
+            b_rsrc = buffer_ops.create_buffer_resource(arg_b, max_size=True)
+            scale_b_rsrc = buffer_ops.create_buffer_resource(arg_scale_b, max_size=True)
 
             bx_m = bx * tile_m
             by_n = by * tile_n
@@ -936,10 +940,13 @@ def compile_preshuffle_gemm_a8(
             c1 = arith.constant(1, index=True)
             bdx = arith.constant(256, index=True)
             # Dynamic launch sizes: avoid baking M/N into the host stub.
-            # NOTE: This assumes M and N are multiples of tile_m/tile_n (as in current tests).
+            # We support M-tail by launching ceil(M/tile_m) tiles in X and relying on hardware
+            # OOB checking (see max_size=False resources in the kernel). We keep N aligned for perf:
+            # grid.y uses exact division (no N-tail support).
             tm = arith.constant(tile_m, index=True)
             tn = arith.constant(tile_n, index=True)
-            gx = c_m / tm
+            one = arith.constant(1, index=True)
+            gx = (c_m + tm - one) / tm
             gy = c_n / tn
             flir.gpu_ext.LaunchFuncOp(
                 [module_name, "kernel_gemm"],
