@@ -6,9 +6,9 @@
 
 | Kernel | Builder Function | Dtypes | Key Feature |
 |---|---|---|---|
-| **LayerNorm** | `build_layernorm_module(M, N, dtype)` | f32, f16, bf16 | Two-pass vectorized normalization |
-| **RMSNorm** | `build_rmsnorm_module(M, N, dtype)` | f32, f16, bf16 | LDS-cached 3-pass pipeline |
-| **Softmax** | `build_softmax_module(M, N, dtype)` | f32, f16, bf16 | Online softmax, adaptive block size |
+| **LayerNorm** | `build_layernorm_module(M, N, dtype_str)` | f32, f16, bf16 | Two-pass vectorized normalization |
+| **RMSNorm** | `build_rmsnorm_module(M, N, dtype_str)` | f32, f16, bf16 | LDS-cached 3-pass pipeline |
+| **Softmax** | `build_softmax_module(M, N, dtype_str)` | f32, f16, bf16 | Online softmax, adaptive block size |
 | **GEMM** | `compile_preshuffle_gemm_a8(...)` | fp8, int8, int4, fp16, bf16 | Preshuffle B, ping-pong LDS, MFMA 16x16 |
 | **Mixed GEMM** | `compile_mxfp4_preshuffle_gemm(...)` | A:fp8/fp4, B:fp4 | MXFP4 mixed-precision with per-block scales |
 | **MoE GEMM** | `compile_moe_gemm1(...)` | fp8, fp16, int8, int4 | Dual accumulator, SiLU gating, expert routing |

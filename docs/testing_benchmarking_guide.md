@@ -242,7 +242,7 @@ Features:
 ```python
 checkAllclose(output, reference, rtol=1e-2, atol=1e-2, tol_err_ratio=0.05)
 ```
-Returns percent mismatch (0 = pass). Uses colored ANSI output for pass/fail indication.
+Returns a mismatch ratio in [0, 1] (0 = pass). Uses colored ANSI output for pass/fail indication.
 
 **`verify_output()` function:**
 ```python
@@ -349,7 +349,7 @@ def test_my_kernel():
 
     # 5. Validate
     err = checkAllclose(output_tensor, reference, rtol=1e-2, atol=1e-2)
-    assert err == 0, f"Mismatch: {err}%"
+    assert err == 0, f"Mismatch: {err * 100:.2f}%"
 ```
 
 ### 5.3 Benchmark Test Pattern
