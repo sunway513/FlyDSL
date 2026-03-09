@@ -28,3 +28,6 @@ flydsl/src/*.egg-info/
 
 # Wheels / packaging outputs
 dist/
+
+# Sphinx documentation build
+docs/_build/
